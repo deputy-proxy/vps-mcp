@@ -23,7 +23,7 @@ async function safely<T>(operation: () => Promise<T>) {
 export function createMcpServer(): McpServer {
   const server = new McpServer(
     { name: "vps-mcp", version: "0.1.0" },
-    { instructions: "Authenticated VPS administration and development execution. All filesystem paths and command working directories are restricted to configured allowed roots. Commands execute as the unprivileged service account." },
+    { instructions: "Authenticated VPS administration and development execution. Filesystem tool paths and command working directories are restricted to configured allowed roots. Shell commands otherwise have the operating-system permissions of the unprivileged service account." },
   );
 
   server.registerTool("system.health", {
