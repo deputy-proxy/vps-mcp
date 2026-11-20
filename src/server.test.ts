@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Server } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -57,6 +57,27 @@ describe("Streamable HTTP endpoint", () => {
     expect(await response.json()).toMatchObject({ status: "ok", service: "vps-mcp" });
   });
 
+  it("logs MCP requests without logging authorization credentials", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify(rpc("initialize", 1, {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "integration-test", version: "1.0.0" },
+        })),
+      });
+      expect(response.status).toBe(200);
+      const entry = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as Record<string, unknown>;
+      expect(entry).toMatchObject({ event: "mcp_http_request", method: "POST", path: "/mcp", status: 200, rpcMethod: "initialize" });
+      expect(JSON.stringify(entry)).not.toContain(token);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("rejects requests without a bearer token", async () => {
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -93,8 +114,43 @@ describe("Streamable HTTP endpoint", () => {
     });
     expect(response.status).toBe(200);
     const payload = await response.text();
-    expect(payload).toContain('"system.health"');
-    expect(payload).toContain('"terminal.execute"');
+    const dataLine = payload.split("\n").find((line) => line.startsWith("data: "));
+    expect(dataLine).toBeDefined();
+    const message = JSON.parse(dataLine!.slice(6)) as {
+      result: { tools: Array<{ name: string; annotations?: Record<string, unknown> }> };
+    };
+    const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
+    expect(tools.size).toBe(10);
+
+    for (const name of [
+      "system.health",
+      "system.info",
+      "terminal.status",
+      "terminal.logs",
+      "filesystem.list",
+      "filesystem.read",
+    ]) {
+      expect(tools.get(name)?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
+    }
+
+    for (const name of [
+      "terminal.execute",
+      "terminal.start",
+      "terminal.cancel",
+      "filesystem.write",
+    ]) {
+      expect(tools.get(name)?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
+    }
     expect(response.headers.get("mcp-session-id")).toBeNull();
   });
 

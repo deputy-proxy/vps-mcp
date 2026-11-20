@@ -29,9 +29,9 @@ export function createMcpServer(): McpServer {
   server.registerTool("system.health", {
     title: "System health",
     description: "Check MCP service health, data directory writability and configured filesystem roots.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {},
   }, async () => safely(async () => {
-    await fs.mkdir(config.dataDir, { recursive: true });
     await fs.access(config.dataDir, constants.R_OK | constants.W_OK);
     return { status: "healthy", service: "vps-mcp", version: "0.1.0", uptimeSeconds: Math.floor(process.uptime()), dataDirectoryWritable: true, allowedRoots: config.allowedRoots };
   }));
@@ -39,6 +39,7 @@ export function createMcpServer(): McpServer {
   server.registerTool("system.info", {
     title: "System information",
     description: "Return non-secret VPS operating system, CPU, memory, load and disk information.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {},
   }, async () => safely(async () => {
     const disk = await fs.statfs(config.dataDir);
@@ -57,6 +58,7 @@ export function createMcpServer(): McpServer {
   server.registerTool("terminal.execute", {
     title: "Execute command",
     description: "Run a Bash command synchronously as the unprivileged MCP service user. The working directory must be inside MCP_ALLOWED_ROOTS. Maximum timeout and output are server-configured.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       command: z.string().min(1).max(20_000),
       cwd: z.string().optional(),
@@ -68,42 +70,49 @@ export function createMcpServer(): McpServer {
   server.registerTool("terminal.start", {
     title: "Start background command",
     description: "Start a detached Bash command and persist its execution metadata and combined output log.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { command: z.string().min(1).max(20_000), cwd: z.string().optional() },
   }, async ({ command, cwd }) => safely(() => startExecution({ command, ...(cwd ? { cwd } : {}) })));
 
   server.registerTool("terminal.status", {
     title: "Execution status",
     description: "Inspect a background execution by its execution ID.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { executionId: z.string().uuid() },
   }, async ({ executionId }) => safely(() => getExecutionStatus(executionId)));
 
   server.registerTool("terminal.logs", {
     title: "Execution logs",
     description: "Read the most recent output from a background execution.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { executionId: z.string().uuid(), maxBytes: z.number().int().positive().max(262_144).optional() },
   }, async ({ executionId, maxBytes }) => safely(() => getExecutionLogs(executionId, maxBytes)));
 
   server.registerTool("terminal.cancel", {
     title: "Cancel execution",
     description: "Send SIGTERM to a background execution process group.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { executionId: z.string().uuid() },
   }, async ({ executionId }) => safely(() => cancelExecution(executionId)));
 
   server.registerTool("filesystem.list", {
     title: "List directory",
     description: "List a directory within configured allowed roots. Symlinks resolving outside allowed roots are omitted.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { path: z.string().min(1) },
   }, async ({ path }) => safely(() => listDirectory(path)));
 
   server.registerTool("filesystem.read", {
     title: "Read file",
     description: "Read a UTF-8 file up to 2 MiB from configured allowed roots.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { path: z.string().min(1) },
   }, async ({ path }) => safely(() => readFile(path)));
 
   server.registerTool("filesystem.write", {
     title: "Write file",
     description: "Atomically create or replace a UTF-8 file up to 2 MiB inside configured allowed roots.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { path: z.string().min(1), content: z.string().max(2 * 1024 * 1024) },
   }, async ({ path, content }) => safely(() => writeFile(path, content)));
 

@@ -97,13 +97,31 @@ export function createHttpServer() {
     });
   }
 
+  app.use(express.json({ limit: config.maxRequestBytes }));
+
+  app.use("/mcp", (request, response, next) => {
+    const startedAt = process.hrtime.bigint();
+    response.once("finish", () => {
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      const body = request.body as { method?: unknown } | undefined;
+      console.info(JSON.stringify({
+        event: "mcp_http_request",
+        method: request.method,
+        path: request.baseUrl + request.path,
+        status: response.statusCode,
+        durationMs: Math.round(durationMs * 100) / 100,
+        rpcMethod: typeof body?.method === "string" ? body.method : undefined,
+      }));
+    });
+    next();
+  });
+
   app.use("/mcp", (request, response, next) => {
     void authenticate(request, response, next).catch((error: unknown) => {
       console.error("Authentication middleware failed", error);
       if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
     });
   });
-  app.use(express.json({ limit: config.maxRequestBytes }));
 
   app.post("/mcp", async (request, response) => {
     const server = createMcpServer();
