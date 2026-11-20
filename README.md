@@ -41,7 +41,6 @@ For ChatGPT, the recommended initial connection is OpenAI Secure MCP Tunnel: run
 - Node.js 22 or newer
 - npm
 - A dedicated service account
-- Caddy or Nginx for public HTTPS termination
 
 ## Local development
 
@@ -55,7 +54,7 @@ npm run build
 npm start
 ```
 
-The default bind address is `127.0.0.1:3000`. Configure `MCP_ALLOWED_ROOTS` to include an existing directory before calling filesystem or terminal tools.
+The default bind address is `127.0.0.1:3000`. Configure `MCP_ALLOWED_ROOTS` to include an existing directory before calling filesystem or terminal tools. For local development, the example uses token authentication; for a private Secure MCP Tunnel deployment, switch to `MCP_AUTH_MODE=none` while keeping the listener bound to loopback.
 
 Generate a token:
 
@@ -90,7 +89,7 @@ The service is intended to run directly on the host (not in a container), so ter
    sudo sh -c 'umask 077; cat > /etc/vps-mcp/vps-mcp.env' <<'EOF'
    MCP_HOST=127.0.0.1
    MCP_PORT=3000
-   MCP_AUTH_TOKEN=REPLACE_WITH_OUTPUT_OF_OPENSSL_RAND_HEX_32
+   MCP_AUTH_MODE=none
    MCP_ALLOWED_ROOTS=/srv,/var/lib/vps-mcp
    MCP_DATA_DIR=/var/lib/vps-mcp
    MCP_DEFAULT_COMMAND_TIMEOUT_MS=30000
