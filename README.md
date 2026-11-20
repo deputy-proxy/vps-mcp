@@ -17,7 +17,7 @@ An authenticated remote Model Context Protocol (MCP) server for bootstrapping an
 | `filesystem.read` | Read a UTF-8 file (maximum 2 MiB) |
 | `filesystem.write` | Atomically create or replace a UTF-8 file (maximum 2 MiB) |
 
-The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at the MCP transport layer; background execution metadata and logs are persisted under `MCP_DATA_DIR`.
+The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at the MCP transport layer; background execution metadata and logs are persisted under `MCP_DATA_DIR`. Pass absolute paths to filesystem tools and use an allowed directory as the command working directory.
 
 ## Security model
 
