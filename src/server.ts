@@ -1,3 +1,4 @@
+import express from "express";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config } from "./config.js";
@@ -10,6 +11,7 @@ export function createHttpServer() {
     if (request.path === "/healthz" && request.method === "GET") return next();
     authenticate(request, response, next);
   });
+  app.use(express.json({ limit: config.maxRequestBytes }));
 
   app.get("/healthz", (_request, response) => {
     response.status(200).json({ status: "ok", service: "vps-mcp" });
