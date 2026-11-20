@@ -19,7 +19,7 @@ export function createHttpServer() {
 
   app.post("/mcp", async (request, response) => {
     const server = createMcpServer();
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const transport = new StreamableHTTPServerTransport({});
     response.on("close", () => { void transport.close(); });
 
     try {
