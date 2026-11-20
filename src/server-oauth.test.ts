@@ -82,6 +82,25 @@ describe("protected resource metadata", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
   });
 
+  it("allows both official ChatGPT web origins to read discovery metadata", async () => {
+    for (const origin of ["https://chatgpt.com", "https://chat.openai.com"]) {
+      const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`, {
+        headers: { origin, accept: "application/json" },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("access-control-allow-methods")).toContain("GET");
+    }
+  });
+
+  it("rejects browser discovery from untrusted origins", async () => {
+    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
+      headers: { origin: "https://attacker.example", accept: "application/json" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
   it("omits scopes_supported when no scopes are required", async () => {
     const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`);
     expect(response.status).toBe(200);

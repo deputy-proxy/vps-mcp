@@ -66,7 +66,7 @@ The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. M
 
 ## CORS
 
-Browser access is restricted to the official ChatGPT origins and any explicitly configured additional origins. `MCP_CORS_ORIGINS` accepts comma-separated exact HTTPS origins; HTTP is allowed only for localhost development. The official ChatGPT web origins (`https://chatgpt.com` and `https://chat.openai.com`) are always allowed because connector setup may perform OAuth discovery from the browser. CORS permits GET for discovery and POST for MCP requests. Wildcards, paths, query strings, fragments and credentials are rejected. Preflight requests are restricted to POST and the headers needed by the MCP HTTP client. No credentialed CORS access is enabled. Requests without an Origin header, including server-to-server clients, are unaffected.
+Browser access is restricted to the official ChatGPT origins and any explicitly configured additional origins. `MCP_CORS_ORIGINS` accepts comma-separated exact HTTPS origins; HTTP is allowed only for localhost development. The official ChatGPT web origins (`https://chatgpt.com` and `https://chat.openai.com`) are always allowed because connector setup may perform OAuth discovery from the browser. CORS permits GET for discovery and POST for MCP requests. Wildcards, paths, query strings, fragments and credentials are rejected. Preflight requests are restricted to GET/POST and the headers needed by discovery and the MCP HTTP client. No credentialed CORS access is enabled. Requests without an Origin header, including server-to-server clients, are unaffected.
 
 ## Security model
 
