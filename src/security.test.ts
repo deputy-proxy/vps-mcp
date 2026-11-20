@@ -135,6 +135,7 @@ describe("OAuth authentication middleware", () => {
     expect(response.headers.get("www-authenticate")).toContain(
       "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
     );
+    expect(response.headers.get("www-authenticate")).toContain('scope="mcp vps:admin"');
   });
   it("rejects an expired JWT", async () => {
     const expired = await token({ expiration: Math.floor(Date.now() / 1000) - 30 });
