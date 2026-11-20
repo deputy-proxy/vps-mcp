@@ -77,14 +77,16 @@ export async function executeCommand(input: {
 
     child.stdout.on("data", collect("stdout"));
     child.stderr.on("data", collect("stderr"));
+    let timer: NodeJS.Timeout | undefined;
     child.once("error", (error) => {
       if (!settled) {
         settled = true;
+        if (timer) clearTimeout(timer);
         reject(error);
       }
     });
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true;
       if (child.pid) {
         try { process.kill(-child.pid, "SIGTERM"); } catch { /* already exited */ }
@@ -97,7 +99,7 @@ export async function executeCommand(input: {
     }, timeoutMs);
 
     child.once("close", (code) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (settled) return;
       settled = true;
       resolve({ exitCode: code, stdout, stderr, timedOut, truncated });
@@ -124,6 +126,10 @@ export async function startExecution(input: { command: string; cwd?: string }): 
   });
   fs.closeSync(logFd);
 
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => resolve());
+    child.once("error", reject);
+  });
   if (!child.pid) throw new Error("Failed to start execution process");
 
   const record: ExecutionRecord = {
