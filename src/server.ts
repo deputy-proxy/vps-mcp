@@ -8,7 +8,7 @@ import { createMcpServer } from "./tools.js";
 function protectedResourceMetadata() {
   return {
     resource: config.publicUrl!.toString(),
-    authorization_servers: [config.oauthIssuerUrl!.toString().replace(/\/$/, "")],
+    authorization_servers: [config.oauthIssuerUrl!.toString()],
     bearer_methods_supported: ["header"],
     scopes_supported: config.oauthScopes,
   };
@@ -17,13 +17,20 @@ function protectedResourceMetadata() {
 export function createHttpServer() {
   const app = createMcpExpressApp({ host: config.host });
 
-  // ChatGPT's browser-based MCP client needs CORS preflight and access to the
-  // protocol/authentication response headers. Bearer tokens are never cookies.
   app.use((request, response, next) => {
-    response.setHeader("Access-Control-Allow-Origin", "*");
-    response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-Id");
-    response.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate, Mcp-Protocol-Version");
+    const origin = request.header("origin");
+    response.vary("Origin");
+
+    if (origin && config.corsOrigins.includes(origin)) {
+      response.setHeader("Access-Control-Allow-Origin", origin);
+      response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID");
+      response.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate, Mcp-Protocol-Version");
+    } else if (origin && request.method === "OPTIONS") {
+      response.status(403).json({ error: "Origin not allowed" });
+      return;
+    }
+
     if (request.method === "OPTIONS") {
       response.status(204).end();
       return;
