@@ -141,7 +141,12 @@ export async function startExecution(input: { command: string; cwd?: string }): 
     logPath,
     exitPath,
   };
-  await writeRecord(record);
+  try {
+    await writeRecord(record);
+  } catch (error) {
+    try { process.kill(-child.pid, "SIGTERM"); } catch { /* process already exited */ }
+    throw error;
+  }
   child.unref();
 
   return { id, pid: child.pid, cwd, startedAt: record.startedAt };
