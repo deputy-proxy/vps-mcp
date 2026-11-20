@@ -4,13 +4,16 @@
   "private": true,
   "description": "OAuth-protected remote MCP server for managing a self-hosted development VPS.",
   "type": "module",
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:oauth": "node scripts/check-oauth-provider.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
