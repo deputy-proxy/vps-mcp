@@ -79,7 +79,7 @@ The service is intended to run directly on the host (not in a container), so ter
    ```bash
    sudo git clone https://github.com/deputy-proxy/vps-mcp.git /opt/vps-mcp
    sudo chown -R vps-mcp:vps-mcp /opt/vps-mcp
-   sudo -u vps-mcp npm ci --prefix /opt/vps-mcp
+   sudo -u vps-mcp npm install --prefix /opt/vps-mcp
    sudo -u vps-mcp npm run build --prefix /opt/vps-mcp
    ```
 
