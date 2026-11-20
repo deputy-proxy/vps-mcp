@@ -18,6 +18,30 @@ function protectedResourceMetadata() {
   };
 }
 
+async function proxyAuthorizationServerMetadata(response: express.Response): Promise<void> {
+  try {
+    const metadataUrl = new URL("/.well-known/oauth-authorization-server", config.oauthIssuerUrl);
+    const upstream = await fetch(metadataUrl, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
+      redirect: "error",
+    });
+    if (!upstream.ok) {
+      response.status(502).json({ error: "Authorization server metadata unavailable" });
+      return;
+    }
+    const contentType = upstream.headers.get("content-type") ?? "";
+    if (!contentType.includes("json")) {
+      response.status(502).json({ error: "Authorization server returned invalid metadata" });
+      return;
+    }
+    response.status(200).type("application/json").send(await upstream.text());
+  } catch (error) {
+    console.error("Authorization server metadata proxy failed", error);
+    if (!response.headersSent) response.status(502).json({ error: "Authorization server metadata unavailable" });
+  }
+}
+
 export function createHttpServer() {
   const app = createMcpExpressApp({ host: config.host });
 
@@ -55,8 +79,19 @@ export function createHttpServer() {
   });
 
   if (config.authMode === "oauth") {
+    // RFC 9728 discovery for an MCP endpoint at /mcp permits both the
+    // endpoint-specific well-known URI and the origin-level URI.
     app.get("/.well-known/oauth-protected-resource/mcp", (_request, response) => {
       response.status(200).json(protectedResourceMetadata());
+    });
+    app.get("/.well-known/oauth-protected-resource", (_request, response) => {
+      response.status(200).json(protectedResourceMetadata());
+    });
+
+    // Compatibility for clients that look for authorization-server metadata
+    // on the MCP server origin rather than following authorization_servers.
+    app.get("/.well-known/oauth-authorization-server", (_request, response) => {
+      void proxyAuthorizationServerMetadata(response);
     });
   }
 
