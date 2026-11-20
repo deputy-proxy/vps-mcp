@@ -58,6 +58,18 @@ afterAll(async () => {
   await fs.rm(temporaryDirectory, { recursive: true, force: true });
 });
 
+describe("protected resource metadata", () => {
+  it("omits scopes_supported when no scopes are required", async () => {
+    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      resource: "https://mcp.example.test/mcp",
+      authorization_servers: ["https://issuer.example.test"],
+      bearer_methods_supported: ["header"],
+    });
+  });
+});
+
 describe("per-tool OAuth authorization", () => {
   it("allows unauthenticated MCP initialization", async () => {
     const response = await post(rpc("initialize", 1, {
