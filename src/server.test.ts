@@ -136,8 +136,8 @@ describe("CORS policy", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://client.example");
     expect(response.headers.get("access-control-allow-methods")).toBe("POST");
-    expect(response.headers.get("access-control-allow-headers")).toContain("Authorization");
-    expect(response.headers.get("access-control-expose-headers")).toContain("WWW-Authenticate");
+    expect(response.headers.get("access-control-allow-headers")).toContain("authorization");
+    expect(response.headers.get("access-control-expose-headers")).toContain("www-authenticate");
     expect(response.headers.get("vary")).toContain("Origin");
   });
 
