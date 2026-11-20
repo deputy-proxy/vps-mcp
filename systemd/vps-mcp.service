@@ -8,10 +8,13 @@ Type=simple
 User=vps-mcp
 Group=vps-mcp
 WorkingDirectory=/opt/vps-mcp
+Environment=NODE_ENV=production
 EnvironmentFile=/etc/vps-mcp/vps-mcp.env
 ExecStart=/usr/bin/node /opt/vps-mcp/dist/index.js
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=15
+KillMode=mixed
 UMask=0077
 
 NoNewPrivileges=true
