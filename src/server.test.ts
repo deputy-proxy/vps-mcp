@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Server } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -55,6 +55,27 @@ describe("Streamable HTTP endpoint", () => {
     const response = await fetch(`${baseUrl}/healthz`);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ status: "ok", service: "vps-mcp" });
+  });
+
+  it("logs MCP requests without logging authorization credentials", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(rpc("initialize", 1, {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "integration-test", version: "1.0.0" },
+        })),
+      });
+      expect(response.status).toBe(200);
+      const entry = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as Record<string, unknown>;
+      expect(entry).toMatchObject({ event: "mcp_http_request", method: "POST", path: "/mcp", status: 200, rpcMethod: "initialize" });
+      expect(JSON.stringify(entry)).not.toContain(token);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("rejects requests without a bearer token", async () => {
