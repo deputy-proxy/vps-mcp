@@ -124,30 +124,38 @@ describe("Streamable HTTP endpoint", () => {
 });
 
 describe("CORS policy", () => {
-  it("allows preflight requests from configured origins", async () => {
+  it("allows preflight only for POST and supported headers", async () => {
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "OPTIONS",
       headers: {
         origin: "https://client.example",
         "access-control-request-method": "POST",
-        "access-control-request-headers": "authorization,content-type",
+        "access-control-request-headers": "authorization,content-type,mcp-protocol-version",
       },
     });
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://client.example");
+    expect(response.headers.get("access-control-allow-methods")).toBe("POST");
+    expect(response.headers.get("access-control-allow-headers")).toContain("authorization");
+    expect(response.headers.get("access-control-expose-headers")).toContain("www-authenticate");
     expect(response.headers.get("vary")).toContain("Origin");
   });
 
-  it("rejects preflight requests from unconfigured origins", async () => {
+  it.each([
+    ["https://attacker.example", "POST", "authorization"],
+    ["https://client.example", "DELETE", "authorization"],
+    ["https://client.example", "POST", "x-evil-header"],
+  ])("rejects preflight with origin=%s method=%s headers=%s", async (origin, method, headers) => {
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "OPTIONS",
       headers: {
-        origin: "https://attacker.example",
-        "access-control-request-method": "POST",
+        origin,
+        "access-control-request-method": method,
+        "access-control-request-headers": headers,
       },
     });
     expect(response.status).toBe(403);
-    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("access-control-allow-origin")).toBe(origin === "https://client.example" ? origin : null);
   });
 
   it("does not grant CORS access to an unconfigured origin on normal requests", async () => {

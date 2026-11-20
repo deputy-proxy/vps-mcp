@@ -1,10 +1,12 @@
 import os from "node:os";
 import path from "node:path";
+import { parseCorsOrigins, parseOAuthAudience, parsePublicMcpUrl, parseHttpsUrl } from "./config-validation.js";
 
 function integerFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
-  const value = Number.parseInt(raw, 10);
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer`);
+  const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
   return value;
 }
@@ -19,39 +21,16 @@ const host = process.env.MCP_HOST ?? "127.0.0.1";
 if (authMode === "none" && !["127.0.0.1", "localhost", "::1"].includes(host)) {
   throw new Error("MCP_AUTH_MODE=none is only permitted when MCP_HOST is loopback");
 }
-for (const [name, value] of [["MCP_PUBLIC_URL", process.env.MCP_PUBLIC_URL], ["OAUTH_ISSUER_URL", process.env.OAUTH_ISSUER_URL]] as const) {
-  if (authMode === "oauth" && !value) throw new Error(`${name} is required when MCP_AUTH_MODE=oauth`);
-}
-if (authMode === "oauth" && !process.env.OAUTH_AUDIENCE) throw new Error("OAUTH_AUDIENCE is required when MCP_AUTH_MODE=oauth");
 
-function httpsUrl(name: string, value: string | undefined, required = false): URL | undefined {
-  if (!value) {
-    if (required) throw new Error(`${name} is required`);
-    return undefined;
-  }
-  const parsed = new URL(value);
-  if (parsed.protocol !== "https:") throw new Error(`${name} must use HTTPS`);
-  return parsed;
-}
-
-const publicUrl = httpsUrl("MCP_PUBLIC_URL", process.env.MCP_PUBLIC_URL, authMode === "oauth");
-const oauthIssuerUrl = httpsUrl("OAUTH_ISSUER_URL", process.env.OAUTH_ISSUER_URL, authMode === "oauth");
-const oauthJwksUrl = httpsUrl("OAUTH_JWKS_URL", process.env.OAUTH_JWKS_URL);
-const oauthAudience = process.env.OAUTH_AUDIENCE ?? "";
+const publicUrl = parsePublicMcpUrl(process.env.MCP_PUBLIC_URL, authMode === "oauth");
+const oauthIssuerUrl = parseHttpsUrl("OAUTH_ISSUER_URL", process.env.OAUTH_ISSUER_URL, authMode === "oauth");
+const oauthJwksUrl = parseHttpsUrl("OAUTH_JWKS_URL", process.env.OAUTH_JWKS_URL);
+const oauthAudience = parseOAuthAudience(process.env.OAUTH_AUDIENCE, authMode === "oauth");
 const oauthScopes = (process.env.OAUTH_REQUIRED_SCOPES ?? "mcp").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
 if (authMode === "oauth" && oauthScopes.length === 0) throw new Error("OAUTH_REQUIRED_SCOPES must contain at least one scope");
+if (oauthScopes.some((scope) => /[\s,]/.test(scope))) throw new Error("OAUTH_REQUIRED_SCOPES entries must be individual scope tokens");
 
-const corsOrigins = (process.env.MCP_CORS_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean).map((origin) => {
-  const parsed = new URL(origin);
-  const isLocalHttp = parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
-  if (parsed.protocol !== "https:" && !isLocalHttp) {
-    throw new Error("MCP_CORS_ORIGINS entries must use HTTPS (localhost is allowed for development)");
-  }
-  if (parsed.origin !== origin || parsed.username || parsed.password) {
-    throw new Error("MCP_CORS_ORIGINS entries must be exact origins without paths or credentials");
-  }
-  return parsed.origin;
-});
+const corsOrigins = parseCorsOrigins(process.env.MCP_CORS_ORIGINS);
 
 const allowedRoots = (process.env.MCP_ALLOWED_ROOTS ?? `/srv,${path.join(os.homedir(), ".local/share/vps-mcp")}`)
   .split(",").map((entry) => path.resolve(entry.trim())).filter(Boolean);

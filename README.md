@@ -19,84 +19,60 @@ An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping 
 
 ## MCP transport
 
-The server exposes the MCP Streamable HTTP transport at `/mcp` and deliberately runs in **stateless mode**:
-
-- MCP requests are sent using `POST`.
-- The server does not issue or require `Mcp-Session-Id` headers.
-- `GET` and `DELETE` return HTTP 405 with `Allow: POST`; server-initiated SSE streams and session termination are not offered.
-- Each POST is handled by a fresh MCP server and transport instance. Do not rely on in-memory MCP session state between requests.
-- Background command metadata and logs are persisted separately under `MCP_DATA_DIR`.
-
-This is suitable for request/response tools and horizontally simple deployments. If future features require server-initiated notifications, resumable streams or per-client MCP state, introduce stateful sessions with bounded capacity, expiry and a deliberate persistence strategy rather than quietly adding an in-memory session map.
+The server exposes MCP Streamable HTTP at `/mcp` in stateless request/response mode. MCP requests use POST; GET, DELETE and PATCH return 405. The server does not issue session IDs or support server-initiated SSE streams. Each POST creates a fresh MCP server and transport instance. Background execution metadata and logs persist under `MCP_DATA_DIR`.
 
 ## Authentication
 
-Three modes are available:
+- `token`: static bearer token for private integrations and initial deployment.
+- `oauth`: validates signed OAuth access-token JWTs against the configured issuer and JWKS; checks issuer, audience, expiry and required scopes; publishes RFC 9728 Protected Resource Metadata.
+- `none`: permitted only when the listener binds to loopback.
 
-- `token`: static bearer token for local development or private integrations.
-- `oauth`: validates signed OAuth access-token JWTs against the configured issuer and its JWKS, checks issuer, audience, expiry and required scopes, and publishes RFC 9728 Protected Resource Metadata.
-- `none`: permitted only when the Node listener binds to loopback.
+This project is an OAuth protected resource, not an authorization server. The external provider must support Authorization Code + PKCE S256, refresh tokens, resource/audience binding, signed JWT access tokens, and client registration compatible with the intended MCP client (CIMD or DCR where required). Opaque-token introspection is not implemented.
 
-### OAuth provider requirements
+### OAuth configuration
 
-This project implements the MCP **resource server**, not an authorization server. The external identity provider handles sign-in, consent, authorization-code exchange, PKCE, refresh tokens and client registration.
+- `MCP_PUBLIC_URL`: canonical HTTPS MCP endpoint, exactly `https://host/mcp`.
+- `OAUTH_ISSUER_URL`: exact HTTPS issuer identifier from the provider.
+- `OAUTH_AUDIENCE`: HTTPS resource identifier expected in the JWT audience claim.
+- `OAUTH_JWKS_URL`: optional explicit HTTPS JWKS URL; otherwise read from OIDC discovery.
+- `OAUTH_REQUIRED_SCOPES`: space- or comma-separated required scope tokens; defaults to `mcp`.
 
-The provider must support Authorization Code with PKCE S256, refresh tokens, audience/resource binding, signed JWT access tokens, and ChatGPT-compatible Client ID Metadata Documents (CIMD) or Dynamic Client Registration (DCR). Configure the provider to issue the exact MCP audience and the scopes listed in `OAUTH_REQUIRED_SCOPES`.
+The discovery document issuer must exactly match `OAUTH_ISSUER_URL`; the discovered `jwks_uri` must use HTTPS. The first successful JWKS discovery is cached. Failed discovery returns 503.
 
-When `OAUTH_JWKS_URL` is omitted, the server reads the provider's OpenID Connect discovery document at `{issuer}/.well-known/openid-configuration`, verifies that its `issuer` exactly matches `OAUTH_ISSUER_URL`, and uses its HTTPS `jwks_uri`. An explicit HTTPS `OAUTH_JWKS_URL` may be supplied for providers without standard OIDC discovery. Discovery is cached after the first successful lookup; a failed lookup returns HTTP 503 rather than incorrectly reporting the client's token as invalid.
+The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. Missing or invalid credentials receive a Bearer challenge referencing this endpoint.
 
-The server publishes `GET /.well-known/oauth-protected-resource/mcp`. On missing or invalid credentials it responds with a Bearer challenge referencing that metadata document.
+## CORS
 
-### CORS
-
-Browser access is disabled by default. Set `MCP_CORS_ORIGINS` to a comma-separated list of exact HTTPS origins (or localhost HTTP origins for development). Paths and wildcards are not accepted. Requests without an `Origin` header, such as server-to-server MCP clients, are unaffected. Disallowed browser preflight requests receive HTTP 403.
-
-### OAuth environment
-
-- `MCP_PUBLIC_URL`: canonical public MCP URL, including `/mcp`.
-- `OAUTH_ISSUER_URL`: exact issuer identifier from the provider.
-- `OAUTH_AUDIENCE`: expected JWT audience, normally the MCP resource URL.
-- `OAUTH_JWKS_URL`: optional explicit HTTPS JWKS URL; otherwise discovered through OIDC.
-- `OAUTH_REQUIRED_SCOPES`: space- or comma-separated required scopes (default: `mcp`).
-- `MCP_CORS_ORIGINS`: optional exact browser origins allowed to access the endpoint.
-
-Do not enable OAuth mode until the provider is configured and its issuer and audience are known. The existing loopback token-auth deployment remains compatible and is not changed by this code update.
+Browser access is disabled by default. `MCP_CORS_ORIGINS` accepts comma-separated exact HTTPS origins; HTTP is allowed only for localhost development. Wildcards, paths, query strings, fragments and credentials are rejected. Preflight requests are restricted to POST and the headers needed by the MCP HTTP client. No credentialed CORS access is enabled. Requests without an Origin header, including server-to-server clients, are unaffected.
 
 ## Security model
 
-- Run as a dedicated, unprivileged Linux account.
+- Run as a dedicated unprivileged Linux account.
 - Filesystem tools and command working directories are restricted to `MCP_ALLOWED_ROOTS`.
-- Commands run as the service account, not as root.
-- No Docker socket, SSH private key or host credential directory is mounted into the service.
-- Do not add the service account to the Docker group; Docker access is effectively root access.
-- OAuth validates signed JWTs on every MCP request and rejects invalid issuer, audience, expiry or missing scopes.
-- TLS is mandatory at the public reverse proxy. Keep the Node listener private on loopback.
-
-A shell tool is powerful by design. An authorized user can run commands with the service account's operating-system permissions. Keep the account unprivileged and the allowed filesystem roots narrow.
+- Commands run as the service account, not root.
+- Do not mount the Docker socket or add the service account to the Docker group; Docker access is effectively root access.
+- Keep Node bound to loopback and expose it only through a TLS reverse proxy.
+- Keep the allowed filesystem roots narrow. Authorized shell users can execute commands with the service account's OS permissions.
 
 ## Requirements
 
-- Linux (tested deployment target: Ubuntu 24.04 LTS)
+- Ubuntu 24.04 LTS or another supported Linux distribution
 - Node.js 22 or newer
 - npm
-- A dedicated service account
+- Dedicated service account
 
 ## Local development
 
 ```bash
 cp .env.example .env
-# Keep MCP_AUTH_MODE=token and set MCP_AUTH_TOKEN to a random secret.
-npm install
+# Keep MCP_AUTH_MODE=token and set a random MCP_AUTH_TOKEN of at least 32 characters.
+npm ci
 npm run typecheck
 npm test
 npm run build
 ```
 
-Generate a token:
-
-```bash
-openssl rand -hex 32
-```
+Generate a token with `openssl rand -hex 32`.
 
 ## VPS deployment
 
@@ -108,20 +84,24 @@ openssl rand -hex 32
    sudo install -d -o root -g vps-mcp -m 0750 /etc/vps-mcp
    ```
 
-2. Clone the repository into `/opt/vps-mcp`, install dependencies and build:
+2. Clone the repository, install locked dependencies and build:
 
    ```bash
    sudo git clone https://github.com/deputy-proxy/vps-mcp.git /opt/vps-mcp
    sudo chown -R vps-mcp:vps-mcp /opt/vps-mcp
-   sudo -u vps-mcp npm install --prefix /opt/vps-mcp
+   sudo -u vps-mcp npm ci --prefix /opt/vps-mcp
    sudo -u vps-mcp npm run build --prefix /opt/vps-mcp
    ```
 
-3. Keep the current private deployment in token mode. For a public deployment, configure the OAuth provider and environment variables before changing the authentication mode.
+3. Create `/etc/vps-mcp/vps-mcp.env` with mode 0640, owned by root:vps-mcp. Keep token mode until a real OAuth provider and public endpoint are configured. Never commit secrets.
 
-4. Install and start the systemd service, then configure DNS and Caddy using `deploy/Caddyfile.example`. Permit inbound TCP 80/443 and keep port 3000 closed to the public internet.
+4. Install `systemd/vps-mcp.service`, reload systemd, enable and start the service. Verify `curl http://127.0.0.1:3000/healthz` and confirm unauthenticated POST requests to `/mcp` return 401.
 
-5. Verify protected-resource metadata and test valid, expired, wrong-issuer, wrong-audience and insufficient-scope tokens before connecting a real MCP client.
+5. Configure DNS to point the chosen hostname at the VPS. Install Caddy and adapt `deploy/Caddyfile.example`. Permit inbound TCP 80/443 only; keep port 3000 closed to the public internet. Caddy obtains and renews TLS certificates automatically when DNS and firewall prerequisites are satisfied.
+
+6. Configure the OAuth provider and exact resource/audience values, then switch to OAuth mode. Validate metadata, successful authentication, invalid/expired tokens, wrong issuer/audience and insufficient scopes before registering the MCP client.
+
+7. Connect the intended MCP client and verify initialization, tool discovery, `system.health`, bounded filesystem access and a harmless command. Do not expose the service until all checks pass.
 
 ## Configuration
 
@@ -131,31 +111,31 @@ openssl rand -hex 32
 | `MCP_PORT` | `3000` | HTTP port |
 | `MCP_AUTH_MODE` | `token` | `token`, `oauth` or loopback-only `none` |
 | `MCP_AUTH_TOKEN` | required in token mode | Static bearer token, minimum 32 characters |
-| `MCP_PUBLIC_URL` | unset | Canonical public MCP URL, required for OAuth |
-| `OAUTH_ISSUER_URL` | unset | OAuth/OIDC issuer URL, required for OAuth |
-| `OAUTH_AUDIENCE` | unset | Required JWT audience, required for OAuth |
-| `OAUTH_JWKS_URL` | OIDC discovery | Optional explicit signing-key URL |
-| `OAUTH_REQUIRED_SCOPES` | `mcp` | Required scopes |
+| `MCP_PUBLIC_URL` | unset | Canonical HTTPS URL ending in `/mcp`, required for OAuth |
+| `OAUTH_ISSUER_URL` | unset | HTTPS OAuth/OIDC issuer, required for OAuth |
+| `OAUTH_AUDIENCE` | unset | HTTPS resource audience, required for OAuth |
+| `OAUTH_JWKS_URL` | OIDC discovery | Optional explicit HTTPS signing-key URL |
+| `OAUTH_REQUIRED_SCOPES` | `mcp` | Required scope tokens |
 | `MCP_CORS_ORIGINS` | empty | Exact allowed browser origins |
-| `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Comma-separated allowed filesystem roots |
+| `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Allowed filesystem roots |
 | `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
 | `MCP_MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP JSON request size |
-| `MCP_DEFAULT_COMMAND_TIMEOUT_MS` | `30000` | Default synchronous command timeout |
-| `MCP_MAX_COMMAND_TIMEOUT_MS` | `900000` | Maximum synchronous command timeout |
+| `MCP_DEFAULT_COMMAND_TIMEOUT_MS` | `30000` | Default command timeout |
+| `MCP_MAX_COMMAND_TIMEOUT_MS` | `900000` | Maximum command timeout |
 | `MCP_MAX_OUTPUT_BYTES` | `1048576` | Maximum synchronous command output |
 
 ## Known boundaries
 
-- OAuth is delegated to an external authorization server; this project is the protected MCP resource server, not an identity provider.
-- Only signed JWT access tokens are supported. Opaque-token introspection is not implemented.
-- Active background process supervision is not yet managed by systemd or a dedicated process supervisor.
-- Privileged host administration requires a separately designed, narrowly scoped helper; unrestricted sudo must not be granted.
-- Repository registry, Git worktree orchestration, concurrency locks, backups and management GUI remain later milestones.
-- The server does not yet implement a Railway Sandbox MCP compatibility layer.
+- External OAuth provider selection and tenant-specific configuration remain deployment decisions.
+- Only signed JWT access tokens are supported; opaque-token introspection is not implemented.
+- Active background process supervision is not yet managed by a dedicated process supervisor.
+- Privileged host administration requires a separately designed, narrowly scoped helper; unrestricted sudo is not supported.
+- Git worktree orchestration, concurrency locks, backups, management UI and Railway Sandbox compatibility remain later milestones.
 
 ## Development checks
 
 ```bash
+npm ci
 npm run typecheck
 npm test
 npm run build

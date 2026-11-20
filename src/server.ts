@@ -5,6 +5,10 @@ import { config } from "./config.js";
 import { authenticate } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
+const CORS_ALLOWED_METHODS = ["POST"];
+const CORS_ALLOWED_HEADERS = ["authorization", "content-type", "mcp-protocol-version"];
+const CORS_EXPOSED_HEADERS = ["www-authenticate", "mcp-protocol-version"];
+
 function protectedResourceMetadata() {
   return {
     resource: config.publicUrl!.toString(),
@@ -23,15 +27,23 @@ export function createHttpServer() {
 
     if (origin && config.corsOrigins.includes(origin)) {
       response.setHeader("Access-Control-Allow-Origin", origin);
-      response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-      response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID");
-      response.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate, Mcp-Protocol-Version");
-    } else if (origin && request.method === "OPTIONS") {
-      response.status(403).json({ error: "Origin not allowed" });
-      return;
+      response.setHeader("Access-Control-Allow-Methods", CORS_ALLOWED_METHODS.join(", "));
+      response.setHeader("Access-Control-Allow-Headers", CORS_ALLOWED_HEADERS.join(", "));
+      response.setHeader("Access-Control-Expose-Headers", CORS_EXPOSED_HEADERS.join(", "));
     }
 
     if (request.method === "OPTIONS") {
+      const requestedMethod = request.header("access-control-request-method")?.toUpperCase();
+      const requestedHeaders = (request.header("access-control-request-headers") ?? "")
+        .split(",").map((header) => header.trim().toLowerCase()).filter(Boolean);
+      const originAllowed = Boolean(origin && config.corsOrigins.includes(origin));
+      const methodAllowed = !requestedMethod || CORS_ALLOWED_METHODS.includes(requestedMethod);
+      const headersAllowed = requestedHeaders.every((header) => CORS_ALLOWED_HEADERS.includes(header));
+
+      if (!originAllowed || !methodAllowed || !headersAllowed) {
+        response.status(403).json({ error: "CORS preflight rejected" });
+        return;
+      }
       response.status(204).end();
       return;
     }
