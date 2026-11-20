@@ -17,7 +17,7 @@ type JwksResolver = () => Promise<JWTVerifyGetKey>;
 export function hasRequiredScopes(payload: object, requiredScopes: string[]): boolean {
   const claims = payload as Record<string, unknown>;
   const grantedScopes = typeof claims.scope === "string"
-    ? claims.scope.split(/\\s+/).filter(Boolean)
+    ? claims.scope.split(/\s+/).filter(Boolean)
     : Array.isArray(claims.scp)
       ? claims.scp.filter((scope): scope is string => typeof scope === "string")
       : [];
@@ -54,7 +54,7 @@ function unauthorized(response: Response, reason = "invalid_token", publicUrl?: 
 export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: JwksResolver) {
   return async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     const authorization = request.header("authorization") ?? "";
-    const match = /^Bearer\\s+(.+)$/i.exec(authorization);
+    const match = /^Bearer\s+(.+)$/i.exec(authorization);
     const supplied = match?.[1] ?? "";
     if (!supplied) {
       console.warn("OAuth authentication rejected", { reason: "missing_bearer_token", method: request.method, path: request.path });
@@ -124,7 +124,7 @@ async function getJwks(): Promise<ReturnType<typeof createRemoteJWKSet>> {
  * this function before performing its operation.
  */
 export async function verifyOAuthAccessToken(authorizationHeader?: string): Promise<boolean> {
-  const match = /^Bearer\\s+(.+)$/i.exec(authorizationHeader ?? "");
+  const match = /^Bearer\s+(.+)$/i.exec(authorizationHeader ?? "");
   const supplied = match?.[1] ?? "";
   if (!supplied || !oauthOptions) {
     if (!supplied) console.warn("OAuth tool authorization required", { reason: "missing_bearer_token" });
@@ -154,7 +154,7 @@ export async function authenticate(request: Request, response: Response, next: N
   if (config.authMode === "none") { next(); return; }
 
   const authorization = request.header("authorization") ?? "";
-  const match = /^Bearer\\s+(.+)$/i.exec(authorization);
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
   const supplied = match?.[1] ?? "";
 
   if (config.authMode === "token") {
