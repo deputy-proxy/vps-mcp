@@ -62,7 +62,7 @@ describe("Streamable HTTP endpoint", () => {
     try {
       const response = await fetch(`${baseUrl}/mcp`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
         body: JSON.stringify(rpc("initialize", 1, {
           protocolVersion: "2025-03-26",
           capabilities: {},
