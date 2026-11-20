@@ -36,7 +36,7 @@ async function post(body: unknown, authorization?: string) {
 
 async function responseMessage(response: Response) {
   const payload = await response.text();
-  const dataLine = payload.split("\\n").find((line) => line.startsWith("data: "));
+  const dataLine = payload.split("\n").find((line) => line.startsWith("data: "));
   expect(dataLine).toBeDefined();
   return JSON.parse(dataLine!.slice(6)) as Record<string, any>;
 }
