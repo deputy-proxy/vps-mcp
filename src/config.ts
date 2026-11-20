@@ -27,7 +27,7 @@ const oauthIssuerUrl = parseHttpsUrl("OAUTH_ISSUER_URL", process.env.OAUTH_ISSUE
 const oauthJwksUrl = parseHttpsUrl("OAUTH_JWKS_URL", process.env.OAUTH_JWKS_URL);
 const oauthAudience = parseOAuthAudience(process.env.OAUTH_AUDIENCE, authMode === "oauth");
 const oauthScopes = (process.env.OAUTH_REQUIRED_SCOPES ?? "").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
-if (oauthScopes.some((scope) => /[\\s,]/.test(scope))) throw new Error("OAUTH_REQUIRED_SCOPES entries must be individual scope tokens");
+if (oauthScopes.some((scope) => /[\s,]/.test(scope))) throw new Error("OAUTH_REQUIRED_SCOPES entries must be individual scope tokens");
 
 const corsOrigins = parseCorsOrigins(process.env.MCP_CORS_ORIGINS);
 
