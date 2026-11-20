@@ -5,8 +5,8 @@ import { config } from "./config.js";
 import { authenticate, verifyOAuthAccessToken } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
-const CORS_ALLOWED_METHODS = ["POST"];
-const CORS_ALLOWED_HEADERS = ["authorization", "content-type", "mcp-protocol-version"];
+const CORS_ALLOWED_METHODS = ["GET", "POST"];
+const CORS_ALLOWED_HEADERS = ["accept", "authorization", "content-type", "mcp-protocol-version"];
 const CORS_EXPOSED_HEADERS = ["www-authenticate", "mcp-protocol-version"];
 
 function protectedResourceMetadata() {
@@ -82,6 +82,24 @@ export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof
   });
 
   if (config.authMode === "oauth") {
+    // Log discovery requests without recording credentials, query strings or response bodies.
+    app.use("/.well-known", (request, response, next) => {
+      const startedAt = process.hrtime.bigint();
+      response.once("finish", () => {
+        const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+        console.info(JSON.stringify({
+          event: "oauth_discovery_request",
+          method: request.method,
+          path: request.path,
+          status: response.statusCode,
+          origin: request.header("origin") ?? null,
+          userAgent: request.header("user-agent") ?? null,
+          durationMs: Math.round(durationMs * 100) / 100,
+        }));
+      });
+      next();
+    });
+
     // RFC 9728 discovery for an MCP endpoint at /mcp permits both the
     // endpoint-specific well-known URI and the origin-level URI.
     app.get("/.well-known/oauth-protected-resource/mcp", (_request, response) => {

@@ -59,6 +59,48 @@ afterAll(async () => {
 });
 
 describe("protected resource metadata", () => {
+  it("allows browser-based ChatGPT OAuth discovery from its official origins", async () => {
+    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
+      headers: { origin: "https://chatgpt.com", accept: "application/json" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
+    expect(response.headers.get("access-control-allow-methods")).toContain("GET");
+    expect(response.headers.get("content-type")).toContain("application/json");
+  });
+
+  it("allows ChatGPT metadata preflight requests", async () => {
+    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://chatgpt.com",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "accept",
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
+  });
+
+  it("allows both official ChatGPT web origins to read discovery metadata", async () => {
+    for (const origin of ["https://chatgpt.com", "https://chat.openai.com"]) {
+      const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`, {
+        headers: { origin, accept: "application/json" },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("access-control-allow-methods")).toContain("GET");
+    }
+  });
+
+  it("rejects browser discovery from untrusted origins", async () => {
+    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
+      headers: { origin: "https://attacker.example", accept: "application/json" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
   it("omits scopes_supported when no scopes are required", async () => {
     const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`);
     expect(response.status).toBe(200);

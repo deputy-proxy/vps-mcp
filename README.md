@@ -66,7 +66,7 @@ The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. M
 
 ## CORS
 
-Browser access is disabled by default. `MCP_CORS_ORIGINS` accepts comma-separated exact HTTPS origins; HTTP is allowed only for localhost development. Wildcards, paths, query strings, fragments and credentials are rejected. Preflight requests are restricted to POST and the headers needed by the MCP HTTP client. No credentialed CORS access is enabled. Requests without an Origin header, including server-to-server clients, are unaffected.
+Browser access is restricted to the official ChatGPT origins and any explicitly configured additional origins. `MCP_CORS_ORIGINS` accepts comma-separated exact HTTPS origins; HTTP is allowed only for localhost development. The official ChatGPT web origins (`https://chatgpt.com` and `https://chat.openai.com`) are always allowed because connector setup may perform OAuth discovery from the browser. CORS permits GET for discovery and POST for MCP requests. Wildcards, paths, query strings, fragments and credentials are rejected. Preflight requests are restricted to GET/POST and the headers needed by discovery and the MCP HTTP client. No credentialed CORS access is enabled. Requests without an Origin header, including server-to-server clients, are unaffected.
 
 ## Security model
 
@@ -139,7 +139,7 @@ Generate a token with `openssl rand -hex 32`.
 | `OAUTH_AUDIENCE` | unset | HTTPS resource audience, required for OAuth |
 | `OAUTH_JWKS_URL` | OIDC discovery | Optional explicit HTTPS signing-key URL |
 | `OAUTH_REQUIRED_SCOPES` | empty | Optional required scope tokens |
-| `MCP_CORS_ORIGINS` | empty | Exact allowed browser origins |
+| `MCP_CORS_ORIGINS` | empty | Additional exact browser origins; official ChatGPT origins are built in |
 | `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Allowed filesystem roots |
 | `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
 | `MCP_MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP JSON request size |

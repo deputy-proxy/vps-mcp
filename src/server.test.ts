@@ -180,7 +180,7 @@ describe("Streamable HTTP endpoint", () => {
 });
 
 describe("CORS policy", () => {
-  it("allows preflight only for POST and supported headers", async () => {
+  it("allows preflight only for supported methods and headers", async () => {
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "OPTIONS",
       headers: {
@@ -191,8 +191,9 @@ describe("CORS policy", () => {
     });
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://client.example");
-    expect(response.headers.get("access-control-allow-methods")).toBe("POST");
+    expect(response.headers.get("access-control-allow-methods")).toBe("GET, POST");
     expect(response.headers.get("access-control-allow-headers")).toContain("authorization");
+    expect(response.headers.get("access-control-allow-headers")).toContain("accept");
     expect(response.headers.get("access-control-expose-headers")).toContain("www-authenticate");
     expect(response.headers.get("vary")).toContain("Origin");
   });

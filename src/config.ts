@@ -30,7 +30,13 @@ const oauthAudience = parseOAuthAudience(process.env.OAUTH_AUDIENCE, authMode ==
 const oauthScopes = (process.env.OAUTH_REQUIRED_SCOPES ?? "").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
 if (oauthScopes.some((scope) => /[\s,]/.test(scope))) throw new Error("OAUTH_REQUIRED_SCOPES entries must be individual scope tokens");
 
-const corsOrigins = parseCorsOrigins(process.env.MCP_CORS_ORIGINS);
+// ChatGPT's connector setup may fetch OAuth discovery metadata directly from the browser.
+// Always allow the official ChatGPT web origins; deployments may add exact origins via env.
+const corsOrigins = [...new Set([
+  "https://chatgpt.com",
+  "https://chat.openai.com",
+  ...parseCorsOrigins(process.env.MCP_CORS_ORIGINS),
+])];
 
 const allowedRoots = (process.env.MCP_ALLOWED_ROOTS ?? `/srv,${path.join(os.homedir(), ".local/share/vps-mcp")}`)
   .split(",").map((entry) => path.resolve(entry.trim())).filter(Boolean);
