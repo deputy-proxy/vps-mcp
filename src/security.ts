@@ -39,13 +39,14 @@ export async function resolveJwksUrl(issuer: URL, explicitJwksUrl?: URL, fetcher
   return jwksUrl;
 }
 
-function unauthorized(response: Response, reason = "invalid_token", publicUrl?: URL): void {
+function unauthorized(response: Response, reason = "invalid_token", publicUrl?: URL, scopes: string[] = []): void {
   const metadataUrl = publicUrl
     ? new URL("/.well-known/oauth-protected-resource/mcp", publicUrl).toString()
     : undefined;
+  const scopeChallenge = scopes.length ? `, scope="${scopes.join(" ")}"` : "";
   response.setHeader("WWW-Authenticate", metadataUrl
-    ? `Bearer error="${reason}", resource_metadata="${metadataUrl}"`
-    : `Bearer error="${reason}"`);
+    ? `Bearer error="${reason}", resource_metadata="${metadataUrl}"${scopeChallenge}`
+    : `Bearer error="${reason}"${scopeChallenge}`);
   response.status(401).json({ error: "Unauthorized" });
 }
 
@@ -60,7 +61,7 @@ export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: Jwk
     const match = /^Bearer\s+(.+)$/i.exec(authorization);
     const supplied = match?.[1] ?? "";
     if (!supplied) {
-      unauthorized(response, "invalid_token", options.publicUrl);
+      unauthorized(response, "invalid_token", options.publicUrl, options.scopes);
       return;
     }
 
@@ -86,7 +87,7 @@ export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: Jwk
       }
       next();
     } catch {
-      unauthorized(response, "invalid_token", options.publicUrl);
+      unauthorized(response, "invalid_token", options.publicUrl, options.scopes);
     }
   };
 }
