@@ -24,24 +24,33 @@ The server exposes MCP Streamable HTTP at `/mcp` in stateless request/response m
 ## Authentication
 
 - `token`: static bearer token for private integrations and initial deployment.
-- `oauth`: validates signed OAuth access-token JWTs against the configured issuer and JWKS; checks issuer, audience, expiry and required scopes; publishes RFC 9728 Protected Resource Metadata.
+- `oauth`: validates signed OAuth access-token JWTs against the configured issuer and JWKS; checks issuer, audience, expiry and any explicitly configured required scopes; publishes RFC 9728 Protected Resource Metadata.
 - `none`: permitted only when the listener binds to loopback.
 
 This project is an OAuth protected resource, not an authorization server. The external provider must support Authorization Code + PKCE S256, refresh tokens, resource/audience binding, signed JWT access tokens, and client registration compatible with the intended MCP client (CIMD or DCR where required). Opaque-token introspection is not implemented.
 
+### WorkOS AuthKit setup
+
+WorkOS AuthKit is the configured authorization provider for this deployment.
+
+1. In the WorkOS Dashboard, open **Connect → Configuration**.
+2. Under **MCP Auth**, enable **Client ID Metadata Document (CIMD)** and save the change. DCR can remain enabled for backwards compatibility if the dashboard offers it.
+3. Under **MCP resource indicators**, choose **Edit MCP resources**.
+4. Add this exact resource indicator and save it: `https://194.163.133.147/mcp`.
+5. Once the server is reachable over trusted HTTPS, set this resource indicator as the default if the client may omit the `resource` parameter.
+6. Do not add a made-up `mcp` scope. WorkOS's documented AuthKit MCP flow binds the access token to the configured resource indicator through its `aud` claim. Its standard authorization-server metadata advertises OIDC scopes such as `openid`, `profile`, `email` and `offline_access`; this server therefore defaults to no additional required scope. Request `offline_access` when refresh tokens are needed.
+
+The WorkOS issuer for this staging environment is `https://stalwart-insight-17-staging.authkit.app`. Set `OAUTH_ISSUER_URL` to that exact issuer (without adding a trailing slash), and set both `MCP_PUBLIC_URL` and `OAUTH_AUDIENCE` to the exact resource indicator above.
+
 ### OAuth provider compatibility
-
-**Recommended reference provider: WorkOS AuthKit.** Its MCP integration documents CIMD, Authorization Code + PKCE, resource indicators mapped to the access-token audience, refresh tokens, and issuer identification. Enable CIMD, configure the exact `MCP_PUBLIC_URL` as a Resource Indicator, and define the required `mcp` scope. Request `offline_access` if refresh tokens are required.
-
-This is a provider recommendation, not a claim that a tenant has been configured or tested. The resource server remains provider-neutral.
 
 Run the discovery preflight:
 
 ```bash
-npm run check:oauth -- https://YOUR_AUTHKIT_ISSUER/ mcp
+npm run check:oauth -- https://YOUR_AUTHKIT_ISSUER/
 ```
 
-The checker validates issuer identity, HTTPS endpoints, JWKS availability, Authorization Code, PKCE S256, CIMD or DCR, and token endpoint authentication methods. It cannot verify dashboard configuration, consent, resource indicator settings, or the resulting access-token audience and scopes. Those require an interactive authorization test.
+The checker validates issuer identity, HTTPS endpoints, JWKS availability, Authorization Code, PKCE S256, CIMD or DCR, and token endpoint authentication methods. It cannot verify dashboard configuration, consent, resource indicator settings, or the resulting access-token audience. Those require an interactive authorization test.
 
 ### OAuth configuration
 
@@ -49,11 +58,11 @@ The checker validates issuer identity, HTTPS endpoints, JWKS availability, Autho
 - `OAUTH_ISSUER_URL`: exact HTTPS issuer identifier from the provider.
 - `OAUTH_AUDIENCE`: HTTPS resource identifier expected in the JWT audience claim.
 - `OAUTH_JWKS_URL`: optional explicit HTTPS JWKS URL; otherwise read from OIDC discovery.
-- `OAUTH_REQUIRED_SCOPES`: space- or comma-separated required scope tokens; defaults to `mcp`.
+- `OAUTH_REQUIRED_SCOPES`: optional space- or comma-separated required scope tokens; defaults to none. Configure only scopes actually issued by the provider.
 
 The discovery document issuer must exactly match `OAUTH_ISSUER_URL`; the discovered `jwks_uri` must use HTTPS. The first successful JWKS discovery is cached. Failed discovery returns 503.
 
-The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. Missing or invalid credentials receive a Bearer challenge referencing this endpoint. Configure the provider Resource Indicator to exactly match `MCP_PUBLIC_URL`; the issued access token must contain that value in `aud` and the configured scope in `scope` or `scp`.
+The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. Missing or invalid credentials receive a Bearer challenge referencing this endpoint. Configure the provider Resource Indicator to exactly match `MCP_PUBLIC_URL`; the issued access token must contain that value in `aud`. If required scopes are configured, the token must also contain them in `scope` or `scp`.
 
 ## CORS
 
@@ -111,9 +120,9 @@ Generate a token with `openssl rand -hex 32`.
 
 4. Install `systemd/vps-mcp.service`, reload systemd, enable and start the service. Verify `curl http://127.0.0.1:3000/healthz` and confirm unauthenticated POST requests to `/mcp` return 401.
 
-5. Configure DNS to point the chosen hostname at the VPS. Install Caddy and adapt `deploy/Caddyfile.example`. Permit inbound TCP 80/443 only; keep port 3000 closed to the public internet. Caddy obtains and renews TLS certificates automatically when DNS and firewall prerequisites are satisfied.
+5. Configure HTTPS for the public endpoint. For an IP-address URL, use a publicly trusted IP certificate with automated renewal and a deploy hook that reloads the reverse proxy after renewal. Do not assume a standard hostname-based Caddy example will issue an IP certificate automatically. Keep Node bound to loopback and allow inbound TCP 80/443 only; keep port 3000 closed publicly.
 
-6. Configure the OAuth provider and exact resource/audience values, then switch to OAuth mode. Validate metadata, successful authentication, invalid/expired tokens, wrong issuer/audience and insufficient scopes before registering the MCP client.
+6. Configure the OAuth provider and exact resource/audience values, then switch to OAuth mode. Validate metadata, successful authentication, invalid/expired tokens and wrong issuer/audience before registering the MCP client.
 
 7. Connect the intended MCP client and verify initialization, tool discovery, `system.health`, bounded filesystem access and a harmless command. Do not expose the service until all checks pass.
 
@@ -129,7 +138,7 @@ Generate a token with `openssl rand -hex 32`.
 | `OAUTH_ISSUER_URL` | unset | HTTPS OAuth/OIDC issuer, required for OAuth |
 | `OAUTH_AUDIENCE` | unset | HTTPS resource audience, required for OAuth |
 | `OAUTH_JWKS_URL` | OIDC discovery | Optional explicit HTTPS signing-key URL |
-| `OAUTH_REQUIRED_SCOPES` | `mcp` | Required scope tokens |
+| `OAUTH_REQUIRED_SCOPES` | empty | Optional required scope tokens |
 | `MCP_CORS_ORIGINS` | empty | Exact allowed browser origins |
 | `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Allowed filesystem roots |
 | `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
