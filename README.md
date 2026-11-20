@@ -1,6 +1,6 @@
 # vps-mcp
 
-An authenticated remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. The initial release provides system inspection, bounded filesystem access and synchronous/background command execution.
+An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access and synchronous/background command execution.
 
 ## Current capabilities
 
@@ -19,21 +19,55 @@ An authenticated remote Model Context Protocol (MCP) server for bootstrapping an
 
 The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at the MCP transport layer; background execution metadata and logs are persisted under `MCP_DATA_DIR`. Pass absolute paths to filesystem tools and use an allowed directory as the command working directory.
 
+## Authentication
+
+Three modes are available:
+
+- `token`: static bearer token for local development or private integrations. Keep the token secret. It is not a supported authentication method for a directly connected ChatGPT custom MCP server.
+- `oauth`: public MCP deployment mode. The server validates OAuth access-token JWTs against the configured issuer and JWKS, checks issuer, audience, expiry and required scopes, and publishes RFC 9728 Protected Resource Metadata.
+- `none`: permitted only when the Node listener binds to loopback. Never expose an unauthenticated listener publicly.
+
+### ChatGPT-compatible OAuth provider
+
+This repository implements the MCP **resource server** side of OAuth. The configured external authorization server remains responsible for user sign-in, consent, authorization-code exchange, PKCE, refresh-token issuance and OAuth client registration. This avoids inventing a password database or a home-grown authorization server inside the VPS management process.
+
+The identity provider must be configured to meet the MCP authorization and ChatGPT requirements:
+
+1. Authorization Code grant with PKCE using `S256`; do not enable implicit or client-credentials grants for this connection.
+2. Refresh tokens with rotation or equivalent secure refresh-token lifecycle, and offline access where the provider requires it.
+3. OAuth resource/audience binding for the exact MCP URL configured in `MCP_PUBLIC_URL`; issued access tokens must contain that audience.
+4. A signed JWT access token with a published JWKS endpoint. Opaque access tokens are not supported by this verifier.
+5. Client registration compatible with ChatGPT: Client ID Metadata Documents (CIMD), including public-client token exchange with `none` or `private_key_jwt`, or Dynamic Client Registration (DCR).
+6. The issuer metadata must advertise `code_challenge_methods_supported: ["S256"]` and the supported token endpoint authentication methods. Configure the provider's allowed redirect URIs according to the ChatGPT custom MCP connection's displayed callback URL.
+7. Issue the scope configured in `OAUTH_REQUIRED_SCOPES` (default: `mcp`) and preserve the MCP audience in the access token.
+
+The server publishes `GET /.well-known/oauth-protected-resource/mcp` with the resource URL, issuer and supported scopes. On missing or invalid credentials it responds with a Bearer challenge referencing that metadata document. The OAuth issuer's own RFC 8414/OpenID discovery document must advertise its authorization and token endpoints and the registration capabilities above.
+
+Do not set `MCP_AUTH_MODE=oauth` until the identity provider is configured and its issuer, audience and JWKS URL are known. The existing loopback token-auth deployment remains compatible and is not changed by this code update.
+
+### OAuth environment
+
+See `.env.example` for the complete list. Required values in OAuth mode:
+
+- `MCP_PUBLIC_URL`: canonical public MCP URL, including `/mcp`.
+- `OAUTH_ISSUER_URL`: exact issuer identifier from the identity provider.
+- `OAUTH_AUDIENCE`: expected audience claim, normally the exact MCP resource URL.
+- `OAUTH_JWKS_URL`: optional JWKS URL; defaults to `.well-known/jwks.json` relative to the issuer.
+- `OAUTH_REQUIRED_SCOPES`: space- or comma-separated required scopes.
+
+The Node listener should remain bound to `127.0.0.1`; Caddy or Nginx terminates public HTTPS and proxies to port 3000. Do not expose port 3000 directly.
+
 ## Security model
 
-- The default authentication mode requires an `Authorization: Bearer <token>` header.
-- `MCP_AUTH_TOKEN` must contain at least 32 characters when `MCP_AUTH_MODE=token`.
-- `MCP_AUTH_MODE=none` is supported only when the server binds to loopback. Use it only behind OpenAI Secure MCP Tunnel or another authenticated private transport; never expose an unauthenticated listener publicly.
-- The service should run as a dedicated, unprivileged Linux account.
+- Run as a dedicated, unprivileged Linux account.
 - Filesystem tools and command working directories are restricted to `MCP_ALLOWED_ROOTS`.
 - Commands run as the service account, not as root.
 - No Docker socket, SSH private key or host credential directory is mounted into the service.
-- The recommended deployment binds to `127.0.0.1` and uses Caddy or Nginx for HTTPS.
-- Do not expose port 3000 directly to the public internet.
+- Do not add the service account to the Docker group; Docker access is effectively root access.
+- OAuth mode validates signed JWTs on every MCP request and rejects invalid issuer, audience, expiry or missing scopes.
+- TLS is mandatory at the public reverse proxy. Keep the Node listener private on loopback.
 
-**Important:** A shell tool is powerful by design. A bearer token grants the holder the ability to run commands with the service account's permissions. Protect the token as a password, use TLS, keep the account unprivileged and do not add the account to the Docker group (Docker access is effectively root access).
-
-For ChatGPT, the recommended initial connection is OpenAI Secure MCP Tunnel: run this server on loopback with `MCP_AUTH_MODE=none`, then let `tunnel-client` forward requests over its authenticated outbound tunnel. The MCP listener remains private and has no public ingress. A directly public ChatGPT custom MCP endpoint requires OAuth 2.1; static API keys are not a supported ChatGPT custom-app authentication method.
+A shell tool is powerful by design. An authorized user can run commands with the service account's operating-system permissions. Keep the account unprivileged and the allowed filesystem roots narrow.
 
 ## Requirements
 
@@ -46,15 +80,13 @@ For ChatGPT, the recommended initial connection is OpenAI Secure MCP Tunnel: run
 
 ```bash
 cp .env.example .env
-# Set MCP_AUTH_TOKEN to a random secret of at least 32 characters.
+# Keep MCP_AUTH_MODE=token and set MCP_AUTH_TOKEN to a random secret.
 npm install
 npm run typecheck
 npm test
 npm run build
 npm start
 ```
-
-The default bind address is `127.0.0.1:3000`. Configure `MCP_ALLOWED_ROOTS` to include an existing directory before calling filesystem or terminal tools. For local development, the example uses token authentication; for a private Secure MCP Tunnel deployment, switch to `MCP_AUTH_MODE=none` while keeping the listener bound to loopback.
 
 Generate a token:
 
@@ -63,8 +95,6 @@ openssl rand -hex 32
 ```
 
 ## VPS deployment
-
-The service is intended to run directly on the host (not in a container), so terminal commands operate in the VPS environment.
 
 1. Create the service account and directories:
 
@@ -83,24 +113,9 @@ The service is intended to run directly on the host (not in a container), so ter
    sudo -u vps-mcp npm run build --prefix /opt/vps-mcp
    ```
 
-3. Create `/etc/vps-mcp/vps-mcp.env`:
+3. Create `/etc/vps-mcp/vps-mcp.env` with the existing token-mode settings for a private/local deployment. For a public deployment, configure all OAuth variables from `.env.example` and set `MCP_AUTH_MODE=oauth`. Do not switch the currently running server to OAuth until the issuer, audience and JWKS settings are valid.
 
-   ```bash
-   sudo sh -c 'umask 077; cat > /etc/vps-mcp/vps-mcp.env' <<'EOF'
-   MCP_HOST=127.0.0.1
-   MCP_PORT=3000
-   MCP_AUTH_MODE=none
-   MCP_ALLOWED_ROOTS=/srv,/var/lib/vps-mcp
-   MCP_DATA_DIR=/var/lib/vps-mcp
-   MCP_DEFAULT_COMMAND_TIMEOUT_MS=30000
-   MCP_MAX_COMMAND_TIMEOUT_MS=900000
-   MCP_MAX_OUTPUT_BYTES=1048576
-   EOF
-   sudo chown root:vps-mcp /etc/vps-mcp/vps-mcp.env
-   sudo chmod 0640 /etc/vps-mcp/vps-mcp.env
-   ```
-
-4. Install and start systemd service:
+4. Install and start the systemd service:
 
    ```bash
    sudo cp /opt/vps-mcp/systemd/vps-mcp.service /etc/systemd/system/
@@ -109,17 +124,9 @@ The service is intended to run directly on the host (not in a container), so ter
    sudo systemctl status vps-mcp
    ```
 
-5. For the recommended private ChatGPT connection, set `MCP_AUTH_MODE=none` in the environment file (the server enforces loopback-only binding), restart the service, and install OpenAI's `tunnel-client` on the VPS. Create a tunnel in Platform tunnel settings, then configure `tunnel-client` to forward to `http://127.0.0.1:3000/mcp`. Keep the tunnel runtime API key in the tunnel client's protected environment, not in this repository. Run `tunnel-client doctor` and keep `tunnel-client run` active. In ChatGPT, add a custom MCP server using **Connection: Tunnel** and **No authentication**. See the [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+5. Configure DNS for the public hostname and Caddy with `deploy/Caddyfile.example`. Caddy obtains and renews the TLS certificate automatically. Permit inbound TCP 80/443 and keep port 3000 closed to the public internet.
 
-   If you instead need a directly public MCP endpoint, use Caddy with `deploy/Caddyfile.example` and implement OAuth 2.1 before connecting it to ChatGPT. Do not use the static bearer-token mode as a substitute for ChatGPT OAuth.
-
-6. Check local health:
-
-   ```bash
-   curl http://127.0.0.1:3000/healthz
-   ```
-
-7. Test the authenticated MCP endpoint with an MCP client configured for the URL `https://mcp.example.com/mcp` and the bearer token. Do not put the token in shell history or commit it to Git.
+6. Once the OAuth provider is configured, verify the protected-resource metadata endpoint and test that unauthenticated MCP requests receive a `401` Bearer challenge containing its URL. Then complete the ChatGPT OAuth connection and verify that valid, expired, wrong-audience and insufficient-scope tokens behave correctly.
 
 ## Configuration
 
@@ -127,8 +134,13 @@ The service is intended to run directly on the host (not in a container), so ter
 |---|---|---|
 | `MCP_HOST` | `127.0.0.1` | Bind address |
 | `MCP_PORT` | `3000` | HTTP port |
-| `MCP_AUTH_MODE` | `token` | `token` or `none`; none requires loopback binding |
+| `MCP_AUTH_MODE` | `token` | `token`, `oauth` or loopback-only `none` |
 | `MCP_AUTH_TOKEN` | required in token mode | Static bearer token, minimum 32 characters |
+| `MCP_PUBLIC_URL` | unset | Canonical public MCP URL, required for OAuth |
+| `OAUTH_ISSUER_URL` | unset | OAuth/OIDC issuer URL, required for OAuth |
+| `OAUTH_AUDIENCE` | unset | Required JWT audience, required for OAuth |
+| `OAUTH_JWKS_URL` | issuer-relative default | Signing keys used to validate access tokens |
+| `OAUTH_REQUIRED_SCOPES` | `mcp` | Required space- or comma-separated scopes |
 | `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Comma-separated allowed filesystem roots |
 | `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
 | `MCP_MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP JSON request size |
@@ -136,12 +148,13 @@ The service is intended to run directly on the host (not in a container), so ter
 | `MCP_MAX_COMMAND_TIMEOUT_MS` | `900000` | Maximum synchronous command timeout |
 | `MCP_MAX_OUTPUT_BYTES` | `1048576` | Maximum synchronous command output |
 
-## Known v1 boundaries
+## Known boundaries
 
-- Authentication is a static bearer token; OAuth is not implemented.
-- The MCP transport is stateless. Background process metadata and logs persist, but active process supervision is not yet managed by systemd or a dedicated process supervisor.
-- Command execution is intentionally unprivileged. Privileged host administration requires a separately designed, narrowly scoped helper; unrestricted sudo must not be granted.
-- Repository registry, Git worktree orchestration, concurrency locks, backups and the management GUI are later milestones.
+- OAuth is delegated to an external authorization server; this project is the protected MCP resource server, not an identity provider.
+- Only signed JWT access tokens are supported. Opaque-token introspection is not implemented.
+- Active background process supervision is not yet managed by systemd or a dedicated process supervisor.
+- Privileged host administration requires a separately designed, narrowly scoped helper; unrestricted sudo must not be granted.
+- Repository registry, Git worktree orchestration, concurrency locks, backups and management GUI remain later milestones.
 - The server does not yet implement a Railway Sandbox MCP compatibility layer.
 
 ## Development checks

@@ -1,8 +1,8 @@
 {
   "name": "vps-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Authenticated remote MCP server for managing a self-hosted development VPS.",
+  "description": "OAuth-protected remote MCP server for managing a self-hosted development VPS.",
   "type": "module",
   "engines": { "node": ">=22.0.0" },
   "scripts": {
@@ -15,6 +15,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "express": "^5.2.1",
+    "jose": "^6.1.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {
