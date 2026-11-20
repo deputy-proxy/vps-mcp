@@ -108,8 +108,12 @@ describe("Streamable HTTP endpoint", () => {
     });
     expect(response.status).toBe(200);
     const payload = await response.text();
-    expect(payload).toContain('"healthy"');
-    expect(payload).toContain('"dataDirectoryWritable": true');
+    const dataLine = payload.split("\\n").find((line) => line.startsWith("data: "));
+    expect(dataLine).toBeDefined();
+    const message = JSON.parse(dataLine!.slice(6)) as { result: { content: Array<{ text: string }> } };
+    const health = JSON.parse(message.result.content[0]!.text) as { status: string; dataDirectoryWritable: boolean };
+    expect(health.status).toBe("healthy");
+    expect(health.dataDirectoryWritable).toBe(true);
   });
 
   it.each(["GET", "DELETE", "PATCH"])("%s is rejected for this stateless endpoint", async (method) => {
