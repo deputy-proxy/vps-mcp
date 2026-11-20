@@ -13,6 +13,9 @@ describe("hasRequiredScopes", () => {
   it("accepts the array-form scp claim", () => {
     expect(hasRequiredScopes({ scp: ["mcp", "read"] }, ["mcp"])).toBe(true);
   });
+  it("accepts a token when no additional scopes are required", () => {
+    expect(hasRequiredScopes({}, [])).toBe(true);
+  });
   it("rejects missing scopes and partial scope names", () => {
     expect(hasRequiredScopes({ scope: "mcp-read" }, ["mcp"])).toBe(false);
     expect(hasRequiredScopes({ scope: "mcp" }, ["mcp", "admin"])).toBe(false);
@@ -104,6 +107,10 @@ describe("OAuth authentication middleware", () => {
       { issuer: new URL(issuer), audience, scopes: requiredScopes, publicUrl },
       async () => { throw new Error("discovery unavailable"); },
     ), (_request, response) => response.status(200).json({ authenticated: true }));
+    app.get("/no-scopes-required", createOAuthAuthenticator(
+      { issuer: new URL(issuer), audience, scopes: [], publicUrl },
+      async () => validKeySet,
+    ), (_request, response) => response.status(200).json({ authenticated: true }));
 
     server = app.listen(0, "127.0.0.1");
     await new Promise<void>((resolve, reject) => {
@@ -128,6 +135,10 @@ describe("OAuth authentication middleware", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ authenticated: true });
   });
+  it("accepts a valid signed JWT with the correct issuer and audience when no scopes are required", async () => {
+    const response = await request("/no-scopes-required", await token({ scope: "" }));
+    expect(response.status).toBe(200);
+  });
   it("rejects a missing bearer token and advertises protected-resource metadata", async () => {
     const response = await request("/protected");
     expect(response.status).toBe(401);
@@ -136,6 +147,11 @@ describe("OAuth authentication middleware", () => {
       "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
     );
     expect(response.headers.get("www-authenticate")).toContain('scope="mcp vps:admin"');
+  });
+  it("does not advertise a scope challenge when no additional scope is required", async () => {
+    const response = await request("/no-scopes-required");
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).not.toContain("scope=");
   });
   it("rejects an expired JWT", async () => {
     const expired = await token({ expiration: Math.floor(Date.now() / 1000) - 30 });
