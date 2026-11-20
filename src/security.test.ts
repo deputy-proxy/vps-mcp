@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { hasRequiredScopes, resolveJwksUrl } from "./security.js";
+
+process.env.MCP_AUTH_TOKEN ??= "test-only-token-that-is-long-enough-for-vps-mcp";
+const { hasRequiredScopes, resolveJwksUrl } = await import("./security.js");
 
 describe("hasRequiredScopes", () => {
   it("accepts a scope string containing every required scope", () => {
