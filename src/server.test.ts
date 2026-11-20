@@ -141,6 +141,14 @@ describe("CORS policy", () => {
     expect(response.headers.get("vary")).toContain("Origin");
   });
 
+  it("rejects preflight requests that omit the requested method", async () => {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "OPTIONS",
+      headers: { origin: "https://client.example" },
+    });
+    expect(response.status).toBe(403);
+  });
+
   it.each([
     ["https://attacker.example", "POST", "authorization"],
     ["https://client.example", "DELETE", "authorization"],
