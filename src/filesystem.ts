@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { resolveAllowedPath, resolveAllowedDirectory } from "./paths.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -17,7 +18,7 @@ export async function writeFile(input: string, content: string): Promise<{ path:
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES}-byte write limit`);
   const resolved = await resolveAllowedPath(input, { allowMissingLeaf: true });
-  const temporary = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${crypto.randomUUID()}.tmp`);
+  const temporary = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${randomUUID()}.tmp`);
   await fs.writeFile(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
   await fs.rename(temporary, resolved);
   return { path: resolved, bytes };
