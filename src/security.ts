@@ -64,6 +64,7 @@ export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: Jwk
     const match = /^Bearer\s+(.+)$/i.exec(authorization);
     const supplied = match?.[1] ?? "";
     if (!supplied) {
+      console.warn("OAuth authentication rejected", { reason: "missing_bearer_token", method: request.method, path: request.path });
       unauthorized(response, "invalid_token", options.publicUrl, options.scopes);
       return;
     }
@@ -89,7 +90,9 @@ export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: Jwk
         return;
       }
       next();
-    } catch {
+    } catch (error) {
+      const reason = error instanceof Error ? error.name : "unknown_verification_error";
+      console.warn("OAuth authentication rejected", { reason, method: request.method, path: request.path });
       unauthorized(response, "invalid_token", options.publicUrl, options.scopes);
     }
   };
