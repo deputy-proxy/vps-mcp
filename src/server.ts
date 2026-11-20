@@ -107,7 +107,7 @@ export function createHttpServer() {
       console.info(JSON.stringify({
         event: "mcp_http_request",
         method: request.method,
-        path: request.path,
+        path: request.baseUrl + request.path,
         status: response.statusCode,
         durationMs: Math.round(durationMs * 100) / 100,
         rpcMethod: typeof body?.method === "string" ? body.method : undefined,
