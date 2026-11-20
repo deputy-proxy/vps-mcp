@@ -6,7 +6,7 @@ import { authenticate, verifyOAuthAccessToken } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
 const CORS_ALLOWED_METHODS = ["GET", "POST"];
-const CORS_ALLOWED_HEADERS = ["authorization", "content-type", "mcp-protocol-version"];
+const CORS_ALLOWED_HEADERS = ["accept", "authorization", "content-type", "mcp-protocol-version"];
 const CORS_EXPOSED_HEADERS = ["www-authenticate", "mcp-protocol-version"];
 
 function protectedResourceMetadata() {
