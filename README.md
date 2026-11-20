@@ -57,16 +57,16 @@ Browser access is disabled by default. `MCP_CORS_ORIGINS` accepts comma-separate
 ## Requirements
 
 - Ubuntu 24.04 LTS or another supported Linux distribution
-- Node.js 22 or newer installed at `/usr/bin/node`
-- npm, systemd, curl, tar and OpenSSL
-- Dedicated service account (created by the installer)
+- Node.js 22 or newer
+- npm
+- Dedicated service account
 
 ## Local development
 
 ```bash
 cp .env.example .env
 # Keep MCP_AUTH_MODE=token and set a random MCP_AUTH_TOKEN of at least 32 characters.
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run build
@@ -74,39 +74,34 @@ npm run build
 
 Generate a token with `openssl rand -hex 32`.
 
-## VPS installation
+## VPS deployment
 
-Run the installer from the checked-out repository on Ubuntu 24.04:
+1. Create the service account and directories:
 
-```bash
-sudo ./deploy/install.sh
-```
+   ```bash
+   sudo useradd --system --create-home --home-dir /var/lib/vps-mcp --shell /usr/sbin/nologin vps-mcp
+   sudo install -d -o vps-mcp -g vps-mcp -m 0750 /opt/vps-mcp /srv /var/lib/vps-mcp
+   sudo install -d -o root -g vps-mcp -m 0750 /etc/vps-mcp
+   ```
 
-The installer:
+2. Clone the repository, install locked dependencies and build:
 
-1. Verifies root privileges, systemd and Node.js 22+.
-2. Creates the unprivileged `vps-mcp` account and required directories.
-3. Creates a root-owned, service-readable environment file with a cryptographically random bearer token if one does not already exist. It never prints the token.
-4. Copies the application, installs dependencies and builds the TypeScript output as the service account.
-5. Installs and enables the systemd service.
-6. Verifies the local health endpoint and confirms unauthenticated MCP requests receive HTTP 401.
+   ```bash
+   sudo git clone https://github.com/deputy-proxy/vps-mcp.git /opt/vps-mcp
+   sudo chown -R vps-mcp:vps-mcp /opt/vps-mcp
+   sudo -u vps-mcp npm ci --prefix /opt/vps-mcp
+   sudo -u vps-mcp npm run build --prefix /opt/vps-mcp
+   ```
 
-The installer does not change firewall rules, install a public reverse proxy, configure DNS or switch authentication to OAuth. It is safe to rerun for application updates; an existing environment file is preserved.
+3. Create `/etc/vps-mcp/vps-mcp.env` with mode 0640, owned by root:vps-mcp. Keep token mode until a real OAuth provider and public endpoint are configured. Never commit secrets.
 
-Environment file: `/etc/vps-mcp/vps-mcp.env` (mode 0640, owner root:vps-mcp). Service: `vps-mcp.service`. Application: `/opt/vps-mcp`. Data: `/var/lib/vps-mcp`.
+4. Install `systemd/vps-mcp.service`, reload systemd, enable and start the service. Verify `curl http://127.0.0.1:3000/healthz` and confirm unauthenticated POST requests to `/mcp` return 401.
 
-### Public endpoint setup
+5. Configure DNS to point the chosen hostname at the VPS. Install Caddy and adapt `deploy/Caddyfile.example`. Permit inbound TCP 80/443 only; keep port 3000 closed to the public internet. Caddy obtains and renews TLS certificates automatically when DNS and firewall prerequisites are satisfied.
 
-1. Choose a hostname and point its DNS A/AAAA record to the VPS.
-2. Install Caddy and adapt `deploy/Caddyfile.example` to the hostname.
-3. Permit inbound TCP 80 and 443. Keep port 3000 closed to the public internet.
-4. Verify HTTPS and the public `/healthz` endpoint.
-5. Configure an OAuth provider that supports Authorization Code + PKCE S256, refresh tokens, JWT access tokens, resource/audience binding and the client registration method required by the MCP client.
-6. Set `MCP_AUTH_MODE=oauth`, `MCP_PUBLIC_URL`, `OAUTH_ISSUER_URL`, `OAUTH_AUDIENCE` and optional `OAUTH_JWKS_URL` in the protected environment file. Restart the service.
-7. Verify `/.well-known/oauth-protected-resource/mcp`, valid authentication, invalid/expired tokens, wrong issuer/audience and insufficient scopes.
-8. Register the remote MCP endpoint in the intended client. Verify initialization, tool discovery, `system.health`, bounded filesystem access and a harmless command.
+6. Configure the OAuth provider and exact resource/audience values, then switch to OAuth mode. Validate metadata, successful authentication, invalid/expired tokens, wrong issuer/audience and insufficient scopes before registering the MCP client.
 
-Do not expose the MCP endpoint publicly in static-token mode unless the integration's token handling and threat model explicitly require it. Prefer OAuth for a public remote endpoint.
+7. Connect the intended MCP client and verify initialization, tool discovery, `system.health`, bounded filesystem access and a harmless command. Do not expose the service until all checks pass.
 
 ## Configuration
 
@@ -115,7 +110,7 @@ Do not expose the MCP endpoint publicly in static-token mode unless the integrat
 | `MCP_HOST` | `127.0.0.1` | Bind address |
 | `MCP_PORT` | `3000` | HTTP port |
 | `MCP_AUTH_MODE` | `token` | `token`, `oauth` or loopback-only `none` |
-| `MCP_AUTH_TOKEN` | generated by installer | Static bearer token, minimum 32 characters |
+| `MCP_AUTH_TOKEN` | required in token mode | Static bearer token, minimum 32 characters |
 | `MCP_PUBLIC_URL` | unset | Canonical HTTPS URL ending in `/mcp`, required for OAuth |
 | `OAUTH_ISSUER_URL` | unset | HTTPS OAuth/OIDC issuer, required for OAuth |
 | `OAUTH_AUDIENCE` | unset | HTTPS resource audience, required for OAuth |
@@ -140,7 +135,7 @@ Do not expose the MCP endpoint publicly in static-token mode unless the integrat
 ## Development checks
 
 ```bash
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run build

@@ -52,6 +52,18 @@ else
   grep -q '^MCP_AUTH_TOKEN=' "$ENV_FILE" || fail "$ENV_FILE exists but has no MCP_AUTH_TOKEN."
 fi
 
+bind_host="$(sed -n 's/^MCP_HOST=//p' "$ENV_FILE" | tail -n 1)"
+port="$(sed -n 's/^MCP_PORT=//p' "$ENV_FILE" | tail -n 1)"
+auth_mode="$(sed -n 's/^MCP_AUTH_MODE=//p' "$ENV_FILE" | tail -n 1)"
+auth_token="$(sed -n 's/^MCP_AUTH_TOKEN=//p' "$ENV_FILE" | tail -n 1)"
+[[ "$bind_host" == "127.0.0.1" ]] || fail "MCP_HOST must be 127.0.0.1 for this reverse-proxy deployment."
+[[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || fail "MCP_PORT must be between 1 and 65535."
+[[ "$auth_mode" == "token" || "$auth_mode" == "oauth" ]] || fail "Public reverse-proxy deployments require token or oauth authentication; none is not permitted."
+if [[ "$auth_mode" == "token" && ${#auth_token} -lt 32 ]]; then
+  fail "MCP_AUTH_TOKEN must contain at least 32 characters."
+fi
+unset auth_token
+
 log "Copying application source into $APP_DIR."
 tar --exclude=.git --exclude=node_modules --exclude=dist -cf - -C "$SOURCE_DIR" . | tar -xf - -C "$APP_DIR"
 chown -R vps-mcp:vps-mcp "$APP_DIR" "$DATA_DIR"
@@ -69,7 +81,7 @@ systemctl restart "$SERVICE_NAME"
 log "Waiting for the local health endpoint."
 healthy=false
 for _ in $(seq 1 20); do
-  if curl --fail --silent http://127.0.0.1:3000/healthz >/dev/null; then
+  if curl --fail --silent http://127.0.0.1:${port}/healthz >/dev/null; then
     healthy=true
     break
   fi
@@ -85,7 +97,7 @@ fi
 auth_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  http://127.0.0.1:3000/mcp)"
+  http://127.0.0.1:${port}/mcp)"
 
 [[ "$auth_status" == "401" ]] || fail "Expected unauthenticated MCP requests to return 401; received HTTP $auth_status."
 
