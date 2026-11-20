@@ -42,8 +42,9 @@ async function proxyAuthorizationServerMetadata(response: express.Response): Pro
   }
 }
 
-export function createHttpServer() {
+export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof verifyOAuthAccessToken } = {}) {
   const app = createMcpExpressApp({ host: config.host });
+  const verifyToken = dependencies.verifyOAuthAccessToken ?? verifyOAuthAccessToken;
 
   app.use((request, response, next) => {
     const origin = request.header("origin");
@@ -123,7 +124,7 @@ export function createHttpServer() {
 
   app.post("/mcp", async (request, response) => {
     const authorizeToolCall = config.authMode === "oauth"
-      ? () => verifyOAuthAccessToken(request.header("authorization"))
+      ? () => verifyToken(request.header("authorization"))
       : undefined;
     const server = createMcpServer(authorizeToolCall);
     const transport = new StreamableHTTPServerTransport({});
