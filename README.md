@@ -17,7 +17,17 @@ An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping 
 | `filesystem.read` | Read a UTF-8 file (maximum 2 MiB) |
 | `filesystem.write` | Atomically create or replace a UTF-8 file (maximum 2 MiB) |
 
-The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at the MCP transport layer; background execution metadata and logs are persisted under `MCP_DATA_DIR`.
+## MCP transport
+
+The server exposes the MCP Streamable HTTP transport at `/mcp` and deliberately runs in **stateless mode**:
+
+- MCP requests are sent using `POST`.
+- The server does not issue or require `Mcp-Session-Id` headers.
+- `GET` and `DELETE` return HTTP 405 with `Allow: POST`; server-initiated SSE streams and session termination are not offered.
+- Each POST is handled by a fresh MCP server and transport instance. Do not rely on in-memory MCP session state between requests.
+- Background command metadata and logs are persisted separately under `MCP_DATA_DIR`.
+
+This is suitable for request/response tools and horizontally simple deployments. If future features require server-initiated notifications, resumable streams or per-client MCP state, introduce stateful sessions with bounded capacity, expiry and a deliberate persistence strategy rather than quietly adding an in-memory session map.
 
 ## Authentication
 
