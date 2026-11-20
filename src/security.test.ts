@@ -42,6 +42,18 @@ describe("resolveJwksUrl", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
+  it("preserves an origin-only issuer without adding a trailing slash", async () => {
+    const exactIssuer = "https://identity.example.com";
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      issuer: exactIssuer, jwks_uri: "https://identity.example.com/oauth2/jwks",
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    await expect(resolveJwksUrl(exactIssuer, undefined, fetcher as typeof fetch))
+      .resolves.toEqual(new URL("https://identity.example.com/oauth2/jwks"));
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://identity.example.com/.well-known/openid-configuration"),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
   it("rejects a discovery document for a different issuer", async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       issuer: "https://attacker.example.com", jwks_uri: "https://attacker.example.com/jwks",
@@ -97,11 +109,11 @@ describe("OAuth authentication middleware", () => {
 
     const app = express();
     app.get("/protected", createOAuthAuthenticator(
-      { issuer: new URL(issuer), audience, scopes: requiredScopes, publicUrl },
+      { issuer, audience, scopes: requiredScopes, publicUrl },
       async () => validKeySet,
     ), (_request, response) => response.status(200).json({ authenticated: true }));
     app.get("/unavailable", createOAuthAuthenticator(
-      { issuer: new URL(issuer), audience, scopes: requiredScopes, publicUrl },
+      { issuer, audience, scopes: requiredScopes, publicUrl },
       async () => { throw new Error("discovery unavailable"); },
     ), (_request, response) => response.status(200).json({ authenticated: true }));
 

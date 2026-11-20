@@ -12,7 +12,9 @@ const CORS_EXPOSED_HEADERS = ["www-authenticate", "mcp-protocol-version"];
 function protectedResourceMetadata() {
   return {
     resource: config.publicUrl!.toString(),
-    authorization_servers: [config.oauthIssuerUrl!.toString()],
+    // URL#toString() adds a trailing slash to origin-only URLs. OAuth issuer
+    // identifiers are exact strings, so publish the original configured value.
+    authorization_servers: [config.oauthIssuer!],
     bearer_methods_supported: ["header"],
     scopes_supported: config.oauthScopes,
   };
