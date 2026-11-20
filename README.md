@@ -40,7 +40,7 @@ WorkOS AuthKit is the configured authorization provider for this deployment.
 5. Once the server is reachable over trusted HTTPS, set this resource indicator as the default if the client may omit the `resource` parameter.
 6. Do not add a made-up `mcp` scope. WorkOS's documented AuthKit MCP flow binds the access token to the configured resource indicator through its `aud` claim. Its standard authorization-server metadata advertises OIDC scopes such as `openid`, `profile`, `email` and `offline_access`; this server therefore defaults to no additional required scope. Request `offline_access` when refresh tokens are needed.
 
-The WorkOS issuer for this staging environment is `https://stalwart-insight-17-staging.authkit.app`. Set `OAUTH_ISSUER_URL` to that exact issuer (with the trailing slash as returned by discovery), and set both `MCP_PUBLIC_URL` and `OAUTH_AUDIENCE` to the exact resource indicator above.
+The WorkOS issuer for this staging environment is `https://stalwart-insight-17-staging.authkit.app`. Set `OAUTH_ISSUER_URL` to that exact issuer (without adding a trailing slash), and set both `MCP_PUBLIC_URL` and `OAUTH_AUDIENCE` to the exact resource indicator above.
 
 ### OAuth provider compatibility
 
