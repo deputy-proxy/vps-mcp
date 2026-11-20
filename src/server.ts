@@ -2,7 +2,7 @@ import express from "express";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config } from "./config.js";
-import { authenticate, verifyOAuthAccessToken } from "./security.js";
+import { authenticate } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
 const CORS_ALLOWED_METHODS = ["GET", "POST"];
@@ -44,9 +44,9 @@ async function proxyAuthorizationServerMetadata(response: express.Response): Pro
   }
 }
 
-export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof verifyOAuthAccessToken } = {}) {
+export function createHttpServer(dependencies: { authenticateRequest?: typeof authenticate } = {}) {
   const app = createMcpExpressApp({ host: config.host });
-  const verifyToken = dependencies.verifyOAuthAccessToken ?? verifyOAuthAccessToken;
+  const authenticateRequest = dependencies.authenticateRequest ?? authenticate;
 
   app.use((request, response, next) => {
     const origin = request.header("origin");
@@ -135,22 +135,18 @@ export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof
     next();
   });
 
-  // Static-token mode remains server-protected. OAuth mode allows MCP initialization
-  // and tools/list; each tool advertises OAuth and validates its bearer token.
-  if (config.authMode !== "oauth") {
-    app.use("/mcp", (request, response, next) => {
-      void authenticate(request, response, next).catch((error: unknown) => {
-        console.error("Authentication middleware failed", error);
-        if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
-      });
+  // Authenticate every MCP HTTP request, including initialize and tools/list.
+  // OAuth clients discover the authorization server from the HTTP 401 challenge
+  // and its RFC 9728 resource_metadata parameter before retrying with a token.
+  app.use("/mcp", (request, response, next) => {
+    void authenticateRequest(request, response, next).catch((error: unknown) => {
+      console.error("Authentication middleware failed", error);
+      if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
     });
-  }
+  });
 
   app.post("/mcp", async (request, response) => {
-    const authorizeToolCall = config.authMode === "oauth"
-      ? () => verifyToken(request.header("authorization"))
-      : undefined;
-    const server = createMcpServer(authorizeToolCall);
+    const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({});
     response.on("close", () => { void transport.close(); });
 
