@@ -21,8 +21,9 @@ The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at
 
 ## Security model
 
-- All MCP requests require an `Authorization: Bearer <token>` header.
-- `MCP_AUTH_TOKEN` must contain at least 32 characters.
+- The default authentication mode requires an `Authorization: Bearer <token>` header.
+- `MCP_AUTH_TOKEN` must contain at least 32 characters when `MCP_AUTH_MODE=token`.
+- `MCP_AUTH_MODE=none` is supported only when the server binds to loopback. Use it only behind OpenAI Secure MCP Tunnel or another authenticated private transport; never expose an unauthenticated listener publicly.
 - The service should run as a dedicated, unprivileged Linux account.
 - Filesystem tools and command working directories are restricted to `MCP_ALLOWED_ROOTS`.
 - Commands run as the service account, not as root.
@@ -32,7 +33,7 @@ The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at
 
 **Important:** A shell tool is powerful by design. A bearer token grants the holder the ability to run commands with the service account's permissions. Protect the token as a password, use TLS, keep the account unprivileged and do not add the account to the Docker group (Docker access is effectively root access).
 
-The first version uses a static bearer token, not OAuth. Before connecting it to a client that requires OAuth-based MCP authorization, add and validate an OAuth authorization server/resource-server flow rather than weakening authentication.
+For ChatGPT, the recommended initial connection is OpenAI Secure MCP Tunnel: run this server on loopback with `MCP_AUTH_MODE=none`, then let `tunnel-client` forward requests over its authenticated outbound tunnel. The MCP listener remains private and has no public ingress. A directly public ChatGPT custom MCP endpoint requires OAuth 2.1; static API keys are not a supported ChatGPT custom-app authentication method.
 
 ## Requirements
 
@@ -109,7 +110,9 @@ The service is intended to run directly on the host (not in a container), so ter
    sudo systemctl status vps-mcp
    ```
 
-5. Configure Caddy with `deploy/Caddyfile.example`, replacing `mcp.example.com` with a DNS name pointing to the VPS. Permit inbound HTTPS (443) and SSH only; keep port 3000 bound to localhost.
+5. For the recommended private ChatGPT connection, set `MCP_AUTH_MODE=none` in the environment file (the server enforces loopback-only binding), restart the service, and install OpenAI's `tunnel-client` on the VPS. Create a tunnel in Platform tunnel settings, then configure `tunnel-client` to forward to `http://127.0.0.1:3000/mcp`. Keep the tunnel runtime API key in the tunnel client's protected environment, not in this repository. Run `tunnel-client doctor` and keep `tunnel-client run` active. In ChatGPT, add a custom MCP server using **Connection: Tunnel** and **No authentication**. See the [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+
+   If you instead need a directly public MCP endpoint, use Caddy with `deploy/Caddyfile.example` and implement OAuth 2.1 before connecting it to ChatGPT. Do not use the static bearer-token mode as a substitute for ChatGPT OAuth.
 
 6. Check local health:
 
@@ -125,7 +128,8 @@ The service is intended to run directly on the host (not in a container), so ter
 |---|---|---|
 | `MCP_HOST` | `127.0.0.1` | Bind address |
 | `MCP_PORT` | `3000` | HTTP port |
-| `MCP_AUTH_TOKEN` | required | Static bearer token, minimum 32 characters |
+| `MCP_AUTH_MODE` | `token` | `token` or `none`; none requires loopback binding |
+| `MCP_AUTH_TOKEN` | required in token mode | Static bearer token, minimum 32 characters |
 | `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Comma-separated allowed filesystem roots |
 | `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
 | `MCP_MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP JSON request size |
