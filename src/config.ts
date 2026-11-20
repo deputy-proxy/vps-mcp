@@ -26,9 +26,8 @@ const publicUrl = parsePublicMcpUrl(process.env.MCP_PUBLIC_URL, authMode === "oa
 const oauthIssuerUrl = parseHttpsUrl("OAUTH_ISSUER_URL", process.env.OAUTH_ISSUER_URL, authMode === "oauth");
 const oauthJwksUrl = parseHttpsUrl("OAUTH_JWKS_URL", process.env.OAUTH_JWKS_URL);
 const oauthAudience = parseOAuthAudience(process.env.OAUTH_AUDIENCE, authMode === "oauth");
-const oauthScopes = (process.env.OAUTH_REQUIRED_SCOPES ?? "mcp").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
-if (authMode === "oauth" && oauthScopes.length === 0) throw new Error("OAUTH_REQUIRED_SCOPES must contain at least one scope");
-if (oauthScopes.some((scope) => /[\s,]/.test(scope))) throw new Error("OAUTH_REQUIRED_SCOPES entries must be individual scope tokens");
+const oauthScopes = (process.env.OAUTH_REQUIRED_SCOPES ?? "").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
+if (oauthScopes.some((scope) => /[\\s,]/.test(scope))) throw new Error("OAUTH_REQUIRED_SCOPES entries must be individual scope tokens");
 
 const corsOrigins = parseCorsOrigins(process.env.MCP_CORS_ORIGINS);
 
