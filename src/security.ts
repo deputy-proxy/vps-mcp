@@ -3,6 +3,11 @@ import type { Request, Response, NextFunction } from "express";
 import { config } from "./config.js";
 
 export function authenticate(request: Request, response: Response, next: NextFunction): void {
+  if (config.authMode === "none") {
+    next();
+    return;
+  }
+
   const authorization = request.header("authorization") ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
   const supplied = match?.[1] ?? "";
