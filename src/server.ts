@@ -5,17 +5,49 @@ import { config } from "./config.js";
 import { authenticate } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
+function protectedResourceMetadata() {
+  return {
+    resource: config.publicUrl!.toString(),
+    authorization_servers: [config.oauthIssuerUrl!.toString().replace(/\/$/, "")],
+    bearer_methods_supported: ["header"],
+    scopes_supported: config.oauthScopes,
+  };
+}
+
 export function createHttpServer() {
   const app = createMcpExpressApp({ host: config.host });
+
+  // ChatGPT's browser-based MCP client needs CORS preflight and access to the
+  // protocol/authentication response headers. Bearer tokens are never cookies.
   app.use((request, response, next) => {
-    if (request.path === "/healthz" && request.method === "GET") return next();
-    authenticate(request, response, next);
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-Id");
+    response.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate, Mcp-Protocol-Version");
+    if (request.method === "OPTIONS") {
+      response.status(204).end();
+      return;
+    }
+    next();
   });
-  app.use(express.json({ limit: config.maxRequestBytes }));
 
   app.get("/healthz", (_request, response) => {
     response.status(200).json({ status: "ok", service: "vps-mcp" });
   });
+
+  if (config.authMode === "oauth") {
+    app.get("/.well-known/oauth-protected-resource/mcp", (_request, response) => {
+      response.status(200).json(protectedResourceMetadata());
+    });
+  }
+
+  app.use("/mcp", (request, response, next) => {
+    void authenticate(request, response, next).catch((error: unknown) => {
+      console.error("Authentication middleware failed", error);
+      if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
+    });
+  });
+  app.use(express.json({ limit: config.maxRequestBytes }));
 
   app.post("/mcp", async (request, response) => {
     const server = createMcpServer();
