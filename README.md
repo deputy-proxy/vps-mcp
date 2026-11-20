@@ -29,6 +29,20 @@ The server exposes MCP Streamable HTTP at `/mcp` in stateless request/response m
 
 This project is an OAuth protected resource, not an authorization server. The external provider must support Authorization Code + PKCE S256, refresh tokens, resource/audience binding, signed JWT access tokens, and client registration compatible with the intended MCP client (CIMD or DCR where required). Opaque-token introspection is not implemented.
 
+### OAuth provider compatibility
+
+**Recommended reference provider: WorkOS AuthKit.** Its MCP integration documents CIMD, Authorization Code + PKCE, resource indicators mapped to the access-token audience, refresh tokens, and issuer identification. Enable CIMD, configure the exact `MCP_PUBLIC_URL` as a Resource Indicator, and define the required `mcp` scope. Request `offline_access` if refresh tokens are required.
+
+This is a provider recommendation, not a claim that a tenant has been configured or tested. The resource server remains provider-neutral.
+
+Run the discovery preflight:
+
+```bash
+npm run check:oauth -- https://YOUR_AUTHKIT_ISSUER/ mcp
+```
+
+The checker validates issuer identity, HTTPS endpoints, JWKS availability, Authorization Code, PKCE S256, CIMD or DCR, and token endpoint authentication methods. It cannot verify dashboard configuration, consent, resource indicator settings, or the resulting access-token audience and scopes. Those require an interactive authorization test.
+
 ### OAuth configuration
 
 - `MCP_PUBLIC_URL`: canonical HTTPS MCP endpoint, exactly `https://host/mcp`.
@@ -39,7 +53,7 @@ This project is an OAuth protected resource, not an authorization server. The ex
 
 The discovery document issuer must exactly match `OAUTH_ISSUER_URL`; the discovered `jwks_uri` must use HTTPS. The first successful JWKS discovery is cached. Failed discovery returns 503.
 
-The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. Missing or invalid credentials receive a Bearer challenge referencing this endpoint.
+The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. Missing or invalid credentials receive a Bearer challenge referencing this endpoint. Configure the provider Resource Indicator to exactly match `MCP_PUBLIC_URL`; the issued access token must contain that value in `aud` and the configured scope in `scope` or `scp`.
 
 ## CORS
 
