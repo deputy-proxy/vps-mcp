@@ -23,7 +23,8 @@ if (authMode === "none" && !["127.0.0.1", "localhost", "::1"].includes(host)) {
 }
 
 const publicUrl = parsePublicMcpUrl(process.env.MCP_PUBLIC_URL, authMode === "oauth");
-const oauthIssuerUrl = parseHttpsUrl("OAUTH_ISSUER_URL", process.env.OAUTH_ISSUER_URL, authMode === "oauth");
+const oauthIssuer = process.env.OAUTH_ISSUER_URL;
+const oauthIssuerUrl = parseHttpsUrl("OAUTH_ISSUER_URL", oauthIssuer, authMode === "oauth");
 const oauthJwksUrl = parseHttpsUrl("OAUTH_JWKS_URL", process.env.OAUTH_JWKS_URL);
 const oauthAudience = parseOAuthAudience(process.env.OAUTH_AUDIENCE, authMode === "oauth");
 const oauthScopes = (process.env.OAUTH_REQUIRED_SCOPES ?? "").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
@@ -41,6 +42,7 @@ export const config = {
   authMode,
   authToken: token,
   publicUrl,
+  oauthIssuer,
   oauthIssuerUrl,
   oauthJwksUrl,
   oauthAudience,
