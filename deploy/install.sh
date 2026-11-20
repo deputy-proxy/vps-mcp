@@ -102,5 +102,5 @@ auth_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
 [[ "$auth_status" == "401" ]] || fail "Expected unauthenticated MCP requests to return 401; received HTTP $auth_status."
 
 log "Installation complete. Health check passed and unauthenticated MCP access is rejected."
-log "The service listens on 127.0.0.1:3000. Do not open port 3000 publicly."
+log "The service listens on 127.0.0.1:$port. Do not open this port publicly."
 log "Next: configure DNS, TLS reverse proxy and an OAuth provider before public client access."
