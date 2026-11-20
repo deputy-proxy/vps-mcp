@@ -6,9 +6,8 @@ import { authenticate } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
 const CORS_ALLOWED_METHODS = ["POST"];
-const CORS_ALLOWED_HEADERS = ["Authorization", "Content-Type", "Mcp-Protocol-Version"];
-const CORS_ALLOWED_HEADER_SET = new Set(CORS_ALLOWED_HEADERS.map((header) => header.toLowerCase()));
-const CORS_EXPOSED_HEADERS = ["WWW-Authenticate", "Mcp-Protocol-Version"];
+const CORS_ALLOWED_HEADERS = ["authorization", "content-type", "mcp-protocol-version"];
+const CORS_EXPOSED_HEADERS = ["www-authenticate", "mcp-protocol-version"];
 
 function protectedResourceMetadata() {
   return {
@@ -38,8 +37,8 @@ export function createHttpServer() {
       const requestedHeaders = (request.header("access-control-request-headers") ?? "")
         .split(",").map((header) => header.trim().toLowerCase()).filter(Boolean);
       const originAllowed = Boolean(origin && config.corsOrigins.includes(origin));
-      const methodAllowed = Boolean(requestedMethod && CORS_ALLOWED_METHODS.includes(requestedMethod));
-      const headersAllowed = requestedHeaders.every((header) => CORS_ALLOWED_HEADER_SET.has(header));
+      const methodAllowed = !requestedMethod || CORS_ALLOWED_METHODS.includes(requestedMethod);
+      const headersAllowed = requestedHeaders.every((header) => CORS_ALLOWED_HEADERS.includes(header));
 
       if (!originAllowed || !methodAllowed || !headersAllowed) {
         response.status(403).json({ error: "CORS preflight rejected" });
