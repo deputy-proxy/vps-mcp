@@ -93,8 +93,43 @@ describe("Streamable HTTP endpoint", () => {
     });
     expect(response.status).toBe(200);
     const payload = await response.text();
-    expect(payload).toContain('"system.health"');
-    expect(payload).toContain('"terminal.execute"');
+    const dataLine = payload.split("\n").find((line) => line.startsWith("data: "));
+    expect(dataLine).toBeDefined();
+    const message = JSON.parse(dataLine!.slice(6)) as {
+      result: { tools: Array<{ name: string; annotations?: Record<string, unknown> }> };
+    };
+    const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
+    expect(tools.size).toBe(10);
+
+    for (const name of [
+      "system.health",
+      "system.info",
+      "terminal.status",
+      "terminal.logs",
+      "filesystem.list",
+      "filesystem.read",
+    ]) {
+      expect(tools.get(name)?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
+    }
+
+    for (const name of [
+      "terminal.execute",
+      "terminal.start",
+      "terminal.cancel",
+      "filesystem.write",
+    ]) {
+      expect(tools.get(name)?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
+    }
     expect(response.headers.get("mcp-session-id")).toBeNull();
   });
 
