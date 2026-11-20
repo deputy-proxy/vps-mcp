@@ -1,5 +1,6 @@
 import os from "node:os";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { config } from "./config.js";
@@ -31,7 +32,7 @@ export function createMcpServer(): McpServer {
     inputSchema: {},
   }, async () => safely(async () => {
     await fs.mkdir(config.dataDir, { recursive: true });
-    await fs.access(config.dataDir, fs.constants.R_OK | fs.constants.W_OK);
+    await fs.access(config.dataDir, constants.R_OK | constants.W_OK);
     return { status: "healthy", service: "vps-mcp", version: "0.1.0", uptimeSeconds: Math.floor(process.uptime()), dataDirectoryWritable: true, allowedRoots: config.allowedRoots };
   }));
 
