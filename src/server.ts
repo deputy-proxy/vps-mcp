@@ -2,7 +2,7 @@ import express from "express";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config } from "./config.js";
-import { authenticate, verifyOAuthAccessToken } from "./security.js";
+import { authenticate } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
 const CORS_ALLOWED_METHODS = ["POST"];
@@ -12,6 +12,8 @@ const CORS_EXPOSED_HEADERS = ["www-authenticate", "mcp-protocol-version"];
 function protectedResourceMetadata() {
   return {
     resource: config.publicUrl!.toString(),
+    // URL#toString() adds a trailing slash to origin-only URLs. OAuth issuer
+    // identifiers are exact strings, so publish the original configured value.
     authorization_servers: [config.oauthIssuer!],
     bearer_methods_supported: ["header"],
     scopes_supported: config.oauthScopes,
@@ -42,9 +44,8 @@ async function proxyAuthorizationServerMetadata(response: express.Response): Pro
   }
 }
 
-export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof verifyOAuthAccessToken } = {}) {
+export function createHttpServer() {
   const app = createMcpExpressApp({ host: config.host });
-  const verifyToken = dependencies.verifyOAuthAccessToken ?? verifyOAuthAccessToken;
 
   app.use((request, response, next) => {
     const origin = request.header("origin");
@@ -80,12 +81,17 @@ export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof
   });
 
   if (config.authMode === "oauth") {
+    // RFC 9728 discovery for an MCP endpoint at /mcp permits both the
+    // endpoint-specific well-known URI and the origin-level URI.
     app.get("/.well-known/oauth-protected-resource/mcp", (_request, response) => {
       response.status(200).json(protectedResourceMetadata());
     });
     app.get("/.well-known/oauth-protected-resource", (_request, response) => {
       response.status(200).json(protectedResourceMetadata());
     });
+
+    // Compatibility for clients that look for authorization-server metadata
+    // on the MCP server origin rather than following authorization_servers.
     app.get("/.well-known/oauth-authorization-server", (_request, response) => {
       void proxyAuthorizationServerMetadata(response);
     });
@@ -110,23 +116,15 @@ export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof
     next();
   });
 
-  // Legacy static-token mode remains server-protected. OAuth mode deliberately
-  // allows MCP initialization and tools/list; authorization is enforced inside
-  // every tool handler so ChatGPT can discover the OAuth security declarations.
-  if (config.authMode !== "oauth") {
-    app.use("/mcp", (request, response, next) => {
-      void authenticate(request, response, next).catch((error: unknown) => {
-        console.error("Authentication middleware failed", error);
-        if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
-      });
+  app.use("/mcp", (request, response, next) => {
+    void authenticate(request, response, next).catch((error: unknown) => {
+      console.error("Authentication middleware failed", error);
+      if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
     });
-  }
+  });
 
   app.post("/mcp", async (request, response) => {
-    const authorizeToolCall = config.authMode === "oauth"
-      ? () => verifyToken(request.header("authorization"))
-      : undefined;
-    const server = createMcpServer(authorizeToolCall);
+    const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({});
     response.on("close", () => { void transport.close(); });
 
