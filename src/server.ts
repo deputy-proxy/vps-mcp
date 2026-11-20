@@ -37,7 +37,7 @@ export function createHttpServer() {
       const requestedHeaders = (request.header("access-control-request-headers") ?? "")
         .split(",").map((header) => header.trim().toLowerCase()).filter(Boolean);
       const originAllowed = Boolean(origin && config.corsOrigins.includes(origin));
-      const methodAllowed = !requestedMethod || CORS_ALLOWED_METHODS.includes(requestedMethod);
+      const methodAllowed = Boolean(requestedMethod && CORS_ALLOWED_METHODS.includes(requestedMethod));
       const headersAllowed = requestedHeaders.every((header) => CORS_ALLOWED_HEADERS.includes(header));
 
       if (!originAllowed || !methodAllowed || !headersAllowed) {
