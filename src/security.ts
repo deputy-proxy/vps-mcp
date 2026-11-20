@@ -17,7 +17,7 @@ type JwksResolver = () => Promise<JWTVerifyGetKey>;
 export function hasRequiredScopes(payload: object, requiredScopes: string[]): boolean {
   const claims = payload as Record<string, unknown>;
   const grantedScopes = typeof claims.scope === "string"
-    ? claims.scope.split(/\\s+/).filter(Boolean)
+    ? claims.scope.split(/\s+/).filter(Boolean)
     : Array.isArray(claims.scp)
       ? claims.scp.filter((scope): scope is string => typeof scope === "string")
       : [];
@@ -57,7 +57,7 @@ function unauthorized(response: Response, reason = "invalid_token", publicUrl?: 
 export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: JwksResolver) {
   return async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     const authorization = request.header("authorization") ?? "";
-    const match = /^Bearer\\s+(.+)$/i.exec(authorization);
+    const match = /^Bearer\s+(.+)$/i.exec(authorization);
     const supplied = match?.[1] ?? "";
     if (!supplied) {
       unauthorized(response, "invalid_token", options.publicUrl);
@@ -122,7 +122,7 @@ export async function authenticate(request: Request, response: Response, next: N
   if (config.authMode === "none") { next(); return; }
 
   const authorization = request.header("authorization") ?? "";
-  const match = /^Bearer\\s+(.+)$/i.exec(authorization);
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
   const supplied = match?.[1] ?? "";
 
   if (config.authMode === "token") {
