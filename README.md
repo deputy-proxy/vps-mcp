@@ -17,45 +17,40 @@ An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping 
 | `filesystem.read` | Read a UTF-8 file (maximum 2 MiB) |
 | `filesystem.write` | Atomically create or replace a UTF-8 file (maximum 2 MiB) |
 
-The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at the MCP transport layer; background execution metadata and logs are persisted under `MCP_DATA_DIR`. Pass absolute paths to filesystem tools and use an allowed directory as the command working directory.
+The MCP endpoint uses Streamable HTTP at `POST /mcp`. The server is stateless at the MCP transport layer; background execution metadata and logs are persisted under `MCP_DATA_DIR`.
 
 ## Authentication
 
 Three modes are available:
 
-- `token`: static bearer token for local development or private integrations. Keep the token secret. It is not a supported authentication method for a directly connected ChatGPT custom MCP server.
-- `oauth`: public MCP deployment mode. The server validates OAuth access-token JWTs against the configured issuer and JWKS, checks issuer, audience, expiry and required scopes, and publishes RFC 9728 Protected Resource Metadata.
-- `none`: permitted only when the Node listener binds to loopback. Never expose an unauthenticated listener publicly.
+- `token`: static bearer token for local development or private integrations.
+- `oauth`: validates signed OAuth access-token JWTs against the configured issuer and its JWKS, checks issuer, audience, expiry and required scopes, and publishes RFC 9728 Protected Resource Metadata.
+- `none`: permitted only when the Node listener binds to loopback.
 
-### ChatGPT-compatible OAuth provider
+### OAuth provider requirements
 
-This repository implements the MCP **resource server** side of OAuth. The configured external authorization server remains responsible for user sign-in, consent, authorization-code exchange, PKCE, refresh-token issuance and OAuth client registration. This avoids inventing a password database or a home-grown authorization server inside the VPS management process.
+This project implements the MCP **resource server**, not an authorization server. The external identity provider handles sign-in, consent, authorization-code exchange, PKCE, refresh tokens and client registration.
 
-The identity provider must be configured to meet the MCP authorization and ChatGPT requirements:
+The provider must support Authorization Code with PKCE S256, refresh tokens, audience/resource binding, signed JWT access tokens, and ChatGPT-compatible Client ID Metadata Documents (CIMD) or Dynamic Client Registration (DCR). Configure the provider to issue the exact MCP audience and the scopes listed in `OAUTH_REQUIRED_SCOPES`.
 
-1. Authorization Code grant with PKCE using `S256`; do not enable implicit or client-credentials grants for this connection.
-2. Refresh tokens with rotation or equivalent secure refresh-token lifecycle, and offline access where the provider requires it.
-3. OAuth resource/audience binding for the exact MCP URL configured in `MCP_PUBLIC_URL`; issued access tokens must contain that audience.
-4. A signed JWT access token with a published JWKS endpoint. Opaque access tokens are not supported by this verifier.
-5. Client registration compatible with ChatGPT: Client ID Metadata Documents (CIMD), including public-client token exchange with `none` or `private_key_jwt`, or Dynamic Client Registration (DCR).
-6. The issuer metadata must advertise `code_challenge_methods_supported: ["S256"]` and the supported token endpoint authentication methods. Configure the provider's allowed redirect URIs according to the ChatGPT custom MCP connection's displayed callback URL.
-7. Issue the scope configured in `OAUTH_REQUIRED_SCOPES` (default: `mcp`) and preserve the MCP audience in the access token.
+When `OAUTH_JWKS_URL` is omitted, the server reads the provider's OpenID Connect discovery document at `{issuer}/.well-known/openid-configuration`, verifies that its `issuer` exactly matches `OAUTH_ISSUER_URL`, and uses its HTTPS `jwks_uri`. An explicit HTTPS `OAUTH_JWKS_URL` may be supplied for providers without standard OIDC discovery. Discovery is cached after the first successful lookup; a failed lookup returns HTTP 503 rather than incorrectly reporting the client's token as invalid.
 
-The server publishes `GET /.well-known/oauth-protected-resource/mcp` with the resource URL, issuer and supported scopes. On missing or invalid credentials it responds with a Bearer challenge referencing that metadata document. The OAuth issuer's own RFC 8414/OpenID discovery document must advertise its authorization and token endpoints and the registration capabilities above.
+The server publishes `GET /.well-known/oauth-protected-resource/mcp`. On missing or invalid credentials it responds with a Bearer challenge referencing that metadata document.
 
-Do not set `MCP_AUTH_MODE=oauth` until the identity provider is configured and its issuer, audience and JWKS URL are known. The existing loopback token-auth deployment remains compatible and is not changed by this code update.
+### CORS
+
+Browser access is disabled by default. Set `MCP_CORS_ORIGINS` to a comma-separated list of exact HTTPS origins (or localhost HTTP origins for development). Paths and wildcards are not accepted. Requests without an `Origin` header, such as server-to-server MCP clients, are unaffected. Disallowed browser preflight requests receive HTTP 403.
 
 ### OAuth environment
 
-See `.env.example` for the complete list. Required values in OAuth mode:
-
 - `MCP_PUBLIC_URL`: canonical public MCP URL, including `/mcp`.
-- `OAUTH_ISSUER_URL`: exact issuer identifier from the identity provider.
-- `OAUTH_AUDIENCE`: expected audience claim, normally the exact MCP resource URL.
-- `OAUTH_JWKS_URL`: optional JWKS URL; defaults to `.well-known/jwks.json` relative to the issuer.
-- `OAUTH_REQUIRED_SCOPES`: space- or comma-separated required scopes.
+- `OAUTH_ISSUER_URL`: exact issuer identifier from the provider.
+- `OAUTH_AUDIENCE`: expected JWT audience, normally the MCP resource URL.
+- `OAUTH_JWKS_URL`: optional explicit HTTPS JWKS URL; otherwise discovered through OIDC.
+- `OAUTH_REQUIRED_SCOPES`: space- or comma-separated required scopes (default: `mcp`).
+- `MCP_CORS_ORIGINS`: optional exact browser origins allowed to access the endpoint.
 
-The Node listener should remain bound to `127.0.0.1`; Caddy or Nginx terminates public HTTPS and proxies to port 3000. Do not expose port 3000 directly.
+Do not enable OAuth mode until the provider is configured and its issuer and audience are known. The existing loopback token-auth deployment remains compatible and is not changed by this code update.
 
 ## Security model
 
@@ -64,7 +59,7 @@ The Node listener should remain bound to `127.0.0.1`; Caddy or Nginx terminates 
 - Commands run as the service account, not as root.
 - No Docker socket, SSH private key or host credential directory is mounted into the service.
 - Do not add the service account to the Docker group; Docker access is effectively root access.
-- OAuth mode validates signed JWTs on every MCP request and rejects invalid issuer, audience, expiry or missing scopes.
+- OAuth validates signed JWTs on every MCP request and rejects invalid issuer, audience, expiry or missing scopes.
 - TLS is mandatory at the public reverse proxy. Keep the Node listener private on loopback.
 
 A shell tool is powerful by design. An authorized user can run commands with the service account's operating-system permissions. Keep the account unprivileged and the allowed filesystem roots narrow.
@@ -85,7 +80,6 @@ npm install
 npm run typecheck
 npm test
 npm run build
-npm start
 ```
 
 Generate a token:
@@ -113,20 +107,11 @@ openssl rand -hex 32
    sudo -u vps-mcp npm run build --prefix /opt/vps-mcp
    ```
 
-3. Create `/etc/vps-mcp/vps-mcp.env` with the existing token-mode settings for a private/local deployment. For a public deployment, configure all OAuth variables from `.env.example` and set `MCP_AUTH_MODE=oauth`. Do not switch the currently running server to OAuth until the issuer, audience and JWKS settings are valid.
+3. Keep the current private deployment in token mode. For a public deployment, configure the OAuth provider and environment variables before changing the authentication mode.
 
-4. Install and start the systemd service:
+4. Install and start the systemd service, then configure DNS and Caddy using `deploy/Caddyfile.example`. Permit inbound TCP 80/443 and keep port 3000 closed to the public internet.
 
-   ```bash
-   sudo cp /opt/vps-mcp/systemd/vps-mcp.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now vps-mcp
-   sudo systemctl status vps-mcp
-   ```
-
-5. Configure DNS for the public hostname and Caddy with `deploy/Caddyfile.example`. Caddy obtains and renews the TLS certificate automatically. Permit inbound TCP 80/443 and keep port 3000 closed to the public internet.
-
-6. Once the OAuth provider is configured, verify the protected-resource metadata endpoint and test that unauthenticated MCP requests receive a `401` Bearer challenge containing its URL. Then complete the ChatGPT OAuth connection and verify that valid, expired, wrong-audience and insufficient-scope tokens behave correctly.
+5. Verify protected-resource metadata and test valid, expired, wrong-issuer, wrong-audience and insufficient-scope tokens before connecting a real MCP client.
 
 ## Configuration
 
@@ -139,8 +124,9 @@ openssl rand -hex 32
 | `MCP_PUBLIC_URL` | unset | Canonical public MCP URL, required for OAuth |
 | `OAUTH_ISSUER_URL` | unset | OAuth/OIDC issuer URL, required for OAuth |
 | `OAUTH_AUDIENCE` | unset | Required JWT audience, required for OAuth |
-| `OAUTH_JWKS_URL` | issuer-relative default | Signing keys used to validate access tokens |
-| `OAUTH_REQUIRED_SCOPES` | `mcp` | Required space- or comma-separated scopes |
+| `OAUTH_JWKS_URL` | OIDC discovery | Optional explicit signing-key URL |
+| `OAUTH_REQUIRED_SCOPES` | `mcp` | Required scopes |
+| `MCP_CORS_ORIGINS` | empty | Exact allowed browser origins |
 | `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Comma-separated allowed filesystem roots |
 | `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
 | `MCP_MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP JSON request size |
