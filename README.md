@@ -139,7 +139,7 @@ Generate a token with `openssl rand -hex 32`.
 | `OAUTH_AUDIENCE` | unset | HTTPS resource audience, required for OAuth |
 | `OAUTH_JWKS_URL` | OIDC discovery | Optional explicit HTTPS signing-key URL |
 | `OAUTH_REQUIRED_SCOPES` | empty | Optional required scope tokens |
-| `MCP_CORS_ORIGINS` | empty | Exact allowed browser origins |
+| `MCP_CORS_ORIGINS` | empty | Additional exact browser origins; official ChatGPT origins are built in |
 | `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Allowed filesystem roots |
 | `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
 | `MCP_MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP JSON request size |
