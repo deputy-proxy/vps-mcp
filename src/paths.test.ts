@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+process.env.MCP_AUTH_TOKEN ??= "test-only-token-that-is-long-enough-for-vps-mcp";
 const temporaryRoots: string[] = [];
 const originalRoots = process.env.MCP_ALLOWED_ROOTS;
 
@@ -13,10 +14,9 @@ async function loadResolver(root: string) {
   return module.resolveAllowedPath;
 }
 
-import { vi } from "vitest";
-
 afterEach(async () => {
-  process.env.MCP_ALLOWED_ROOTS = originalRoots;
+  if (originalRoots === undefined) delete process.env.MCP_ALLOWED_ROOTS;
+  else process.env.MCP_ALLOWED_ROOTS = originalRoots;
   vi.resetModules();
   await Promise.all(temporaryRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
