@@ -2,7 +2,7 @@ import express from "express";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config } from "./config.js";
-import { authenticate } from "./security.js";
+import { authenticate, verifyOAuthAccessToken } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
 const CORS_ALLOWED_METHODS = ["POST"];
@@ -44,8 +44,9 @@ async function proxyAuthorizationServerMetadata(response: express.Response): Pro
   }
 }
 
-export function createHttpServer() {
+export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof verifyOAuthAccessToken } = {}) {
   const app = createMcpExpressApp({ host: config.host });
+  const verifyToken = dependencies.verifyOAuthAccessToken ?? verifyOAuthAccessToken;
 
   app.use((request, response, next) => {
     const origin = request.header("origin");
@@ -116,15 +117,22 @@ export function createHttpServer() {
     next();
   });
 
-  app.use("/mcp", (request, response, next) => {
-    void authenticate(request, response, next).catch((error: unknown) => {
-      console.error("Authentication middleware failed", error);
-      if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
+  // Static-token mode remains server-protected. OAuth mode allows MCP initialization
+  // and tools/list; each tool advertises OAuth and validates its bearer token.
+  if (config.authMode !== "oauth") {
+    app.use("/mcp", (request, response, next) => {
+      void authenticate(request, response, next).catch((error: unknown) => {
+        console.error("Authentication middleware failed", error);
+        if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
+      });
     });
-  });
+  }
 
   app.post("/mcp", async (request, response) => {
-    const server = createMcpServer();
+    const authorizeToolCall = config.authMode === "oauth"
+      ? () => verifyToken(request.header("authorization"))
+      : undefined;
+    const server = createMcpServer(authorizeToolCall);
     const transport = new StreamableHTTPServerTransport({});
     response.on("close", () => { void transport.close(); });
 

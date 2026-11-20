@@ -7,6 +7,14 @@ import { config } from "./config.js";
 import { executeCommand, startExecution, getExecutionStatus, getExecutionLogs, cancelExecution } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
 
+type ToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+};
+
+type AuthorizeToolCall = () => Promise<boolean>;
+
 function result(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
 }
@@ -20,7 +28,31 @@ async function safely<T>(operation: () => Promise<T>) {
   try { return result(await operation()); } catch (error) { return failure(error); }
 }
 
-export function createMcpServer(): McpServer {
+function oauthToolMetadata() {
+  return config.authMode === "oauth"
+    ? { _meta: { securitySchemes: [{ type: "oauth2" as const, scopes: config.oauthScopes }] } }
+    : {};
+}
+
+function authenticationRequired(): ToolResult {
+  const metadataUrl = new URL("/.well-known/oauth-protected-resource/mcp", config.publicUrl!).toString();
+  return {
+    content: [{ type: "text", text: "Authentication required. Connect an authorized account and retry this tool." }],
+    isError: true,
+    _meta: {
+      "mcp/www_authenticate": [
+        `Bearer resource_metadata="${metadataUrl}", error="invalid_token", error_description="A valid OAuth access token is required"`,
+      ],
+    },
+  };
+}
+
+async function guarded<T extends ToolResult>(authorize: AuthorizeToolCall, operation: () => Promise<T>): Promise<T | ToolResult> {
+  if (config.authMode === "oauth" && !(await authorize())) return authenticationRequired();
+  return operation();
+}
+
+export function createMcpServer(authorize: AuthorizeToolCall = async () => true): McpServer {
   const server = new McpServer(
     { name: "vps-mcp", version: "0.1.0" },
     { instructions: "Authenticated VPS administration and development execution. Filesystem tool paths and command working directories are restricted to configured allowed roots. Shell commands otherwise have the operating-system permissions of the unprivileged service account." },
@@ -30,18 +62,20 @@ export function createMcpServer(): McpServer {
     title: "System health",
     description: "Check MCP service health, data directory writability and configured filesystem roots.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ...oauthToolMetadata(),
     inputSchema: {},
-  }, async () => safely(async () => {
+  }, async () => guarded(authorize, () => safely(async () => {
     await fs.access(config.dataDir, constants.R_OK | constants.W_OK);
     return { status: "healthy", service: "vps-mcp", version: "0.1.0", uptimeSeconds: Math.floor(process.uptime()), dataDirectoryWritable: true, allowedRoots: config.allowedRoots };
-  }));
+  })));
 
   server.registerTool("system.info", {
     title: "System information",
     description: "Return non-secret VPS operating system, CPU, memory, load and disk information.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ...oauthToolMetadata(),
     inputSchema: {},
-  }, async () => safely(async () => {
+  }, async () => guarded(authorize, () => safely(async () => {
     const disk = await fs.statfs(config.dataDir);
     const totalDiskBytes = Number(disk.blocks) * Number(disk.bsize);
     const freeDiskBytes = Number(disk.bavail) * Number(disk.bsize);
@@ -53,68 +87,76 @@ export function createMcpServer(): McpServer {
       dataFilesystem: { totalBytes: totalDiskBytes, freeBytes: freeDiskBytes },
       allowedRoots: config.allowedRoots,
     };
-  }));
+  })));
 
   server.registerTool("terminal.execute", {
     title: "Execute command",
     description: "Run a Bash command synchronously as the unprivileged MCP service user. The working directory must be inside MCP_ALLOWED_ROOTS. Maximum timeout and output are server-configured.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    ...oauthToolMetadata(),
     inputSchema: {
       command: z.string().min(1).max(20_000),
       cwd: z.string().optional(),
       timeoutMs: z.number().int().positive().max(900_000).optional(),
       maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
     },
-  }, async ({ command, cwd, timeoutMs, maxOutputBytes }) => safely(() => executeCommand({ command, ...(cwd ? { cwd } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(maxOutputBytes ? { maxOutputBytes } : {}) })));
+  }, async ({ command, cwd, timeoutMs, maxOutputBytes }) => guarded(authorize, () => safely(() => executeCommand({ command, ...(cwd ? { cwd } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(maxOutputBytes ? { maxOutputBytes } : {}) }))));
 
   server.registerTool("terminal.start", {
     title: "Start background command",
     description: "Start a detached Bash command and persist its execution metadata and combined output log.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    ...oauthToolMetadata(),
     inputSchema: { command: z.string().min(1).max(20_000), cwd: z.string().optional() },
-  }, async ({ command, cwd }) => safely(() => startExecution({ command, ...(cwd ? { cwd } : {}) })));
+  }, async ({ command, cwd }) => guarded(authorize, () => safely(() => startExecution({ command, ...(cwd ? { cwd } : {}) }))));
 
   server.registerTool("terminal.status", {
     title: "Execution status",
     description: "Inspect a background execution by its execution ID.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ...oauthToolMetadata(),
     inputSchema: { executionId: z.string().uuid() },
-  }, async ({ executionId }) => safely(() => getExecutionStatus(executionId)));
+  }, async ({ executionId }) => guarded(authorize, () => safely(() => getExecutionStatus(executionId))));
 
   server.registerTool("terminal.logs", {
     title: "Execution logs",
     description: "Read the most recent output from a background execution.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ...oauthToolMetadata(),
     inputSchema: { executionId: z.string().uuid(), maxBytes: z.number().int().positive().max(262_144).optional() },
-  }, async ({ executionId, maxBytes }) => safely(() => getExecutionLogs(executionId, maxBytes)));
+  }, async ({ executionId, maxBytes }) => guarded(authorize, () => safely(() => getExecutionLogs(executionId, maxBytes))));
 
   server.registerTool("terminal.cancel", {
     title: "Cancel execution",
     description: "Send SIGTERM to a background execution process group.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    ...oauthToolMetadata(),
     inputSchema: { executionId: z.string().uuid() },
-  }, async ({ executionId }) => safely(() => cancelExecution(executionId)));
+  }, async ({ executionId }) => guarded(authorize, () => safely(() => cancelExecution(executionId))));
 
   server.registerTool("filesystem.list", {
     title: "List directory",
     description: "List a directory within configured allowed roots. Symlinks resolving outside allowed roots are omitted.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ...oauthToolMetadata(),
     inputSchema: { path: z.string().min(1) },
-  }, async ({ path }) => safely(() => listDirectory(path)));
+  }, async ({ path }) => guarded(authorize, () => safely(() => listDirectory(path))));
 
   server.registerTool("filesystem.read", {
     title: "Read file",
     description: "Read a UTF-8 file up to 2 MiB from configured allowed roots.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ...oauthToolMetadata(),
     inputSchema: { path: z.string().min(1) },
-  }, async ({ path }) => safely(() => readFile(path)));
+  }, async ({ path }) => guarded(authorize, () => safely(() => readFile(path))));
 
   server.registerTool("filesystem.write", {
     title: "Write file",
     description: "Atomically create or replace a UTF-8 file up to 2 MiB inside configured allowed roots.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    ...oauthToolMetadata(),
     inputSchema: { path: z.string().min(1), content: z.string().max(2 * 1024 * 1024) },
-  }, async ({ path, content }) => safely(() => writeFile(path, content)));
+  }, async ({ path, content }) => guarded(authorize, () => safely(() => writeFile(path, content))));
 
   return server;
 }
