@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -12,11 +12,6 @@ process.env.OAUTH_AUDIENCE = "https://mcp.example.test/mcp";
 process.env.OAUTH_REQUIRED_SCOPES = "";
 process.env.MCP_DATA_DIR = temporaryDirectory;
 process.env.MCP_ALLOWED_ROOTS = temporaryDirectory;
-
-vi.mock("./security.js", () => ({
-  authenticate: vi.fn(),
-  verifyOAuthAccessToken: vi.fn(async (authorization?: string) => authorization === "Bearer valid-test-token"),
-}));
 
 const { createHttpServer } = await import("./server.js");
 
@@ -47,7 +42,7 @@ async function responseMessage(response: Response) {
 }
 
 beforeAll(async () => {
-  const app = createHttpServer();
+  const app = createHttpServer({ verifyOAuthAccessToken: async (authorization) => authorization === "Bearer valid-test-token" });
   server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
