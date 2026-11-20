@@ -11,9 +11,17 @@ function integerFromEnv(name: string, fallback: number): number {
   return value;
 }
 
+const authMode = process.env.MCP_AUTH_MODE ?? "token";
+if (authMode !== "token" && authMode !== "none") {
+  throw new Error("MCP_AUTH_MODE must be either 'token' or 'none'");
+}
 const token = process.env.MCP_AUTH_TOKEN ?? "";
-if (token.length < 32) {
-  throw new Error("MCP_AUTH_TOKEN must contain at least 32 characters");
+if (authMode === "token" && token.length < 32) {
+  throw new Error("MCP_AUTH_TOKEN must contain at least 32 characters when MCP_AUTH_MODE=token");
+}
+const host = process.env.MCP_HOST ?? "127.0.0.1";
+if (authMode === "none" && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+  throw new Error("MCP_AUTH_MODE=none is only permitted when MCP_HOST is loopback");
 }
 
 const allowedRoots = (process.env.MCP_ALLOWED_ROOTS ?? `/srv,${path.join(os.homedir(), ".local/share/vps-mcp")}`)
@@ -26,8 +34,9 @@ if (allowedRoots.length === 0) {
 }
 
 export const config = {
-  host: process.env.MCP_HOST ?? "127.0.0.1",
+  host,
   port: integerFromEnv("MCP_PORT", 3000),
+  authMode,
   authToken: token,
   allowedRoots,
   dataDir: path.resolve(process.env.MCP_DATA_DIR ?? path.join(os.homedir(), ".local/share/vps-mcp")),
