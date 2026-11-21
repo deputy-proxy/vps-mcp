@@ -113,7 +113,7 @@ describe("Streamable HTTP endpoint", () => {
       protocolVersion: "2025-03-26",
       capabilities: {},
       clientInfo: { name: "integration-test", version: "1.0.0" },
-    }), {});
+    }), { accept: "application/json, text/event-stream" });
     expect(response.status).toBe(401);
     expect(response.headers.get("www-authenticate")).toContain("Bearer");
   });
