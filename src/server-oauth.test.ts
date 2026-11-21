@@ -51,7 +51,7 @@ beforeAll(async () => {
     }
     response.setHeader(
       "WWW-Authenticate",
-      'Bearer error="invalid_token", resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"',
+      'Bearer resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"',
     );
     response.status(401).json({ error: "Unauthorized" });
   };
@@ -133,7 +133,8 @@ describe("HTTP OAuth authorization", () => {
       clientInfo: { name: "oauth-integration-test", version: "1.0.0" },
     }));
     expect(response.status).toBe(401);
-    expect(response.headers.get("www-authenticate")).toContain("Bearer");
+    expect(response.headers.get("www-authenticate")).toMatch(/^Bearer resource_metadata=/);
+    expect(response.headers.get("www-authenticate")).not.toContain("error=");
     expect(response.headers.get("www-authenticate")).toContain(
       'resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"',
     );
