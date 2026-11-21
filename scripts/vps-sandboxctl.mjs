@@ -37,7 +37,7 @@ function cgroupChecks() {
     'INIT_CGROUP="$DELEGATED_CGROUP/init.scope"',
     'mkdir "$INIT_CGROUP"',
     'printf "%s\\n" "$" > "$INIT_CGROUP/cgroup.procs"',
-    'printf "+cpu +memory +pids" > "$DELEGATED_CGROUP/cgroup.subtree_control"',
+    'for CONTROLLER in cpu memory pids; do echo "+$CONTROLLER" > "$DELEGATED_CGROUP/cgroup.subtree_control" || { echo "Failed to enable delegated controller: $CONTROLLER" >&2; exit 1; }; done',
     'ENABLED_CONTROLLERS=$(cat "$DELEGATED_CGROUP/cgroup.subtree_control")',
     'for CONTROLLER in cpu memory pids; do case " $ENABLED_CONTROLLERS " in *" $CONTROLLER "*) ;; *) echo "Controller not enabled in delegated subtree: $CONTROLLER" >&2; exit 1 ;; esac; done',
     'export VPS_SANDBOXCTL_CGROUP="$CGROUP"',
