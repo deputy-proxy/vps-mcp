@@ -143,7 +143,8 @@ describe("OAuth authentication middleware", () => {
   it("rejects a missing bearer token and advertises protected-resource metadata", async () => {
     const response = await request("/protected");
     expect(response.status).toBe(401);
-    expect(response.headers.get("www-authenticate")).toContain('error="invalid_token"');
+    expect(response.headers.get("www-authenticate")).toMatch(/^Bearer resource_metadata=/);
+    expect(response.headers.get("www-authenticate")).not.toContain("error=");
     expect(response.headers.get("www-authenticate")).toContain(
       "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
     );
