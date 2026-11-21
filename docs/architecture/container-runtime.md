@@ -91,3 +91,17 @@ This establishes a successful initial rootless runtime proof, not full acceptanc
 ## Restricted privileged diagnostic bridge
 
 The MCP service communicates with a root-owned, socket-activated diagnostics broker at `/run/vps-sandboxctl.sock`. The socket is accessible only to `root:vps-mcp` (mode `0660`). The broker runs with `NoNewPrivileges=yes`, an empty capability bounding set and systemd filesystem/kernel hardening. It accepts exactly one JSON property, `operation`, with one of three values: `preflight`, `info` or `smoke`. It invokes the installed root-owned helper with that fixed operation; all systemd properties, runtime identity, executable paths and the test image remain fixed in the helper. No arbitrary root command, Podman argument, systemd property or Podman API is exposed. This socket broker avoids setuid sudo, which cannot work from the public service while `NoNewPrivileges=yes` is enabled. It exists only to automate runtime acceptance diagnostics. General workload lifecycle operations require the separate runtime service/API and threat-model review in #33. The public MCP systemd unit remains unchanged.
+
+
+## Live acceptance suite
+
+The fixed `runtime.acceptance` operation runs `rootless-runtime-acceptance.mjs` inside the same dedicated transient systemd boundary as the initial smoke test. It creates a uniquely named, short-lived Alpine container with:
+
+- `--network=none`, read-only root filesystem, all capabilities dropped and `no-new-privileges`.
+- 0.5 CPU, 128 MiB memory and 64 PIDs, with the effective cgroup v2 values read back from inside the container.
+- A read-only workspace bind mount whose write rejection is tested, followed by a separate explicitly writable workspace bind mount whose host-side result is verified.
+- A bounded tmpfs at `/tmp`; no host root path or Podman runtime socket is mounted.
+
+The suite removes its test container in a `finally` cleanup path and deletes its temporary workspace. It reports individual pass/fail checks and exits nonzero on any failure. The parent helper separately verifies write access to the delegated unit cgroup and denial of writes to the root and `system.slice` cgroup controls.
+
+This suite verifies configured/effective container limits and isolation properties; it does not perform load-based CPU or memory exhaustion tests. It also does not reboot the VPS. A planned maintenance-window reboot test remains a manual acceptance item: after reboot, verify the MCP service and broker socket are active, rerun preflight and acceptance, and confirm no stale acceptance container or transient unit remains. Do not reboot automatically from the MCP tool.
