@@ -31,6 +31,15 @@ The self-hosted sandbox runtime is gated on the rootless Podman feasibility deci
 | `repository.branch-policy.inspect` | Inspect active branch rulesets and report governance compliance |
 | `repository.task-branch.validate` | Preflight a task branch name and enforce `development` as its base |
 | `repository.branch-policy.apply` | Dry-run or explicitly apply required branch rulesets to `main` and `development` |
+| `task-workspace.create` | Create an isolated task worktree and branch from `development` |
+| `task-workspace.list` | List durable task workspace records |
+| `task-workspace.inspect` | Inspect worktree linkage, branch, base and dirty state |
+| `task-workspace.status` | Read lifecycle and working-tree status |
+| `task-workspace.diff` | Read a diff summary and untracked-file list |
+| `task-workspace.retain` | Retain a worktree without discarding changes |
+| `task-workspace.resume` | Resume an existing retained worktree |
+| `task-workspace.remove` | Confirm removal; dirty work requires explicit discard confirmation |
+| `task-workspace.prune` | Dry-run or confirm pruning of expired, retained, clean worktrees |
 
 ## MCP transport
 
@@ -193,11 +202,11 @@ Generate a token with `openssl rand -hex 32`.
 - Only signed JWT access tokens are supported; opaque-token introspection is not implemented.
 - Active background process supervision is not yet managed by a dedicated process supervisor.
 - Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. General sandbox lifecycle operations remain a later design decision.
-- Persistent repository registration and bare-clone caching are implemented. Application environment provisioning, task worktree orchestration, backup/restore, management UI and Railway Sandbox compatibility remain separate milestones.
+- Persistent repository registration, bare-clone caching and durable isolated task workspaces are implemented. Container/sandbox lifecycle, persistent application environment provisioning, backup/restore, management UI and Railway Sandbox parity remain separate milestones.
 
 ## Repository management
 
-See [repository management architecture](docs/architecture/repository-management.md) and [repository operations](docs/operations/repositories.md) for the data model, canonical remote and branch policy, cache lifecycle, onboarding and safe cleanup procedures. The service account must have Git installed. Private GitHub repositories require an explicitly configured trusted credential-helper executable via `REPOSITORY_GIT_CREDENTIAL_HELPER`; credentials are never accepted in remote URLs or written to registry metadata. Branch governance uses GitHub repository rulesets. Configure `REPOSITORY_GITHUB_TOKEN` with `Metadata: read` to inspect private-repository rulesets and `Administration: write` to apply them. `REPOSITORY_REQUIRED_STATUS_CHECKS` defines the required check contexts (default `quality`). See [branch governance](docs/architecture/branch-and-release-policy.md) and [branch operations](docs/operations/branch-governance.md).
+See [repository management architecture](docs/architecture/repository-management.md) and [repository operations](docs/operations/repositories.md) for the data model, canonical remote and branch policy, cache lifecycle, onboarding and safe cleanup procedures. See [task workspace architecture](docs/architecture/worktrees.md) and [task workspace operations](docs/operations/task-workspaces.md) for isolated worktree creation, retention, recovery and cleanup. The service account must have Git installed. Private GitHub repositories require an explicitly configured trusted credential-helper executable via `REPOSITORY_GIT_CREDENTIAL_HELPER`; credentials are never accepted in remote URLs or written to registry metadata. Branch governance uses GitHub repository rulesets. Configure `REPOSITORY_GITHUB_TOKEN` with `Metadata: read` to inspect private-repository rulesets and `Administration: write` to apply them. `REPOSITORY_REQUIRED_STATUS_CHECKS` defines the required check contexts (default `quality`). See [branch governance](docs/architecture/branch-and-release-policy.md) and [branch operations](docs/operations/branch-governance.md).
 
 ## Development checks
 
