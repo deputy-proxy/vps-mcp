@@ -17,8 +17,8 @@ const { createHttpServer } = await import("./server.js");
 let server: Server;
 let baseUrl: string;
 
-async function request(method: string, body?: unknown, headers: Record<string, string> = {}) {
-  return fetch(`${baseUrl}/mcp`, {
+async function requestAt(endpoint: string, method: string, body?: unknown, headers: Record<string, string> = {}) {
+  return fetch(baseUrl + endpoint, {
     method,
     headers: {
       authorization: `Bearer ${token}`,
@@ -27,6 +27,10 @@ async function request(method: string, body?: unknown, headers: Record<string, s
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+}
+
+async function request(method: string, body?: unknown, headers: Record<string, string> = {}) {
+  return requestAt("/mcp", method, body, headers);
 }
 
 function rpc(method: string, id: number, params: Record<string, unknown> = {}) {
@@ -88,6 +92,28 @@ describe("Streamable HTTP endpoint", () => {
         clientInfo: { name: "integration-test", version: "1.0.0" },
       })),
     });
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toContain("Bearer");
+  });
+
+  it("supports the configured origin root as an equivalent MCP endpoint", async () => {
+    const response = await requestAt("/", "POST", rpc("initialize", 10, {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "integration-test", version: "1.0.0" },
+    }), { accept: "application/json, text/event-stream" });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(await response.text()).toContain('"vps-mcp"');
+  });
+
+  it("protects the root MCP endpoint with the same bearer authentication", async () => {
+    const response = await requestAt("/", "POST", rpc("initialize", 11, {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "integration-test", version: "1.0.0" },
+    }), {});
     expect(response.status).toBe(401);
     expect(response.headers.get("www-authenticate")).toContain("Bearer");
   });
