@@ -19,6 +19,9 @@ function fail(message, code = 2) {
 
 function assertCaller() {
   if (process.getuid() !== 0) fail('vps-sandboxctl must be invoked by the root-owned diagnostics broker.', 77);
+  for (const path of [...PROTECTED_HOST_PATHS, '/etc/vps-mcp/vps-mcp.env', '/etc/shadow']) {
+    if (!existsSync(path)) fail(`Required protected host path is missing: ${path}`, 1);
+  }
 }
 
 function cgroupChecks() {
