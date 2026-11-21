@@ -40,14 +40,15 @@ export async function resolveJwksUrl(issuer: string | URL, explicitJwksUrl?: URL
   return jwksUrl;
 }
 
-function unauthorized(response: Response, reason = "invalid_token", publicUrl?: URL, scopes: string[] = []): void {
+function unauthorized(response: Response, reason: string | undefined, publicUrl?: URL, scopes: string[] = []): void {
   const metadataUrl = publicUrl
     ? new URL("/.well-known/oauth-protected-resource/mcp", publicUrl).toString()
     : undefined;
+  const errorChallenge = reason ? `error="${reason}", ` : "";
   const scopeChallenge = scopes.length ? `, scope="${scopes.join(" ")}"` : "";
   response.setHeader("WWW-Authenticate", metadataUrl
-    ? `Bearer error="${reason}", resource_metadata="${metadataUrl}"${scopeChallenge}`
-    : `Bearer error="${reason}"${scopeChallenge}`);
+    ? `Bearer ${errorChallenge}resource_metadata="${metadataUrl}"${scopeChallenge}`
+    : `Bearer ${reason ? `error="${reason}"` : ""}${scopeChallenge}`);
   response.status(401).json({ error: "Unauthorized" });
 }
 
@@ -58,7 +59,9 @@ export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: Jwk
     const supplied = match?.[1] ?? "";
     if (!supplied) {
       console.warn("OAuth authentication rejected", { reason: "missing_bearer_token", method: request.method, path: request.path });
-      unauthorized(response, "invalid_token", options.publicUrl, options.scopes);
+      // A missing credential is a discovery challenge, not a failed token.
+      // Use the minimal challenge format documented for ChatGPT MCP clients.
+      unauthorized(response, undefined, options.publicUrl, options.scopes);
       return;
     }
 
