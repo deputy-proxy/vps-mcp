@@ -42,6 +42,20 @@ WorkOS AuthKit is the configured authorization provider for this deployment.
 
 The WorkOS issuer for this staging environment is `https://stalwart-insight-17-staging.authkit.app`. Set `OAUTH_ISSUER_URL` to that exact issuer (without adding a trailing slash), and set both `MCP_PUBLIC_URL` and `OAUTH_AUDIENCE` to the exact resource indicator above.
 
+### ChatGPT client compatibility
+
+Create and manage custom MCP server connections from **ChatGPT on the web**. The ChatGPT mobile apps do not currently support creating custom MCP server connections. Use the web app at `https://chatgpt.com` for connector setup and discovery tests.
+
+The MCP endpoint must be reachable from the public internet and present a publicly trusted TLS certificate. A Caddy local-CA certificate may be trusted by the VPS itself but is not trusted by remote clients. If using a bare IP address, explicitly provision and renew a publicly trusted IP-address certificate; Caddy's default local HTTPS behavior is not sufficient.
+
+This repository includes an external smoke test that runs from GitHub-hosted infrastructure. It verifies TLS/network reachability, OAuth metadata, ChatGPT browser CORS, unauthenticated MCP initialization and tool discovery, per-tool OAuth declarations, and the protected-tool challenge. Run it manually with:
+
+```bash
+MCP_URL=https://YOUR_PUBLIC_HOST/mcp npm run check:public
+```
+
+The same test runs on pull requests that change the smoke-test files and every six hours. A successful local request from the VPS alone does not prove that the endpoint is reachable by remote clients.
+
 ### OAuth provider compatibility
 
 Run the discovery preflight:
