@@ -21,9 +21,14 @@
 ## Deployment guardrails
 
 - Deployment jobs must declare a GitHub Actions environment; store deployment credentials in environment-scoped secrets, not repository-level secrets. Development deployment jobs use the `development` environment, trigger only on `development`, and include a job-level `github.ref == 'refs/heads/development'` (or equivalent `github.ref_name`) condition.
-- Production deployment jobs use the `production` environment, trigger only on `main`, and include a job-level `github.ref == 'refs/heads/main'` (or equivalent `github.ref_name`) condition.
-- Never make environment selection depend solely on a user-supplied input or an unvalidated branch name. The workflow validator rejects deployment jobs without an environment and rejects broad or cross-environment push filters.
+- Production deployment jobs use the `production` environment, depend on the successful `quality` job, require a push event and exact `main` ref guard, and serialize deployments with `cancel-in-progress: false`.
+- The `vps-mcp` production job additionally requires `VPS_PRODUCTION_DEPLOY_ENABLED == 'true'`. Leave this variable unset until the VPS restricted deployment access and GitHub environment secrets are provisioned and tested.
+- Never make environment selection depend solely on a user-supplied input or an unvalidated branch name. The workflow validator rejects deployment jobs without an environment, quality gate, branch guard or concurrency control.
 - `npm run check:branch-policy` parses all workflow YAML and fails on missing CI branch coverage or cross-environment deployment triggers/guards. It also validates the current GitHub pull-request event when run in Actions.
+
+## Production auto-deployment
+
+See [`production-deployment.md`](production-deployment.md) for the one-time VPS provisioning, SSH key setup, GitHub `production` environment configuration, deployment behavior, rollback and operational recovery. The workflow is intentionally disabled until its explicit enable variable is set.
 
 ## Credential requirements
 

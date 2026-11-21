@@ -45,7 +45,11 @@ function branchList(value) {
 
 function hasBranchGuard(expression, branch) {
   const value = String(expression ?? "");
-  return new RegExp(`(?:github\\.ref\\s*==\\s*['\"]refs/heads/${branch}['\"]|github\\.ref_name\\s*==\\s*['\"]${branch}['\"]|refs/heads/${branch})`).test(value);
+  return new RegExp(`(?:github\\.ref\\s*==\\s*['\"]refs/heads/${branch}['\"]|github\\.ref_name\\s*==\\s*['\"]${branch}['\"])`).test(value);
+}
+
+function hasPushEventGuard(expression) {
+  return /github\.event_name\s*==\s*['\"]push['\"]/.test(String(expression ?? ""));
 }
 
 export function validateWorkflows(workflows) {
@@ -80,9 +84,13 @@ export function validateWorkflows(workflows) {
       }
       const expected = target === "production" ? "main" : "development";
       const forbidden = target === "production" ? "development" : "main";
-      if (pushBranches.length !== 1 || pushBranches[0] !== expected) errors.push(`${file}:${jobId}: ${target} deployment push trigger must be restricted to ${expected} only.`);
-      if (pushBranches.includes(forbidden)) errors.push(`${file}:${jobId}: ${target} deployment must not be triggered by pushes to ${forbidden}.`);
-      if (!hasBranchGuard(job.if, expected)) errors.push(`${file}:${jobId}: ${target} deployment requires a job-level ref guard for ${expected}.`);
+      if (!pushBranches.includes(expected)) errors.push(`${file}:${jobId}: workflow push filters must include ${expected} for ${target} deployment.`);
+      if (!hasPushEventGuard(job.if)) errors.push(`${file}:${jobId}: ${target} deployment requires a job-level push-event guard.`);
+      if (!hasBranchGuard(job.if, expected)) errors.push(`${file}:${jobId}: ${target} deployment requires an exact job-level ref guard for ${expected}.`);
+      if (hasBranchGuard(job.if, forbidden)) errors.push(`${file}:${jobId}: ${target} deployment job guard must not allow ${forbidden}.`);
+      if (target === "production" && !/vars\.VPS_PRODUCTION_DEPLOY_ENABLED\s*==\s*['\"]true['\"]/.test(String(job.if ?? ""))) errors.push(`${file}:${jobId}: production deployment must remain disabled until VPS access and GitHub environment secrets are provisioned.`);
+      if (qualityWorkflow?.file === file && !branchList(job.needs).includes("quality")) errors.push(`${file}:${jobId}: deployment must depend on the quality job in the same workflow.`);
+      if (job.concurrency?.["cancel-in-progress"] !== false || typeof job.concurrency?.group !== "string") errors.push(`${file}:${jobId}: deployments require a named concurrency group with cancel-in-progress=false.`);
     }
   }
   return { valid: errors.length === 0, errors };
