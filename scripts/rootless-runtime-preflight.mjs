@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, accessSync, constants } from 'node:fs';
 import os from 'node:os';
 
-const SERVICE_USER = process.env.VPS_MCP_SERVICE_USER ?? 'vps-mcp';
+const SERVICE_USER = process.env.VPS_SANDBOX_SERVICE_USER ?? process.env.VPS_MCP_SERVICE_USER ?? 'vps-sandbox';
 const UNIT_PATHS = (process.env.VPS_MCP_UNIT_PATHS ?? '/etc/systemd/system/vps-mcp.service,/lib/systemd/system/vps-mcp.service,/usr/lib/systemd/system/vps-mcp.service').split(',');
 
 export function evaluateSnapshot(snapshot) {
