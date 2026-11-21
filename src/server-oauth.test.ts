@@ -69,6 +69,26 @@ afterAll(async () => {
   await fs.rm(temporaryDirectory, { recursive: true, force: true });
 });
 
+describe("OAuth protected-resource discovery", () => {
+  it.each([
+    "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/oauth-protected-resource/mcp%5C",
+  ])("serves canonical metadata for %s", async (pathname) => {
+    const response = await fetch(`${baseUrl}${pathname}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({
+      resource: "https://mcp.example.com/mcp",
+      authorization_servers: ["https://identity.example.com"],
+      bearer_methods_supported: ["header"],
+    });
+  });
+
+  it("does not accept arbitrary malformed metadata suffixes", async () => {
+    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp%5Cextra`);
+    expect(response.status).toBe(404);
+  });
+});
 describe("server-level OAuth boundary", () => {
   it.each(["initialize", "tools/list", "tools/call"])("rejects unauthenticated %s before MCP transport", async (method) => {
     const params = method === "initialize"

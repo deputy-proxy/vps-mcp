@@ -111,6 +111,12 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
     app.get("/.well-known/oauth-protected-resource/mcp", (_request, response) => {
       response.status(200).json(protectedResourceMetadata());
     });
+    // Some ChatGPT connector attempts request this path with a trailing
+    // URL-encoded backslash (%5C). Accept only that exact malformed suffix
+    // as a compatibility alias; keep the advertised canonical URL unchanged.
+    app.get(/^\/\.well-known\/oauth-protected-resource\/mcp%5c$/i, (_request, response) => {
+      response.status(200).json(protectedResourceMetadata());
+    });
     app.get("/.well-known/oauth-protected-resource", (_request, response) => {
       response.status(200).json(protectedResourceMetadata());
     });
