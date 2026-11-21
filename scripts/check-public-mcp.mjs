@@ -27,7 +27,7 @@ async function request(url, init = {}) {
   });
 }
 
-async function rpc(method, id, params = {}) {
+async function assertHttpChallenge(method, id, params, metadataUrl) {
   const response = await request(endpoint, {
     method: "POST",
     headers: {
@@ -36,11 +36,11 @@ async function rpc(method, id, params = {}) {
     },
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
   });
-  assert(response.status === 200, method + " returned HTTP " + response.status);
-  const contentType = response.headers.get("content-type") ?? "";
-  assert(contentType.includes("application/json") || contentType.includes("text/event-stream"),
-    method + " returned an unsupported content type: " + contentType);
-  return parseRpcResponse(await response.text(), contentType);
+  assert(response.status === 401, method + " without a bearer token returned HTTP " + response.status);
+  const challenge = response.headers.get("www-authenticate") ?? "";
+  assert(challenge.startsWith("Bearer "), method + " did not return a Bearer challenge");
+  assert(challenge.includes(metadataUrl.toString()),
+    method + " challenge did not reference protected-resource metadata");
 }
 
 async function main() {
@@ -99,32 +99,15 @@ async function main() {
   }
   console.log("PASS authorization-server metadata and client registration capabilities");
 
-  const initialized = await rpc("initialize", 1, {
+  await assertHttpChallenge("initialize", 1, {
     protocolVersion: "2025-03-26",
     capabilities: {},
     clientInfo: { name: "github-public-smoke-test", version: "1.0.0" },
-  });
-  assert(initialized.result?.serverInfo?.name === "vps-mcp", "MCP initialize did not return vps-mcp serverInfo");
-  console.log("PASS unauthenticated MCP initialize");
+  }, metadataUrl);
+  console.log("PASS server-level OAuth challenge on initialize");
 
-  const listed = await rpc("tools/list", 2);
-  const tools = listed.result?.tools;
-  assert(Array.isArray(tools) && tools.length === 10, "tools/list did not return the expected 10 tools");
-  for (const tool of tools) {
-    assert(tool._meta?.securitySchemes?.some((scheme) => scheme.type === "oauth2"),
-      "Tool does not advertise OAuth security: " + tool.name);
-  }
-  console.log("PASS unauthenticated tools/list and OAuth security declarations (" + tools.length + " tools)");
-
-  const challenge = await rpc("tools/call", 3, {
-    name: "system.health",
-    arguments: {},
-  });
-  assert(challenge.result?.isError === true, "Unauthenticated system.health did not return an MCP authorization error");
-  const challenges = challenge.result?._meta?.["mcp/www_authenticate"];
-  assert(Array.isArray(challenges) && challenges.some((value) => String(value).includes(metadataUrl.toString())),
-    "Tool authorization error did not contain the protected-resource metadata challenge");
-  console.log("PASS unauthenticated protected-tool OAuth challenge");
+  await assertHttpChallenge("tools/list", 2, {}, metadataUrl);
+  console.log("PASS server-level OAuth challenge on tools/list");
 
   console.log("PUBLIC MCP SMOKE TEST PASSED: " + origin);
 }
