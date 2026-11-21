@@ -19,6 +19,9 @@ function run(args, options = {}) {
 function inspect(name) {
   return JSON.parse(run(['inspect', name]))[0];
 }
+function accessDenied(path, mode) {
+  try { accessSync(path, mode); return false; } catch { return true; }
+}
 function main() {
   if (process.getuid() === 0 || process.env.USER !== 'vps-sandbox') {
     console.error('Acceptance suite must run as the non-root vps-sandbox identity.');
