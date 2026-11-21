@@ -4,14 +4,15 @@ import { buildSystemdRunArgs } from './vps-sandboxctl.mjs';
 describe('privileged runtime helper command construction', () => {
   it('builds a fixed transient systemd boundary for the selected operation', () => {
     const args = buildSystemdRunArgs('smoke', 'vps-sandboxctl-smoke-1234', '995');
-    expect(args.slice(0, 2)).toEqual(['--user', '--machine=vps-sandbox@.host']);
+    expect(args[0]).toBe('--system');
+    expect(args).toContain('--uid=vps-sandbox');
     expect(args).toContain('--property=Delegate=cpu memory pids');
     expect(args).toContain('--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/995/bus');
-    expect(args.at(-1)).toContain('--cgroup-manager=systemd');
+    expect(args.at(-1)).toContain('--cgroup-manager=cgroupfs');
     expect(args).toContain('--property=NoNewPrivileges=no');
-    expect(args.at(-1)).toContain('Delegated user-manager cgroup');
-    expect(args).not.toContain('--property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID');
-    expect(args).not.toContain('--property=RestrictSUIDSGID=yes');
+    expect(args.at(-1)).toContain('Delegated system-service cgroup');
+    expect(args).toContain('--property=Delegate=cpu memory pids');
+    expect(args).toContain('--property=ProtectSystem=strict');
     expect(args.at(-3)).toBe('/usr/bin/bash');
     expect(args.at(-1)).toContain('docker.io/library/alpine:3.21');
     const acceptance = buildSystemdRunArgs('acceptance', 'vps-sandboxctl-acceptance-1234', '995');
