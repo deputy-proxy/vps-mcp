@@ -7,6 +7,9 @@ process.env.MCP_AUTH_TOKEN ??= "test-only-token-that-is-long-enough-for-vps-mcp"
 const { createOAuthAuthenticator, hasRequiredScopes, resolveJwksUrl } = await import("./security.js");
 
 describe("hasRequiredScopes", () => {
+  it("accepts any valid token when no resource scopes are configured", () => {
+    expect(hasRequiredScopes({ scope: "openid profile email offline_access" }, [])).toBe(true);
+  });
   it("accepts a scope string containing every required scope", () => {
     expect(hasRequiredScopes({ scope: "openid mcp admin" }, ["mcp", "openid"])).toBe(true);
   });
