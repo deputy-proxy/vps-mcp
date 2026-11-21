@@ -35,8 +35,10 @@ function cgroupChecks() {
     'test -w "$DELEGATED_CGROUP/cgroup.subtree_control"',
     'test -w "$DELEGATED_CGROUP/cgroup.procs"',
     'INIT_CGROUP="$DELEGATED_CGROUP/init.scope"',
-    'mkdir "$INIT_CGROUP"',
-    'echo "$$" > "$INIT_CGROUP/cgroup.procs"',
+    'test -d "$INIT_CGROUP"',
+    'CURRENT_CGROUP=$(awk -F: \'$1 == "0" { print $3 }\' "/proc/$$/cgroup")',
+    'test "$CURRENT_CGROUP" = "$CGROUP/init.scope" || { echo "Main process is not in delegated init subgroup: $CURRENT_CGROUP" >&2; exit 1; }',
+    'test -z "$(cat "$DELEGATED_CGROUP/cgroup.procs")" || { echo "Delegated parent cgroup unexpectedly contains processes" >&2; exit 1; }',
     'for CONTROLLER in cpu memory pids; do echo "+$CONTROLLER" > "$DELEGATED_CGROUP/cgroup.subtree_control" || { echo "Failed to enable delegated controller: $CONTROLLER" >&2; exit 1; }; done',
     'ENABLED_CONTROLLERS=$(cat "$DELEGATED_CGROUP/cgroup.subtree_control")',
     'for CONTROLLER in cpu memory pids; do case " $ENABLED_CONTROLLERS " in *" $CONTROLLER "*) ;; *) echo "Controller not enabled in delegated subtree: $CONTROLLER" >&2; exit 1 ;; esac; done',
@@ -76,6 +78,7 @@ export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
     '--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin',
     '--property=WorkingDirectory=/var/lib/vps-sandbox',
     '--property=Delegate=cpu memory pids',
+    '--property=DelegateSubgroup=init.scope',
     '--property=NoNewPrivileges=no',
     // The system manager performs capability and namespace setup before dropping to the dedicated sandbox UID.
     // cgroupfs keeps Podman-created cgroups inside this service's delegated subtree.
