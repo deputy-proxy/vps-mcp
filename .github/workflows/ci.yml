@@ -20,6 +20,8 @@ jobs:
       - run: npm ci
       - run: node --check scripts/check-oauth-provider.mjs
       - run: node --check scripts/check-public-mcp.mjs
+      - run: node --check scripts/rootless-runtime-preflight.mjs
+      - run: bash -n scripts/provision-rootless-podman.sh
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
