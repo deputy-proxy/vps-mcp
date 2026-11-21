@@ -120,7 +120,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(10);
+    expect(tools.size).toBe(11);
 
     for (const name of [
       "system.health",
@@ -151,6 +151,9 @@ describe("Streamable HTTP endpoint", () => {
         openWorldHint: true,
       });
     }
+    expect(tools.get("runtime.acceptance")?.annotations).toMatchObject({
+      readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false,
+    });
     expect(response.headers.get("mcp-session-id")).toBeNull();
   });
 
