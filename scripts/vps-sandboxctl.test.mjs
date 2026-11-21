@@ -29,6 +29,7 @@ describe('privileged runtime helper command construction', () => {
     expect(args.at(-1)).toContain('--cgroup-parent="$CGROUP"');
     expect(args.at(-1)).not.toContain('test -w "$MOUNT_ROOT/cgroup.subtree_control"');
     expect(args).toContain('--property=ProtectSystem=strict');
+    expect(args).toContain('--property=InaccessiblePaths=/etc/vps-mcp /opt/vps-mcp /srv/vps-mcp /root');
     expect(args.at(-3)).toBe('/usr/bin/bash');
     expect(args.at(-1)).toContain('docker.io/library/alpine:3.21');
     const acceptance = buildSystemdRunArgs('acceptance', 'vps-sandboxctl-acceptance-1234', '995');
