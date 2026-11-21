@@ -120,7 +120,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(18);
+    expect(tools.size).toBe(20);
 
     for (const name of [
       "system.health",
@@ -143,6 +143,7 @@ describe("Streamable HTTP endpoint", () => {
       "terminal.start",
       "terminal.cancel",
       "filesystem.write",
+      "repository.branch-policy.apply",
     ]) {
       expect(tools.get(name)?.annotations).toMatchObject({
         readOnlyHint: false,
@@ -151,6 +152,9 @@ describe("Streamable HTTP endpoint", () => {
         openWorldHint: true,
       });
     }
+    expect(tools.get("repository.branch-policy.inspect")?.annotations).toMatchObject({
+      readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true,
+    });
     expect(tools.get("runtime.acceptance")?.annotations).toMatchObject({
       readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false,
     });

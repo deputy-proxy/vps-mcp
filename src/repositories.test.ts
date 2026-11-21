@@ -24,6 +24,13 @@ process.env.MCP_DATA_DIR = path.join(temporaryDirectory, "data");
 process.env.MCP_ALLOWED_ROOTS = temporaryDirectory;
 process.env.MCP_AUTH_TOKEN = "test-token-with-at-least-32-characters";
 process.env.REPOSITORY_DEV_HOST_SUFFIX = ".dev.example.test";
+const requiredRules = [
+  { type: "deletion" },
+  { type: "non_fast_forward" },
+  { type: "pull_request", parameters: { required_approving_review_count: 1, dismiss_stale_reviews_on_push: true } },
+  { type: "required_status_checks", parameters: { strict_required_status_checks_policy: true, required_status_checks: [{ context: "quality" }] } },
+];
+vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(requiredRules), { status: 200 })));
 paths.remotePath = remotePath;
 
 const { fetchRepository, inspectRepository, listRepositories, parseGitHubRemote, registerRepository, removeRepository, sanitizeGitError, updateRepository, validateRepository } = await import("./repositories.js");
@@ -50,7 +57,7 @@ beforeAll(async () => {
   git(["push", "-u", "origin", "development"], sourcePath);
 });
 
-afterAll(async () => { await fs.rm(temporaryDirectory, { recursive: true, force: true }); });
+afterAll(async () => { vi.unstubAllGlobals(); await fs.rm(temporaryDirectory, { recursive: true, force: true }); });
 
 it("validates, migrates, registers, inspects, fetches and safely removes managed repositories", async () => {
   expect(parseGitHubRemote("https://github.com/acme/demo")).toEqual({ fullName: "acme/demo", remoteUrl: "https://github.com/acme/demo.git", name: "demo" });
@@ -65,13 +72,14 @@ it("validates, migrates, registers, inspects, fetches and safely removes managed
   await fs.mkdir(path.dirname(registryPath), { recursive: true });
   await fs.writeFile(registryPath, JSON.stringify({ repositories: [{ fullName: "acme/demo", remoteUrl: "https://github.com/acme/demo.git", name: "demo" }] }));
   const migrated = await listRepositories();
-  expect(migrated.schemaVersion).toBe(1);
-  expect(migrated.repositories[0]).toMatchObject({ id: expect.stringMatching(/^acme-demo-[a-f0-9]{10}$/), requiredBranches: ["main", "development"], status: "registered" });
+  expect(migrated.schemaVersion).toBe(2);
+  expect(migrated.repositories[0]).toMatchObject({ id: expect.stringMatching(/^acme-demo-[a-f0-9]{10}$/), requiredBranches: ["main", "development"], requiredStatusChecks: ["quality"], status: "registered" });
   await fs.rm(registryPath);
 
   const registered = await registerRepository({ remoteUrl: "https://github.com/acme/demo", languageProfile: "node-22" });
   expect(registered).toMatchObject({ fullName: "acme/demo", defaultBranch: "main", developmentHostname: "demo.dev.example.test" });
   expect(registered.remote.missingRequiredBranches).toEqual([]);
+  expect(registered.branchPolicy.status).toBe("compliant");
   expect((await listRepositories()).count).toBe(1);
   const escapedLink = path.join(temporaryDirectory, "outside-link");
   await fs.symlink("/tmp", escapedLink);
@@ -81,7 +89,7 @@ it("validates, migrates, registers, inspects, fetches and safely removes managed
   const fetched = await fetchRepository(registered.id);
   expect(fetched.repository.status).toBe("cloned");
   expect(fetched.cacheBytes).toBeGreaterThan(0);
-  expect((await inspectRepository(registered.id)).health).toMatchObject({ requiredBranchesPresent: true, cacheStale: false, branchDrift: [] });
+  expect((await inspectRepository(registered.id)).health).toMatchObject({ requiredBranchesPresent: true, branchPolicyCompliant: true, branchPolicyStatus: "compliant", cacheStale: false, branchDrift: [] });
   expect((await validateRepository(registered.id)).valid).toBe(true);
   const persistedRegistry = JSON.parse(await fs.readFile(registryPath, "utf8")) as { repositories: Array<{ lastFetchAt: string }> };
   persistedRegistry.repositories[0]!.lastFetchAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
