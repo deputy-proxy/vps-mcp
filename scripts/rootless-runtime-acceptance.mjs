@@ -58,6 +58,16 @@ function main() {
     add('memory-limit-configured', Number(host.Memory) === 134_217_728, `Memory=${host.Memory}`);
     add('pid-limit-configured', Number(host.PidsLimit) === 64, `PidsLimit=${host.PidsLimit}`);
 
+    const cgroupLimits = run(['exec', name, 'sh', '-c',
+      'printf "cpu="; cat /sys/fs/cgroup/cpu.max; printf "memory="; cat /sys/fs/cgroup/memory.max; printf "pids="; cat /sys/fs/cgroup/pids.max']);
+    const limitValues = Object.fromEntries(cgroupLimits.split('\\n').map((line) => {
+      const [key, ...value] = line.split('=');
+      return [key, value.join('=')];
+    }));
+    add('cpu-limit-enforced', limitValues.cpu === '50000 100000', `cpu.max=${limitValues.cpu ?? 'unavailable'}`);
+    add('memory-limit-enforced', limitValues.memory === '134217728', `memory.max=${limitValues.memory ?? 'unavailable'}`);
+    add('pid-limit-enforced', limitValues.pids === '64', `pids.max=${limitValues.pids ?? 'unavailable'}`);
+
     let readOnlyRejected = false;
     try {
       run(['exec', name, 'sh', '-c', 'echo forbidden > /workspace/should-not-exist']);
