@@ -8,14 +8,26 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 2
 fi
 
-SERVICE_USER="${1:-vps-mcp}"
-if ! id "${SERVICE_USER}" >/dev/null 2>&1; then
-  echo "Service account '${SERVICE_USER}' does not exist" >&2
+SERVICE_USER="${1:-vps-sandbox}"
+if [[ "${SERVICE_USER}" != "vps-sandbox" ]]; then
+  echo "Only the dedicated vps-sandbox identity may be provisioned by this script" >&2
   exit 2
 fi
+
 if [[ "$(. /etc/os-release && echo "${ID}:${VERSION_ID}")" != "ubuntu:24.04" ]]; then
   echo "This provisioning script supports Ubuntu 24.04 only; inspect the ADR before adapting it." >&2
   exit 2
+fi
+if ! id "${SERVICE_USER}" >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir /var/lib/vps-sandbox --shell /usr/sbin/nologin vps-sandbox
+else
+  account="$(getent passwd "${SERVICE_USER}")"
+  account_home="$(cut -d: -f6 <<<"${account}")"
+  account_shell="$(cut -d: -f7 <<<"${account}")"
+  if [[ "${account_home}" != "/var/lib/vps-sandbox" || "${account_shell}" != "/usr/sbin/nologin" ]]; then
+    echo "Existing vps-sandbox account must use /var/lib/vps-sandbox and /usr/sbin/nologin; refusing to alter it" >&2
+    exit 2
+  fi
 fi
 
 touch /etc/subuid /etc/subgid
@@ -58,8 +70,8 @@ cat <<REPORT
 Prerequisites installed for ${SERVICE_USER}.
 No systemd service policy was changed.
 Next steps:
-  1. Run scripts/rootless-runtime-preflight.mjs as ${SERVICE_USER}.
+  1. Run scripts/rootless-runtime-preflight.mjs as ${SERVICE_USER} inside the dedicated transient systemd test unit.
   2. If user namespaces still fail, inspect the host/VPS provider restrictions.
-  3. Prove rootless Podman under the actual vps-mcp.service before enabling it.
-  4. Do not remove NoNewPrivileges or add broad capabilities as a workaround.
+  3. Keep the public vps-mcp.service unchanged; use the dedicated runtime identity for feasibility tests.
+  4. Do not add sudo, Docker group membership or broad capabilities.
 REPORT
