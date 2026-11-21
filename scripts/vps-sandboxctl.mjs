@@ -62,7 +62,7 @@ export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
     '--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin',
     '--property=Delegate=cpu memory pids',
     '--property=NoNewPrivileges=no',
-    '--property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID',
+    // A user manager cannot expand its own capability bounding set. Inherit it.
     '--property=RestrictSUIDSGID=yes',
     '--property=ProtectSystem=strict',
     '--property=ProtectHome=read-only',
