@@ -1,7 +1,7 @@
 import net from 'node:net';
 
 const SOCKET_PATH = '/run/vps-sandboxctl.sock';
-const OPERATIONS = ['preflight', 'info', 'smoke'] as const;
+const OPERATIONS = ['preflight', 'info', 'smoke', 'acceptance'] as const;
 export type RuntimeOperation = typeof OPERATIONS[number];
 
 type RuntimeResult = {
