@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { config } from "./config.js";
 import { executeCommand, startExecution, getExecutionStatus, getExecutionLogs, cancelExecution } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
 
