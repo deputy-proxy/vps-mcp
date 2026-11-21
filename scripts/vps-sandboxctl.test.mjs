@@ -15,7 +15,7 @@ describe('privileged runtime helper command construction', () => {
     expect(args.at(-1)).toContain('INVOCATION_ID');
     expect(args.at(-1)).not.toContain('/proc/self/cgroup');
     expect(args.at(-1)).not.toContain('/sys/fs/cgroup/system.slice');
-    expect(args.at(-1)).toContain('test -w \\"$MOUNT_ROOT/cgroup.subtree_control\\"');
+    expect(args.at(-1)).toContain('test -w "$MOUNT_ROOT/cgroup.subtree_control"');
     expect(args).toContain('--property=Delegate=cpu memory pids');
     expect(args).toContain('--property=ProtectSystem=strict');
     expect(args.at(-3)).toBe('/usr/bin/bash');
