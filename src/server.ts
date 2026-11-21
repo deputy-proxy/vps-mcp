@@ -44,7 +44,13 @@ async function proxyAuthorizationServerMetadata(response: express.Response): Pro
   }
 }
 
-export function createHttpServer(dependencies: { authenticateRequest?: typeof authenticate } = {}) {
+type AuthenticateRequest = (
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction,
+) => void | Promise<void>;
+
+export function createHttpServer(dependencies: { authenticateRequest?: AuthenticateRequest } = {}) {
   const app = createMcpExpressApp({ host: config.host });
   const authenticateRequest = dependencies.authenticateRequest ?? authenticate;
 
