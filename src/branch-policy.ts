@@ -178,8 +178,8 @@ export async function inspectBranchPolicy(input: {
 }
 
 export function validateTaskBranchCreation(input: { branchName: string; baseBranch: string }): { valid: boolean; reason?: string } {
-  const branchName = input.branchName.trim();
-  if (!branchName || branchName === "main" || branchName === "development") {
+  const branchName = input.branchName;
+  if (!branchName || branchName !== branchName.trim() || branchName === "main" || branchName === "development") {
     return { valid: false, reason: "Task branches must use a new branch name and cannot reuse a protected long-lived branch." };
   }
   if (input.baseBranch !== "development") {
@@ -187,7 +187,8 @@ export function validateTaskBranchCreation(input: { branchName: string; baseBran
   }
   // Enforce Git's ref-name constraints before any branch/worktree operation.
   const segments = branchName.split("/");
-  const invalidRef = branchName.startsWith("-")
+  const invalidRef = branchName === "@"
+    || branchName.startsWith("-")
     || branchName.startsWith("/")
     || branchName.endsWith("/")
     || branchName.endsWith(".")

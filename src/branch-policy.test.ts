@@ -34,7 +34,7 @@ describe("branch governance policy", () => {
     expect(validateTaskBranchCreation({ branchName: "feat/example", baseBranch: "main" }).valid).toBe(false);
     expect(validateTaskBranchCreation({ branchName: "main", baseBranch: "development" }).valid).toBe(false);
     expect(validateTaskBranchCreation({ branchName: "development", baseBranch: "development" }).valid).toBe(false);
-    for (const branchName of ["feat//bad", "feat/../bad", "feat/name.lock", "feat/has space", "feat\\bad", "-bad", "feat/@{bad}"]) {
+    for (const branchName of ["feat//bad", "feat/../bad", "feat/name.lock", "feat/has space", "feat\\bad", "-bad", "feat/@{bad}", "@", " feat/trimmed", "feat/trailing "]) {
       expect(validateTaskBranchCreation({ branchName, baseBranch: "development" })).toMatchObject({ valid: false });
     }
   });
