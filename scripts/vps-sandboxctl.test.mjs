@@ -8,6 +8,10 @@ describe('privileged runtime helper command construction', () => {
     expect(args).toContain('--uid=vps-sandbox');
     expect(args).toContain('--setenv=VPS_SANDBOXCTL_UNIT=vps-sandboxctl-smoke-1234');
     expect(args).toContain('--property=Delegate=cpu memory pids');
+    expect(args).toContain('--property=DelegateSubgroup=init.scope');
+    expect(args.at(-1)).toContain('CURRENT_CGROUP=$(awk -F: \'$1 == "0" { print $3 }\' "/proc/$$/cgroup")');
+    expect(args.at(-1)).toContain('test -z "$(cat "$DELEGATED_CGROUP/cgroup.procs")"');
+    expect(args.at(-1)).not.toContain('echo "$$" > "$INIT_CGROUP/cgroup.procs"');
     expect(args).toContain('--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/995/bus');
     expect(args.at(-1)).toContain('--cgroup-manager=cgroupfs');
     expect(args).toContain('--property=NoNewPrivileges=no');
@@ -19,7 +23,6 @@ describe('privileged runtime helper command construction', () => {
     expect(args.at(-1)).toContain('test -d "$DELEGATED_CGROUP"');
     expect(args.at(-1)).toContain('test -w "$DELEGATED_CGROUP/cgroup.subtree_control"');
     expect(args.at(-1)).toContain('INIT_CGROUP="$DELEGATED_CGROUP/init.scope"');
-    expect(args.at(-1)).toContain('echo "$$" > "$INIT_CGROUP/cgroup.procs"');
     expect(args.at(-1)).toContain('for CONTROLLER in cpu memory pids; do echo "+$CONTROLLER" > "$DELEGATED_CGROUP/cgroup.subtree_control"');
     expect(args.at(-1)).toContain('export VPS_SANDBOXCTL_CGROUP="$CGROUP"');
     expect(args.at(-1)).toContain('--cgroup-parent="$CGROUP"');
