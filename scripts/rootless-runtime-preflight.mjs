@@ -129,7 +129,7 @@ export function collectSnapshot() {
   const cgroupDelegation = requiredControllers.every((controller) => controllers.includes(controller)) && subtreeControlWritable;
   const sandboxUid = command('id', ['-u']);
   const userManagerCgroup = sandboxUid ? `/sys/fs/cgroup/user.slice/user-${sandboxUid}.slice/user@${sandboxUid}.service` : '';
-  const userManagerControllers = read(`${userManagerCgroup}/cgroup.controllers`)?.split(/\\s+/).filter(Boolean) ?? [];
+  const userManagerControllers = read(`${userManagerCgroup}/cgroup.controllers`)?.split(/\s+/).filter(Boolean) ?? [];
   let userManagerSubtreeWritable = false;
   try { accessSync(`${userManagerCgroup}/cgroup.subtree_control`, constants.W_OK); userManagerSubtreeWritable = true; } catch { /* no delegated user manager cgroup */ }
   const userManagerDelegation = requiredControllers.every((controller) => userManagerControllers.includes(controller)) && userManagerSubtreeWritable;
