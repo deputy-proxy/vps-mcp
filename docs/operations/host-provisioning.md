@@ -78,6 +78,34 @@ The public MCP process must not receive general sudo access. The repository incl
 
 The restricted MCP diagnostics broker is installed and managed as described in the section above. Do not install a sudoers rule or modify the public MCP service.
 
+
+
+## Automated live acceptance
+
+After installing the latest helper and broker, run the fixed MCP tool operation `runtime.acceptance` with `operation=acceptance`. It runs a temporary Alpine container under the dedicated `vps-sandbox` transient unit and verifies:
+
+- Rootless container identity and cgroup delegation boundaries.
+- Read-only root filesystem, dropped capabilities, no-new-privileges and network mode `none`.
+- Configured CPU, memory and PID limits, including the effective cgroup v2 values read inside the container.
+- Read-only and explicitly writable workspace bind mounts.
+- Absence of host-root and runtime-socket mounts.
+- Container removal and temporary workspace cleanup.
+
+The operation is bounded and cleans up its temporary resources. A failed check returns a non-zero exit code. It does not run destructive load tests or reboot the host.
+
+### Manual restart and reboot recovery check
+
+The acceptance suite cannot safely reboot or restart the public MCP service from inside its own execution path. Complete this separately during a maintenance window:
+
+1. Record `systemctl is-active vps-mcp.service vps-sandboxctl-broker.socket` and the current `podman ps -a` output as `vps-sandbox`.
+2. Confirm no application workload is running. Do not run this check while real workloads exist.
+3. Reboot the VPS through the normal host administration procedure.
+4. Verify both services are active after boot.
+5. Run `runtime.acceptance` operations `preflight`, `smoke` and `acceptance` again.
+6. Verify no container named `vps-acceptance-*`, no stale transient unit named `vps-sandboxctl-*`, and no leftover acceptance workspace remains.
+
+Record the reboot time, service states, test outputs and cleanup evidence in issue #30. Do not claim reboot recovery until this manual check passes.
+
 ## Live acceptance matrix
 
 After the transient preflight and basic smoke test pass, verify and record each item:
