@@ -2,7 +2,7 @@ import express from "express";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config } from "./config.js";
-import { authenticate, verifyOAuthAccessToken } from "./security.js";
+import { authenticate } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
 const CORS_ALLOWED_METHODS = ["GET", "POST"];
@@ -44,9 +44,15 @@ async function proxyAuthorizationServerMetadata(response: express.Response): Pro
   }
 }
 
-export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof verifyOAuthAccessToken } = {}) {
+type AuthenticateRequest = (
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction,
+) => void | Promise<void>;
+
+export function createHttpServer(dependencies: { authenticateRequest?: AuthenticateRequest } = {}) {
   const app = createMcpExpressApp({ host: config.host });
-  const verifyToken = dependencies.verifyOAuthAccessToken ?? verifyOAuthAccessToken;
+  const authenticateRequest = dependencies.authenticateRequest ?? authenticate;
 
   app.use((request, response, next) => {
     const origin = request.header("origin");
@@ -137,24 +143,17 @@ export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof
     next();
   });
 
-  // ChatGPT's mixed OAuth flow requires initialize and tools/list to remain
-  // unauthenticated. OAuth is enforced inside each tool using its advertised
-  // securitySchemes and an MCP-level mcp/www_authenticate challenge.
-  // Static bearer-token mode remains protected at the HTTP transport layer.
-  if (config.authMode !== "oauth") {
-    app.use("/mcp", (request, response, next) => {
-      void authenticate(request, response, next).catch((error: unknown) => {
-        console.error("Authentication middleware failed", error);
-        if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
-      });
+  // Match CR8OR's server-level OAuth boundary: every MCP request, including
+  // initialize and tools/list, must carry a valid bearer token.
+  app.use("/mcp", (request, response, next) => {
+    void Promise.resolve(authenticateRequest(request, response, next)).catch((error: unknown) => {
+      console.error("Authentication middleware failed", error);
+      if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
     });
-  }
+  });
 
   app.post("/mcp", async (request, response) => {
-    const authorizeToolCall = config.authMode === "oauth"
-      ? () => verifyToken(request.header("authorization"))
-      : undefined;
-    const server = createMcpServer(authorizeToolCall);
+    const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({});
     response.on("close", () => { void transport.close(); });
 

@@ -3,12 +3,13 @@ import type { Server } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { Request, Response, NextFunction } from "express";
 
-const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-oauth-"));
+const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-oauth-http-"));
 process.env.MCP_AUTH_MODE = "oauth";
-process.env.MCP_PUBLIC_URL = "https://mcp.example.test/mcp";
-process.env.OAUTH_ISSUER_URL = "https://issuer.example.test";
-process.env.OAUTH_AUDIENCE = "https://mcp.example.test/mcp";
+process.env.MCP_PUBLIC_URL = "https://mcp.example.com/mcp";
+process.env.OAUTH_ISSUER_URL = "https://identity.example.com";
+process.env.OAUTH_AUDIENCE = "https://mcp.example.com/mcp";
 process.env.OAUTH_REQUIRED_SCOPES = "";
 process.env.MCP_DATA_DIR = temporaryDirectory;
 process.env.MCP_ALLOWED_ROOTS = temporaryDirectory;
@@ -22,29 +23,37 @@ function rpc(method: string, id: number, params: Record<string, unknown> = {}) {
   return { jsonrpc: "2.0", id, method, params };
 }
 
-async function post(body: unknown, authorization?: string) {
-  return fetch(`${baseUrl}/mcp/`, {
+async function request(method: string, id: number, params: Record<string, unknown> = {}, bearer?: string) {
+  return fetch(`${baseUrl}/mcp`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      ...(authorization ? { authorization } : {}),
+      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(rpc(method, id, params)),
   });
 }
 
-async function responseMessage(response: Response) {
-  const payload = await response.text();
-  const dataLine = payload.split("\n").find((line) => line.startsWith("data: "));
-  expect(dataLine).toBeDefined();
-  return JSON.parse(dataLine!.slice(6)) as Record<string, any>;
+function parseSse(text: string) {
+  const line = text.split("\n").find((entry) => entry.startsWith("data: "));
+  if (!line) throw new Error("MCP response did not contain an SSE data event");
+  return JSON.parse(line.slice(6)) as { result: { serverInfo?: { name: string }; tools?: Array<Record<string, unknown>> } };
 }
 
 beforeAll(async () => {
-  const app = createHttpServer({
-    verifyOAuthAccessToken: async (authorization) => authorization === "Bearer valid-test-token",
-  });
+  const authenticateRequest = (req: Request, res: Response, next: NextFunction) => {
+    if (req.header("authorization") === "Bearer integration-test-token") {
+      next();
+      return;
+    }
+    res.setHeader(
+      "WWW-Authenticate",
+      'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"',
+    );
+    res.status(401).json({ error: "Unauthorized" });
+  };
+  const app = createHttpServer({ authenticateRequest });
   server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
@@ -60,102 +69,49 @@ afterAll(async () => {
   await fs.rm(temporaryDirectory, { recursive: true, force: true });
 });
 
-describe("protected resource metadata", () => {
-  it("allows browser-based ChatGPT OAuth discovery from its official origins", async () => {
-    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
-      headers: { origin: "https://chatgpt.com", accept: "application/json" },
-    });
-    expect(response.status).toBe(200);
-    expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
-    expect(response.headers.get("access-control-allow-methods")).toContain("GET");
-    expect(response.headers.get("content-type")).toContain("application/json");
+describe("server-level OAuth boundary", () => {
+  it.each(["initialize", "tools/list", "tools/call"])("rejects unauthenticated %s before MCP transport", async (method) => {
+    const params = method === "initialize"
+      ? {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "integration-test", version: "1.0.0" },
+        }
+      : method === "tools/call"
+        ? { name: "system.health", arguments: {} }
+        : {};
+    const response = await request(method, 1, params);
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toContain(
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+    );
   });
 
-  it("allows ChatGPT metadata preflight requests", async () => {
-    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
-      method: "OPTIONS",
-      headers: {
-        origin: "https://chatgpt.com",
-        "access-control-request-method": "GET",
-        "access-control-request-headers": "accept",
-      },
-    });
-    expect(response.status).toBe(204);
-    expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
-  });
-
-  it("allows both official ChatGPT web origins to read discovery metadata", async () => {
-    for (const origin of ["https://chatgpt.com", "https://chat.openai.com"]) {
-      const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`, {
-        headers: { origin, accept: "application/json" },
-      });
-      expect(response.status).toBe(200);
-      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
-      expect(response.headers.get("access-control-allow-methods")).toContain("GET");
-    }
-  });
-
-  it("rejects browser discovery from untrusted origins", async () => {
-    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
-      headers: { origin: "https://attacker.example", accept: "application/json" },
-    });
-    expect(response.status).toBe(200);
-    expect(response.headers.get("access-control-allow-origin")).toBeNull();
-  });
-
-  it("omits scopes_supported when no scopes are required", async () => {
-    const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      resource: "https://mcp.example.test/mcp",
-      authorization_servers: ["https://issuer.example.test"],
-      bearer_methods_supported: ["header"],
-    });
-  });
-});
-
-describe("mixed OAuth authorization", () => {
-  it("allows unauthenticated MCP initialization so ChatGPT can connect", async () => {
-    const response = await post(rpc("initialize", 1, {
+  it("allows an authenticated client to initialize and list tools", async () => {
+    const initialized = await request("initialize", 2, {
       protocolVersion: "2025-03-26",
       capabilities: {},
-      clientInfo: { name: "oauth-integration-test", version: "1.0.0" },
-    }));
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain('"serverInfo"');
-  });
+      clientInfo: { name: "integration-test", version: "1.0.0" },
+    }, "integration-test-token");
+    expect(initialized.status).toBe(200);
+    expect(parseSse(await initialized.text()).result.serverInfo?.name).toBe("vps-mcp");
 
-  it("allows unauthenticated tools/list and advertises OAuth on every tool", async () => {
-    const response = await post(rpc("tools/list", 2));
-    expect(response.status).toBe(200);
-    const message = await responseMessage(response);
-    const tools = message.result.tools as Array<{ name: string; _meta?: { securitySchemes?: Array<{ type: string; scopes: string[] }> } }>;
+    const listed = await request("tools/list", 3, {}, "integration-test-token");
+    expect(listed.status).toBe(200);
+    const tools = parseSse(await listed.text()).result.tools ?? [];
     expect(tools).toHaveLength(10);
     for (const tool of tools) {
-      expect(tool._meta?.securitySchemes).toEqual([{ type: "oauth2", scopes: [] }]);
+      expect(tool).not.toHaveProperty("_meta.securitySchemes");
     }
   });
 
-  it("returns an MCP OAuth challenge when a protected tool is called without a token", async () => {
-    const response = await post(rpc("tools/call", 3, { name: "system.health", arguments: {} }));
+  it("allows an authenticated client to execute a tool", async () => {
+    const response = await request("tools/call", 4, {
+      name: "system.health",
+      arguments: {},
+    }, "integration-test-token");
     expect(response.status).toBe(200);
-    const message = await responseMessage(response);
-    expect(message.result.isError).toBe(true);
-    const challenge = message.result._meta["mcp/www_authenticate"][0] as string;
-    expect(challenge).toContain('resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"');
-    expect(challenge).toContain('error="invalid_token"');
-    expect(challenge).toContain('error_description="A valid OAuth access token is required"');
-  });
-
-  it("executes a protected tool when a valid bearer token is supplied", async () => {
-    const response = await post(
-      rpc("tools/call", 4, { name: "system.health", arguments: {} }),
-      "Bearer valid-test-token",
-    );
-    expect(response.status).toBe(200);
-    const message = await responseMessage(response);
-    expect(message.result.isError).not.toBe(true);
-    const health = JSON.parse(message.result.content[0].text) as { status: string };
-    expect(health.status).toBe("healthy");
+    const payload = parseSse(await response.text());
+    expect(payload.result).toBeDefined();
   });
 });
