@@ -4,16 +4,22 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-const paths = vi.hoisted(() => ({ remotePath: "" }));
+const paths = vi.hoisted(() => ({
+  remotePath: "",
+  spawnedGitEnvironments: [] as Array<Record<string, string | undefined>>,
+}));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    spawn: (command: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => actual.spawn(
-      command,
-      args.map((argument) => argument === "https://github.com/acme/workspace-demo.git" ? paths.remotePath : argument === "protocol.file.allow=never" ? "protocol.file.allow=always" : argument),
-      options,
-    ),
+    spawn: (command: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => {
+      if (command === "git") paths.spawnedGitEnvironments.push({ ...(options?.env ?? {}) });
+      return actual.spawn(
+        command,
+        args.map((argument) => argument === "https://github.com/acme/workspace-demo.git" ? paths.remotePath : argument === "protocol.file.allow=never" ? "protocol.file.allow=always" : argument),
+        options,
+      );
+    },
   };
 });
 
@@ -69,15 +75,55 @@ afterAll(async () => { vi.unstubAllGlobals(); await fs.rm(temporaryDirectory, { 
 
 it("creates unique isolated worktrees from development and persists metadata", async () => {
   await expect(createTaskWorkspace({ repositoryId, taskId: "Implement a dashboard" })).rejects.toThrow("stable identifier, not a task title");
-  const [first, second] = await Promise.all([
-    createTaskWorkspace({ repositoryId, taskId: "issue-100" }),
-    createTaskWorkspace({ repositoryId, taskId: "issue-101", sandboxId: "sandbox-101" }),
-  ]);
+  const injectedKeys = [
+    "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "REPOSITORY_GITHUB_TOKEN", "CUSTOM_SECRET",
+    "GIT_DIR", "GIT_CONFIG_COUNT", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+  ] as const;
+  const originalEnvironment = Object.fromEntries(injectedKeys.map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    OPENAI_API_KEY: "synthetic-openai-key",
+    AWS_SECRET_ACCESS_KEY: "synthetic-aws-secret",
+    GITHUB_TOKEN: "synthetic-github-token",
+    REPOSITORY_GITHUB_TOKEN: "synthetic-repository-github-token",
+    CUSTOM_SECRET: "synthetic-custom-secret",
+    GIT_DIR: "/tmp/hostile-git-dir",
+    GIT_CONFIG_COUNT: "1",
+    SSH_AUTH_SOCK: "/tmp/fake-ssh-agent.sock",
+    SSH_AGENT_PID: "98765",
+  });
+  paths.spawnedGitEnvironments.length = 0;
+  const [first, second] = await (async () => {
+    try {
+      return await Promise.all([
+        createTaskWorkspace({ repositoryId, taskId: "issue-100" }),
+        createTaskWorkspace({ repositoryId, taskId: "issue-101", sandboxId: "sandbox-101" }),
+      ]);
+    } finally {
+      for (const key of injectedKeys) {
+        const value = originalEnvironment[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  })();
   expect(first).toMatchObject({ repositoryId, taskId: "issue-100", baseRef: "development", baseSha: developmentSha, targetPullRequestBranch: "development", status: "active" });
   expect(first.branchName).toMatch(/^task\/issue-100-[a-f0-9]{8}$/);
   expect(second.branchName).toMatch(/^task\/issue-101-[a-f0-9]{8}$/);
   expect(first.id).not.toBe(second.id);
   expect(first.worktreePath).not.toBe(second.worktreePath);
+  expect(paths.spawnedGitEnvironments.length).toBeGreaterThan(0);
+  for (const env of paths.spawnedGitEnvironments) {
+    for (const key of [
+      "MCP_AUTH_TOKEN", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
+      "REPOSITORY_GITHUB_TOKEN", "CUSTOM_SECRET", "GIT_DIR", "GIT_CONFIG_COUNT", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+    ]) {
+      expect(env[key]).toBeUndefined();
+    }
+    expect(env.PATH).toBe(process.env.PATH);
+    expect(env.GIT_CONFIG_NOSYSTEM).toBe("1");
+    expect(env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+  }
   expect(git(["-C", first.worktreePath, "rev-parse", "HEAD"])).toBe(developmentSha);
   expect(await fs.readFile(path.join(first.worktreePath, "README.md"), "utf8")).toBe("development content\n");
   await fs.writeFile(path.join(first.worktreePath, "README.md"), "first task only\n");

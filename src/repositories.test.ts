@@ -4,16 +4,24 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-const paths = vi.hoisted(() => ({ remotePath: "" }));
+const paths = vi.hoisted(() => ({
+  remotePath: "",
+  spawnedGitCalls: [] as Array<{ args: string[]; env: Record<string, string | undefined> }>,
+}));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    spawn: (command: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => actual.spawn(
-      command,
-      args.map((argument) => (argument === "https://github.com/acme/demo.git" || argument === "https://github.com/acme/demo-renamed.git") ? paths.remotePath : argument === "protocol.file.allow=never" ? "protocol.file.allow=always" : argument),
-      options,
-    ),
+    spawn: (command: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => {
+      if (command === "git") {
+        paths.spawnedGitCalls.push({ args: [...args], env: { ...(options?.env ?? {}) } });
+      }
+      return actual.spawn(
+        command,
+        args.map((argument) => (argument === "https://github.com/acme/demo.git" || argument === "https://github.com/acme/demo-renamed.git") ? paths.remotePath : argument === "protocol.file.allow=never" ? "protocol.file.allow=always" : argument),
+        options,
+      );
+    },
   };
 });
 
@@ -88,6 +96,65 @@ it("validates, migrates, registers, inspects, fetches and safely removes managed
 
   const fetched = await fetchRepository(registered.id);
   expect(fetched.repository.status).toBe("cloned");
+
+  const helperPath = path.join(temporaryDirectory, "git-credential-helper");
+  await fs.writeFile(helperPath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  await fs.chmod(helperPath, 0o700);
+  const injectedEnvironment = {
+    MCP_AUTH_TOKEN: process.env.MCP_AUTH_TOKEN,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    REPOSITORY_GITHUB_TOKEN: process.env.REPOSITORY_GITHUB_TOKEN,
+    CUSTOM_SECRET: process.env.CUSTOM_SECRET,
+    REPOSITORY_GIT_CREDENTIAL_HELPER: process.env.REPOSITORY_GIT_CREDENTIAL_HELPER,
+    GIT_DIR: process.env.GIT_DIR,
+    GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+    GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+    GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND,
+    SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK,
+    SSH_AGENT_PID: process.env.SSH_AGENT_PID,
+  };
+  Object.assign(process.env, {
+    MCP_AUTH_TOKEN: "synthetic-mcp-token",
+    OPENAI_API_KEY: "synthetic-openai-key",
+    AWS_SECRET_ACCESS_KEY: "synthetic-aws-secret",
+    GITHUB_TOKEN: "synthetic-github-token",
+    REPOSITORY_GITHUB_TOKEN: "synthetic-repository-github-token",
+    CUSTOM_SECRET: "synthetic-custom-secret",
+    REPOSITORY_GIT_CREDENTIAL_HELPER: helperPath,
+    GIT_DIR: "/tmp/hostile-git-dir",
+    GIT_WORK_TREE: "/tmp/hostile-worktree",
+    GIT_CONFIG_COUNT: "1",
+    GIT_SSH_COMMAND: "touch /tmp/hostile-git-command",
+    SSH_AUTH_SOCK: "/tmp/fake-ssh-agent.sock",
+    SSH_AGENT_PID: "98765",
+  });
+  paths.spawnedGitCalls.length = 0;
+  try {
+    await fetchRepository(registered.id);
+  } finally {
+    for (const [key, value] of Object.entries(injectedEnvironment)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  const credentialedGitCall = paths.spawnedGitCalls.find((call) => call.args.includes("credential.helper=" + helperPath));
+  expect(credentialedGitCall).toBeDefined();
+  for (const key of [
+    "MCP_AUTH_TOKEN", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
+    "REPOSITORY_GITHUB_TOKEN", "CUSTOM_SECRET", "REPOSITORY_GIT_CREDENTIAL_HELPER", "GIT_DIR", "GIT_WORK_TREE",
+    "GIT_CONFIG_COUNT", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+  ]) {
+    expect(credentialedGitCall!.env[key]).toBeUndefined();
+  }
+  expect(credentialedGitCall!.env.PATH).toBe(process.env.PATH);
+  expect(credentialedGitCall!.env.HOME).toBe(process.env.HOME);
+  expect(credentialedGitCall!.env.GIT_CONFIG_NOSYSTEM).toBe("1");
+  expect(credentialedGitCall!.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+  expect(credentialedGitCall!.env.GIT_TERMINAL_PROMPT).toBe("0");
+  expect(credentialedGitCall!.env.LC_ALL).toBe("C");
+  expect(credentialedGitCall!.args).toContain("credential.helper=" + helperPath);
   expect(fetched.cacheBytes).toBeGreaterThan(0);
   expect((await inspectRepository(registered.id)).health).toMatchObject({ requiredBranchesPresent: true, branchPolicyCompliant: true, branchPolicyStatus: "compliant", cacheStale: false, branchDrift: [] });
   expect((await validateRepository(registered.id)).valid).toBe(true);
