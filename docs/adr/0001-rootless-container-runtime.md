@@ -1,6 +1,6 @@
 # ADR-0001: Rootless container runtime for managed development sandboxes
 
-- Status: **Proposed; initial live rootless smoke passed, full acceptance outstanding**
+- Status: **Accepted; live rootless runtime and host-isolation acceptance passed**
 - Date: 2026-11-21
 - Issue: [#30](https://github.com/deputy-proxy/vps-mcp/issues/30)
 
@@ -53,4 +53,6 @@ The public MCP service retains `NoNewPrivileges=true`; it must not use setuid su
 
 The acceptance helper now validates that the host's protected paths exist before launching the test unit, then applies systemd `InaccessiblePaths=` to the MCP environment directory, production MCP checkout, private connector checkout and root home. The live acceptance operation checks that the `vps-sandbox` process cannot read `/etc/shadow` or `/etc/vps-mcp/vps-mcp.env`, and cannot traverse either MCP checkout or `/root`. This is deliberately separate from the container's own no-host-mount test: both the runtime executor and the container must be constrained.
 
-This code change is not live evidence until deployed and the post-deployment acceptance operation passes. The managed workspace root `/srv/vps-mcp-workspaces` is not provisioned at this stage; per-task workspace isolation and ownership are part of the repository/worktree lifecycle work (#31/#32) and must be validated when those paths are introduced. General workload execution remains disabled.
+Deployment and live acceptance completed on 2026-11-21. Post-deployment preflight reported READY, smoke passed, and the full acceptance operation passed 24/24 checks. The five host-side isolation probes passed: `/etc/shadow` and `/etc/vps-mcp/vps-mcp.env` were unreadable, and `/opt/vps-mcp`, `/srv/vps-mcp` and `/root` were not traversable by the sandbox identity. Container acceptance verified rootless identity, read-only rootfs, no network, dropped capabilities, no-new-privileges, configured and effective CPU/memory/PID limits, an empty effective capability set, read-only and writable workspace mounts, bounded tmpfs, no host root/runtime-socket mount, cleanup and cgroup boundary.
+
+The managed workspace root `/srv/vps-mcp-workspaces` is not provisioned at this stage; per-task workspace isolation and ownership remain part of repository/worktree lifecycle work (#31/#32) and must be validated when those paths are introduced. Acceptance of this ADR approves the rootless runtime feasibility and host security boundary only. It does not authorize general workload execution; #33 must implement and pass its separate lifecycle/API security boundary, and #31/#32 must establish workspace isolation before task workloads are enabled.
