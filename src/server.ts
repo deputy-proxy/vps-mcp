@@ -130,7 +130,9 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
 
   app.use(express.json({ limit: config.maxRequestBytes }));
 
-  app.use("/mcp", (request, response, next) => {
+  const mcpEndpointPaths = ["/mcp", "/"];
+
+  const logMcpRequest: express.RequestHandler = (request, response, next) => {
     const startedAt = process.hrtime.bigint();
     response.once("finish", () => {
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
@@ -138,7 +140,7 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
       console.info(JSON.stringify({
         event: "mcp_http_request",
         method: request.method,
-        path: request.baseUrl + request.path,
+        path: request.path,
         status: response.statusCode,
         durationMs: Math.round(durationMs * 100) / 100,
         rpcMethod: typeof body?.method === "string" ? body.method : undefined,
@@ -147,18 +149,16 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
       }));
     });
     next();
-  });
+  };
 
-  // Match CR8OR's server-level OAuth boundary: every MCP request, including
-  // initialize and tools/list, must carry a valid bearer token.
-  app.use("/mcp", (request, response, next) => {
+  const authenticateMcpRequest: express.RequestHandler = (request, response, next) => {
     void Promise.resolve(authenticateRequest(request, response, next)).catch((error: unknown) => {
       console.error("Authentication middleware failed", error);
       if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
     });
-  });
+  };
 
-  app.post("/mcp", async (request, response) => {
+  const handleMcpRequest: express.RequestHandler = async (request, response) => {
     const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({});
     response.on("close", () => { void transport.close(); });
@@ -170,9 +170,12 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
       console.error("MCP request failed", error);
       if (!response.headersSent) response.status(500).json({ error: "MCP request failed" });
     }
-  });
+  };
 
-  app.all("/mcp", (_request, response) => {
+  // ChatGPT may normalize a configured origin URL to the root path. Expose
+  // the same stateless MCP transport at / and /mcp, with identical auth.
+  app.post(mcpEndpointPaths, logMcpRequest, authenticateMcpRequest, handleMcpRequest);
+  app.all(mcpEndpointPaths, (_request, response) => {
     response.setHeader("Allow", "POST");
     response.status(405).json({ error: "Method not allowed" });
   });
