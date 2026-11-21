@@ -12,6 +12,7 @@ export function evaluateSnapshot(snapshot) {
 
   add('linux', snapshot.platform === 'linux', `platform=${snapshot.platform}`);
   add('runtime-identity', snapshot.executionUser === RUNTIME_USER, `execution user=${snapshot.executionUser ?? 'unknown'}; expected=${RUNTIME_USER}`);
+  add('systemd-user-manager', snapshot.userManagerBus === true, snapshot.userManagerDetail ?? 'systemd user manager bus must be available for delegated rootless cgroups');
   add('cgroup-v2', snapshot.cgroup === 'cgroup2fs', `filesystem=${snapshot.cgroup ?? 'unavailable'}`);
   add('cgroup-delegation', snapshot.cgroupDelegation === true, snapshot.cgroupDelegationDetail ?? 'CPU, memory and PID controllers must be delegated and writable by this unit');
   add('user-namespaces', snapshot.userNamespace === true, snapshot.userNamespaceDetail ?? 'unprivileged user namespace probe');
@@ -68,7 +69,7 @@ function probeUserNamespace() {
   // unshare may be restricted by Ubuntu's AppArmor unprivileged_userns
   // transition even when Podman's dedicated AppArmor profile permits it.
   const output = command('podman', [
-    '--cgroup-manager=cgroupfs',
+    '--cgroup-manager=systemd',
     'unshare',
     'sh',
     '-c',
@@ -85,6 +86,9 @@ function probeUserNamespace() {
 export function collectSnapshot() {
   const userns = probeUserNamespace();
   const executionUser = command('id', ['-un']);
+  const runtimeDir = process.env.XDG_RUNTIME_DIR;
+  const userBus = runtimeDir ? `${runtimeDir}/bus` : null;
+  const userManagerBus = Boolean(userBus && command('test', ['-S', userBus]) !== null && process.env.DBUS_SESSION_BUS_ADDRESS === `unix:path=${userBus}`);
   const subuid = hasSubordinateRange('/etc/subuid', RUNTIME_USER);
   const subgid = hasSubordinateRange('/etc/subgid', RUNTIME_USER);
   const podmanVersion = command('podman', ['--version']);
@@ -126,6 +130,8 @@ export function collectSnapshot() {
   return {
     platform: process.platform,
     executionUser,
+    userManagerBus,
+    userManagerDetail: `user bus=${userBus ?? 'unset'}; socket=${userManagerBus}; DBUS_SESSION_BUS_ADDRESS configured=${process.env.DBUS_SESSION_BUS_ADDRESS === (userBus ? `unix:path=${userBus}` : '')}`,
     cgroup: command('stat', ['-fc', '%T', '/sys/fs/cgroup']),
     cgroupDelegation,
     cgroupDelegationDetail: `unit cgroup=${serviceCgroup}; controllers=${controllers.join(' ') || 'unavailable'}; cgroup.subtree_control writable=${subtreeControlWritable}`,
