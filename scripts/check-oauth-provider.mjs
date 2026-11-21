@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const input = process.argv[2];
-const scope = process.argv[3] ?? "";
+const requiredScope = process.argv[3] ?? "";
 if (!input) {
   console.error("Usage: npm run check:oauth -- <issuer-url> [required-scope]");
   process.exit(2);
@@ -20,18 +20,16 @@ try {
   const issuer = https(input, "Issuer");
   if (issuer.search || issuer.hash || issuer.username || issuer.password) throw new Error("Issuer URL cannot contain credentials, query or fragment");
 
-  // OIDC discovery and OAuth authorization-server metadata are distinct
-  // documents. WorkOS advertises MCP client registration capabilities in
-  // the latter, not in its OIDC discovery document.
+  // OIDC discovery and OAuth authorization-server metadata are distinct documents.
   const origin = issuer.origin;
   const oidc = await json(new URL("/.well-known/openid-configuration", origin), "OIDC discovery");
   const oauth = await json(new URL("/.well-known/oauth-authorization-server", origin), "OAuth authorization-server metadata");
   const failures = [];
   const warnings = [];
   const check = (ok, message) => { if (!ok) failures.push(message); };
-  const configuredIssuer = input.replace(/\/$/, "");
-  check(typeof oidc.issuer === "string" && oidc.issuer.replace(/\/$/, "") === configuredIssuer, "OIDC discovery issuer does not match configured issuer");
-  check(typeof oauth.issuer === "string" && oauth.issuer.replace(/\/$/, "") === configuredIssuer, "OAuth authorization-server issuer does not match configured issuer");
+  const configuredIssuer = input.replace(/\\/$/, "");
+  check(typeof oidc.issuer === "string" && oidc.issuer.replace(/\\/$/, "") === configuredIssuer, "OIDC discovery issuer does not match configured issuer");
+  check(typeof oauth.issuer === "string" && oauth.issuer.replace(/\\/$/, "") === configuredIssuer, "OAuth authorization-server issuer does not match configured issuer");
 
   for (const [metadata, label] of [[oidc, "OIDC"], [oauth, "OAuth"]]) {
     for (const key of ["authorization_endpoint", "token_endpoint", "jwks_uri"]) {
@@ -64,13 +62,20 @@ try {
     check(Array.isArray(jwks.keys) && jwks.keys.length > 0, "JWKS contains no keys");
   } catch (error) { failures.push("JWKS check failed: " + error.message); }
 
+  const advertisedScopes = Array.isArray(oauth.scopes_supported)
+    ? oauth.scopes_supported.filter((scope) => typeof scope === "string")
+    : [];
   console.log("Issuer:", oidc.issuer ?? input);
   console.log("CIMD:", cimd, "| DCR:", dcr, "| token auth methods:", methods.join(", ") || "not advertised");
-  console.log("Required resource scope to verify after token issuance:", scope || "none (audience/resource indicator still must be verified)");
+  console.log("Authorization-server scopes:", advertisedScopes.join(", ") || "not advertised");
+  console.log("Required resource scopes:", requiredScope || "none (AuthKit resource indicator is enforced through aud)");
+  if (requiredScope && advertisedScopes.length && !advertisedScopes.includes(requiredScope)) {
+    warnings.push("The requested required scope is not in scopes_supported. For CIMD/DCR clients, WorkOS requires environment-wide default scopes for additional permissions.");
+  }
   warnings.forEach((x) => console.warn("WARNING:", x));
   failures.forEach((x) => console.error("FAIL:", x));
   if (failures.length) process.exitCode = 1;
-  else console.log("Discovery preflight passed. Resource indicator/audience and token scopes still require an interactive authorization test.");
+  else console.log("Discovery preflight passed. Resource indicator/audience and issued token claims still require an interactive authorization test.");
 } catch (error) {
   console.error("OAuth provider check failed:", error.message);
   process.exitCode = 1;
