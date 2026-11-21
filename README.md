@@ -2,6 +2,10 @@
 
 An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access and synchronous/background command execution.
 
+## Rootless container runtime readiness
+
+The self-hosted sandbox runtime is gated on the rootless Podman feasibility decision. Read [the runtime architecture](docs/architecture/container-runtime.md), [host provisioning and acceptance](docs/operations/host-provisioning.md), and [ADR-0001](docs/adr/0001-rootless-container-runtime.md) before provisioning. The administrator provisioning step installs a read-only copy of the preflight at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`; run that copy as the dedicated `vps-sandbox` identity inside the documented transient systemd test unit. Do not run the feasibility test as `vps-mcp` or weaken the public `vps-mcp.service`. The administrator-only provisioning script is `scripts/provision-rootless-podman.sh`; it does not alter systemd hardening. A passing preflight alone does not authorize production sandbox workloads.
+
 ## Current capabilities
 
 | Tool | Purpose |
