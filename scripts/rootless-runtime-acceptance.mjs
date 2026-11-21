@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, accessSync, constants } from 'node:fs';
 import { join } from 'node:path';
 
 const PODMAN = '/usr/bin/podman';
@@ -39,6 +39,11 @@ function main() {
     writeFileSync(sentinel, 'host-workspace-sentinel\n', { mode: 0o600 });
 
     const hostUser = execFileSync('/usr/bin/id', ['-un'], { encoding: 'utf8' }).trim();
+    add('host-shadow-inaccessible', accessDenied('/etc/shadow', constants.R_OK), 'sandbox identity cannot read host password hashes');
+    add('mcp-credentials-inaccessible', accessDenied('/etc/vps-mcp/vps-mcp.env', constants.R_OK), 'sandbox identity cannot read the MCP service environment file');
+    add('production-checkout-inaccessible', accessDenied('/opt/vps-mcp', constants.X_OK), 'sandbox identity cannot traverse the production MCP checkout');
+    add('connector-checkout-inaccessible', accessDenied('/srv/vps-mcp', constants.X_OK), 'sandbox identity cannot traverse the private connector checkout');
+    add('root-home-inaccessible', accessDenied('/root', constants.X_OK), 'sandbox identity cannot traverse the root home directory');
     const uid = run(['unshare', 'id', '-u']);
     add('rootless-identity', hostUser === 'vps-sandbox' && uid === '0', `container namespace root uid=${uid}; host executor=${hostUser}`);
 
