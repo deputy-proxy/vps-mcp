@@ -19,7 +19,7 @@ describe('privileged runtime helper command construction', () => {
     expect(args.at(-1)).toContain('test -d "$DELEGATED_CGROUP"');
     expect(args.at(-1)).toContain('test -w "$DELEGATED_CGROUP/cgroup.subtree_control"');
     expect(args.at(-1)).toContain('INIT_CGROUP="$DELEGATED_CGROUP/init.scope"');
-    expect(args.at(-1)).toContain('for CONTROLLER in cpu memory pids; do printf "+%s\\\\n" "$CONTROLLER" > "$DELEGATED_CGROUP/cgroup.subtree_control"');
+    expect(args.at(-1)).toContain('for CONTROLLER in cpu memory pids; do echo "+$CONTROLLER" > "$DELEGATED_CGROUP/cgroup.subtree_control"');
     expect(args.at(-1)).toContain('export VPS_SANDBOXCTL_CGROUP="$CGROUP"');
     expect(args.at(-1)).toContain('--cgroup-parent="$CGROUP"');
     expect(args.at(-1)).not.toContain('test -w "$MOUNT_ROOT/cgroup.subtree_control"');
