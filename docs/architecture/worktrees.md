@@ -36,7 +36,7 @@ The default retention policy is manual. `retentionDays` sets an expiry but does 
 - Worktree paths are derived from trusted repository/workspace IDs and checked against the managed root. Symlinks and path escapes are rejected.
 - Every workspace operation verifies that the registered worktree is attached to the expected task branch. `main` and `development` are never task branches.
 - No MCP task-workspace operation exposes checkout, commit or push to protected branches. Future sandbox execution must remain scoped to the registered worktree and enforce this invariant.
-- Git runs with system/global Git configuration disabled, inherited `GIT_*` variables removed, and SSH agent environment variables removed. HTTPS credential handoff is only through the explicitly configured trusted credential helper; host SSH agents and credential stores are not mounted into a workspace.
+- Git subprocesses receive an explicit environment allowlist (executable lookup, home/temp paths, locale/timezone and TLS certificate paths). MCP, GitHub API, cloud, arbitrary application secrets, inherited `GIT_*` overrides and SSH-agent variables are not passed to Git. System/global Git configuration is disabled. HTTPS credential handoff is only through the explicitly configured trusted credential helper; its executable path is supplied as Git configuration, not inherited as an environment variable.
 - The task-workspace registry stores no credentials.
 - Repository removal already refuses while Git worktrees are linked, so retained workspaces protect their parent cache from deletion.
 
