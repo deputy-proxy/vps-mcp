@@ -29,6 +29,7 @@ The self-hosted sandbox runtime is gated on the rootless Podman feasibility deci
 | `repository.fetch` | Clone/fetch a bare cache without changing worktrees |
 | `repository.remove` | Dry-run or safely remove a repository cache and registry entry |
 | `repository.branch-policy.inspect` | Inspect active branch rulesets and report governance compliance |
+| `repository.task-branch.validate` | Preflight a task branch name and enforce `development` as its base |
 | `repository.branch-policy.apply` | Dry-run or explicitly apply required branch rulesets to `main` and `development` |
 
 ## MCP transport

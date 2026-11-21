@@ -13,6 +13,7 @@ process.env.MCP_DATA_DIR = temporaryDirectory;
 process.env.MCP_ALLOWED_ROOTS = temporaryDirectory;
 
 const { createHttpServer } = await import("./server.js");
+const { VERSION } = await import("./version.js");
 
 let server: Server;
 let baseUrl: string;
@@ -120,7 +121,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(20);
+    expect(tools.size).toBe(21);
 
     for (const name of [
       "system.health",
@@ -152,6 +153,9 @@ describe("Streamable HTTP endpoint", () => {
         openWorldHint: true,
       });
     }
+    expect(tools.get("repository.task-branch.validate")?.annotations).toMatchObject({
+      readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false,
+    });
     expect(tools.get("repository.branch-policy.inspect")?.annotations).toMatchObject({
       readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true,
     });
@@ -174,9 +178,22 @@ describe("Streamable HTTP endpoint", () => {
     const dataLine = payload.split("\n").find((line) => line.startsWith("data: "));
     expect(dataLine).toBeDefined();
     const message = JSON.parse(dataLine!.slice(6)) as { result: { content: Array<{ text: string }> } };
-    const health = JSON.parse(message.result.content[0]!.text) as { status: string; dataDirectoryWritable: boolean };
+    const health = JSON.parse(message.result.content[0]!.text) as { status: string; version: string; dataDirectoryWritable: boolean };
     expect(health.status).toBe("healthy");
+    expect(health.version).toBe(VERSION);
     expect(health.dataDirectoryWritable).toBe(true);
+  });
+
+  it("validates task branch names and requires development as their base", async () => {
+    const response = await request("POST", rpc("tools/call", 9, {
+      name: "repository.task-branch.validate",
+      arguments: { branchName: "feat/issue-123", baseBranch: "development" },
+    }), { accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-03-26" });
+    expect(response.status).toBe(200);
+    const payload = await response.text();
+    const dataLine = payload.split("\n").find((line) => line.startsWith("data: "));
+    const message = JSON.parse(dataLine!.slice(6)) as { result: { content: Array<{ text: string }> } };
+    expect(JSON.parse(message.result.content[0]!.text)).toMatchObject({ valid: true });
   });
 
   it.each(["GET", "DELETE", "PATCH"])("%s is rejected for this stateless endpoint", async (method) => {
