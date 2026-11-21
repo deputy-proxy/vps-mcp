@@ -10,7 +10,8 @@ describe('privileged runtime helper command construction', () => {
     expect(args.at(-1)).toContain('--cgroup-manager=systemd');
     expect(args).toContain('--property=NoNewPrivileges=no');
     expect(args.at(-1)).toContain('Delegated user-manager cgroup');
-    expect(args).toContain('--property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID');
+    expect(args).not.toContain('--property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID');
+    expect(args).toContain('--property=RestrictSUIDSGID=yes');
     expect(args.at(-3)).toBe('/usr/bin/bash');
     expect(args.at(-1)).toContain('docker.io/library/alpine:3.21');
     const acceptance = buildSystemdRunArgs('acceptance', 'vps-sandboxctl-acceptance-1234', '995');
