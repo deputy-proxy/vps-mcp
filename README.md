@@ -46,6 +46,8 @@ The WorkOS issuer for this staging environment is `https://stalwart-insight-17-s
 
 Create and manage custom MCP server connections from **ChatGPT on the web**. The ChatGPT mobile apps do not currently support creating custom MCP server connections. Use the web app at `https://chatgpt.com` for connector setup and discovery tests.
 
+When creating the connection, select **OAuth** authentication. Do not select **OAuth or no authentication**: that is ChatGPT's mixed-auth mode, which deliberately leaves `initialize` and `tools/list` unauthenticated and expects per-tool `securitySchemes`. This server uses server-level OAuth, so it challenges every MCP request, including initialization and tool discovery.
+
 The MCP endpoint must be reachable from the public internet and present a publicly trusted TLS certificate. A Caddy local-CA certificate may be trusted by the VPS itself but is not trusted by remote clients. If using a bare IP address, explicitly provision and renew a publicly trusted IP-address certificate; Caddy's default local HTTPS behavior is not sufficient.
 
 This repository includes an external smoke test that runs from GitHub-hosted infrastructure. It verifies TLS/network reachability, OAuth metadata, ChatGPT browser CORS, and server-level HTTP OAuth challenges on MCP initialization and tool discovery. Run it manually with:
