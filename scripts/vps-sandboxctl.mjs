@@ -19,31 +19,32 @@ function assertCaller() {
   if (process.getuid() !== 0) fail('vps-sandboxctl must be invoked by the root-owned diagnostics broker.', 77);
 }
 
-function cgroupChecks(unitName) {
-  const ownCgroup = `/sys/fs/cgroup/system.slice/${unitName}.service`;
+function cgroupChecks() {
   return [
     'set -eu',
-    `CGROUP=${ownCgroup}`,
-    'echo "Delegated cgroup: $CGROUP"',
+    `CGROUP_REL=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)`,
+    'CGROUP=/sys/fs/cgroup${CGROUP_REL}',
+    'echo "Delegated user-manager cgroup: $CGROUP"',
+    'case "$CGROUP" in /sys/fs/cgroup/user.slice/user-*/user@*.service/*) ;; *) echo "Diagnostic is outside the vps-sandbox user manager" >&2; exit 1 ;; esac',
     'test -d "$CGROUP"',
     'test -w "$CGROUP/cgroup.subtree_control"',
     'test ! -w /sys/fs/cgroup/cgroup.subtree_control',
-    'test ! -w /sys/fs/cgroup/system.slice/cgroup.subtree_control',
-    'echo "CGROUP DELEGATION CHECK PASSED"',
+    'test ! -w /sys/fs/cgroup/user.slice/cgroup.subtree_control',
+    'echo "USER-MANAGER CGROUP DELEGATION CHECK PASSED"',
   ].join(String.fromCharCode(10));
 }
 
 function buildUnitScript(operation, unitName) {
-  const checks = cgroupChecks(unitName);
+  const checks = cgroupChecks();
   const preflight = `${NODE} ${PREFLIGHT}`;
   const info = `${PODMAN} --cgroup-manager=systemd info --debug`;
   const smoke = `${PODMAN} --cgroup-manager=systemd run --rm --pull=missing ${ALPINE_IMAGE} id`;
   const acceptanceCommand = `${NODE} ${ACCEPTANCE}`;
 
-  if (operation === 'preflight') return `${preflight}\n${checks}`;
+  if (operation === 'preflight') return `${preflight}\\n${checks}`;
   if (operation === 'info') return info;
-  if (operation === 'smoke') return [preflight, checks, info, smoke, 'echo "ROOTLESS ACCEPTANCE SMOKE PASSED"'].join('\n');
-  if (operation === 'acceptance') return [preflight, checks, acceptanceCommand].join('\n');
+  if (operation === 'smoke') return [preflight, checks, info, smoke, 'echo "ROOTLESS ACCEPTANCE SMOKE PASSED"'].join('\\n');
+  if (operation === 'acceptance') return [preflight, checks, acceptanceCommand].join('\\n');
   throw new Error('Unsupported operation');
 }
 
@@ -53,13 +54,13 @@ export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
   if (!/^[0-9]+$/.test(String(sandboxUid))) throw new Error('Invalid sandbox UID');
 
   return [
+    '--user', '--machine=vps-sandbox@.host',
     '--wait', '--pipe', '--collect', `--unit=${unitName}`,
-    `--uid=${SANDBOX_USER}`,
-    '--setenv=HOME=/var/lib/vps-sandbox',
+    `--setenv=HOME=/var/lib/vps-sandbox`,
     `--setenv=XDG_RUNTIME_DIR=/run/user/${sandboxUid}`,
     `--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${sandboxUid}/bus`,
+    '--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin',
     '--property=Delegate=cpu memory pids',
-    '--property=ProtectControlGroups=no',
     '--property=NoNewPrivileges=no',
     '--property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID',
     '--property=RestrictSUIDSGID=yes',
