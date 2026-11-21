@@ -53,6 +53,7 @@ apt-get install -y --no-install-recommends podman uidmap slirp4netns fuse-overla
 ROOTFUL_PODMAN_UNITS=(
   podman.socket
   podman.service
+  podman-auto-update.service
   podman-auto-update.timer
   podman-restart.service
   podman-clean-transient.service
