@@ -33,8 +33,8 @@ The script:
 - Creates the locked `vps-mcp-deploy` system account if it does not already exist with the expected home and shell.
 - Installs root-owned fixed deployment and SSH gateway scripts under `/usr/local/libexec/vps-mcp/`.
 - Installs a root-owned `authorized_keys` file with `restrict` and a forced command. The key cannot open a shell, allocate a PTY, forward ports or use SSH agent/X11 forwarding.
-- Adds a sudoers policy allowing `vps-mcp-deploy` to invoke only the fixed Node deployment entry point as `vps-mcp`.
-- Adds a sudoers policy allowing `vps-mcp` to run only `systemctl restart vps-mcp.service` as root.
+- Adds a sudoers policy allowing `vps-mcp-deploy` to invoke only the fixed Node deployment entry point as root.
+- Refuses to proceed if the deployment account belongs to a privileged `sudo`, `wheel`, `admin`, `docker` or `lxd` group.
 - Validates the sudoers file with `visudo` before installing it.
 
 It does not change the public service unit, production environment file, repository remote, firewall or SSH daemon configuration. It does not install a private key on the VPS.
@@ -82,11 +82,11 @@ The runner sends the exact `github.sha` for the successful main push. On the VPS
 2. Verifies the production checkout is clean, on `main`, and points to the canonical `deputy-proxy/vps-mcp` origin.
 3. Fetches `origin/main`. If the workflow SHA has been superseded by a newer main commit, it exits without changing files; the newer queued deployment handles the latest commit.
 4. Requires the currently deployed commit to be an ancestor of the requested SHA and updates with `git pull --ff-only` only.
-5. Runs `npm ci` and `npm run build` as the unprivileged `vps-mcp` account.
-6. Restarts only `vps-mcp.service` through the narrowly scoped sudoers rule.
+5. Normalizes ownership of only `node_modules` and `dist`, then runs `npm ci` and `npm run build` as the unprivileged `vps-mcp` account.
+6. Restarts only `vps-mcp.service` as root from the fixed deployment script.
 7. Verifies systemd reports the service active and `GET http://127.0.0.1:3000/mcp` returns the expected unauthenticated HTTP 401.
 
-No production environment variables or tokens are passed to Git or npm by the deployment script. The service environment file is not read, rewritten or logged by the deployment workflow.
+Git runs with credential helpers explicitly disabled, and npm uses `/dev/null` for user/global configuration. The deployment subprocesses receive a small fixed environment rather than the MCP service's environment. No production environment variables or tokens are passed to Git or npm by the deployment script. The service environment file is not read, rewritten or logged by the deployment workflow.
 
 ## Failure and rollback
 

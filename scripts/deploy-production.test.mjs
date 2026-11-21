@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { createProductionDeployer, isCommitSha } from "./deploy-production.mjs";
+import { createProductionDeployer, isCommitSha, SAFE_DEPLOYMENT_ENV } from "./deploy-production.mjs";
 
 const previousSha = "1".repeat(40);
 const releaseSha = "2".repeat(40);
@@ -17,10 +17,14 @@ afterEach(() => {
 function fixture(overrides = {}) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "vps-mcp-deploy-test-"));
   temporaryDirectories.push(directory);
+  const repository = path.join(directory, "repo");
+  mkdirSync(repository);
+  mkdirSync(path.join(repository, "node_modules"));
+  mkdirSync(path.join(repository, "dist"));
   const state = { currentSha: previousSha, remoteSha: releaseSha, origin: remoteUrl, dirty: "", branch: "main", buildFailures: 0, healthStatus: "401", healthFailures: 0, ancestryFailure: false, calls: [] };
   const run = vi.fn((command, args) => {
     state.calls.push([command, ...args]);
-    const gitArgs = command.endsWith("git") ? args.slice(2) : [];
+    const gitArgs = command.endsWith("git") ? args.slice(args.indexOf("-C") + 2) : [];
     if (command.endsWith("git")) {
       if (gitArgs[0] === "config") return { status: 0, stdout: state.origin };
       if (gitArgs[0] === "branch") return { status: 0, stdout: state.branch };
@@ -32,7 +36,8 @@ function fixture(overrides = {}) {
       if (gitArgs[0] === "pull") { state.currentSha = releaseSha; return { status: 0, stdout: "Fast-forward" }; }
       if (gitArgs[0] === "reset") { state.currentSha = gitArgs[2]; return { status: 0, stdout: "HEAD is now at previous" }; }
     }
-    if (command.endsWith("npm") && args[0] === "run" && state.buildFailures > 0) {
+    const npmIndex = args.indexOf("/usr/bin/npm");
+    if (command.endsWith("runuser") && npmIndex >= 0 && args[npmIndex + 1] === "run" && state.buildFailures > 0) {
       state.buildFailures -= 1;
       return { status: 1, stdout: "", stderr: "synthetic build failure" };
     }
@@ -45,9 +50,10 @@ function fixture(overrides = {}) {
   return {
     state,
     run,
+    repository,
     deployer: createProductionDeployer({
       run,
-      repository: path.join(directory, "repo"),
+      repository,
       lockPath: path.join(directory, "deploy.lock"),
       sleep: async () => {},
       healthAttempts: 1,
@@ -57,6 +63,18 @@ function fixture(overrides = {}) {
 }
 
 describe("production deployment runner", () => {
+  it("uses an explicit environment allowlist with Git and npm credential discovery disabled", () => {
+    expect(SAFE_DEPLOYMENT_ENV).toMatchObject({
+      HOME: "/var/lib/vps-mcp",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+      NPM_CONFIG_USERCONFIG: "/dev/null",
+      NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+    });
+    expect(Object.keys(SAFE_DEPLOYMENT_ENV).some((key) => /TOKEN|SECRET|PASSWORD|SSH_AUTH|API_KEY/i.test(key))).toBe(false);
+  });
+
   it("accepts only full lowercase commit identifiers", () => {
     expect(isCommitSha(releaseSha)).toBe(true);
     expect(isCommitSha("2".repeat(39))).toBe(false);
@@ -67,7 +85,10 @@ describe("production deployment runner", () => {
     const { deployer, state, run } = fixture();
     await expect(deployer.deploy(releaseSha)).resolves.toMatchObject({ status: "deployed", commit: releaseSha, previousCommit: previousSha });
     expect(state.currentSha).toBe(releaseSha);
-    expect(run.mock.calls.some(([command, args]) => command.endsWith("npm") && args[0] === "ci")).toBe(true);
+    const npmCalls = run.mock.calls.filter(([command, args]) => command.endsWith("runuser") && args.includes("/usr/bin/npm"));
+    expect(npmCalls.some(([, args]) => args[0] === "-u" && args[1] === "vps-mcp" && args[args.indexOf("/usr/bin/npm") + 1] === "ci")).toBe(true);
+    expect(npmCalls.some(([, args]) => args[args.indexOf("/usr/bin/npm") + 1] === "run")).toBe(true);
+    expect(run.mock.calls.filter(([command]) => command.endsWith("chown")).length).toBe(2);
     expect(run.mock.calls.some(([command, args]) => command.endsWith("systemctl") && args[0] === "is-active")).toBe(true);
   });
 
@@ -142,8 +163,10 @@ describe("production deployment runner", () => {
     git(seed, ["commit", "-m", "release"]);
     git(seed, ["push", "origin", "main"]);
     const newSha = git(seed, ["rev-parse", "HEAD"]);
+    const gitInvocations = [];
     const run = (command, args, options = {}) => {
       if (command === "/usr/bin/git") {
+        gitInvocations.push(args);
         const result = spawnSync(command, args, { cwd: options.cwd, encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: directory }, timeout: options.timeoutMs ?? 120_000 });
         return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
       }
@@ -154,6 +177,17 @@ describe("production deployment runner", () => {
     await expect(deployer.deploy(newSha)).resolves.toMatchObject({ status: "deployed", commit: newSha, previousCommit: oldSha });
     expect(git(production, ["rev-parse", "HEAD"])).toBe(newSha);
     expect(git(production, ["show", "HEAD:version.txt"])).toBe("two");
+    expect(gitInvocations.length).toBeGreaterThan(0);
+    expect(gitInvocations.every((args) => args[0] === "-c" && args[1] === "credential.helper=")).toBe(true);
+  });
+
+  it("refuses symlinked build directories before fetching or changing the checkout", async () => {
+    const { deployer, state, repository } = fixture();
+    rmSync(path.join(repository, "node_modules"), { recursive: true, force: true });
+    symlinkSync("/tmp", path.join(repository, "node_modules"));
+    await expect(deployer.deploy(releaseSha)).rejects.toThrow(/symlink build path/);
+    expect(state.currentSha).toBe(previousSha);
+    expect(state.calls.some(([, ...args]) => args.includes("fetch"))).toBe(false);
   });
 
   it("refuses a concurrent deployment lock", async () => {

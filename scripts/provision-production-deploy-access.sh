@@ -16,8 +16,11 @@ if [[ "$public_key" == *$'\n'* || ! "$public_key" =~ ^ssh-ed25519[[:space:]]+[A-
   exit 64
 fi
 
-for command in useradd getent passwd install visudo ssh-keygen node; do
+for command in useradd getent passwd install visudo ssh-keygen node npm git curl systemctl id chown sudo runuser env; do
   command -v "$command" >/dev/null 2>&1 || { echo "Required command is missing: $command" >&2; exit 1; }
+done
+for executable in /usr/bin/node /usr/bin/npm /usr/bin/git /usr/bin/curl /usr/bin/systemctl /usr/bin/sudo /usr/sbin/runuser /usr/bin/env /usr/bin/chown; do
+  [[ -x "$executable" ]] || { echo "Required executable is missing: $executable" >&2; exit 1; }
 done
 [[ -f scripts/deploy-gateway.sh && -f scripts/deploy-production.mjs ]] || { echo "Run from the repository root; deployment scripts are missing." >&2; exit 1; }
 
@@ -41,6 +44,15 @@ else
   useradd --system --create-home --home-dir /var/lib/vps-mcp-deploy --shell /bin/sh vps-mcp-deploy
 fi
 passwd --lock vps-mcp-deploy >/dev/null
+for account in vps-mcp-deploy; do
+  account_groups=" $(id -nG "$account") "
+  case "$account_groups" in
+    *" sudo "*|*" wheel "*|*" admin "*|*" docker "*|*" lxd "*)
+      echo "$account belongs to a privileged group; refusing to grant deployment sudo rules." >&2
+      exit 1
+      ;;
+  esac
+done
 
 [[ ! -L /usr/local/libexec/vps-mcp ]] || { echo "Deployment helper directory is a symlink; refusing to continue." >&2; exit 1; }
 install -d -o root -g root -m 0755 /usr/local/libexec/vps-mcp
@@ -71,9 +83,7 @@ chmod 0600 "$authorized_keys"
 [[ ! -L /etc/sudoers.d/vps-mcp-deploy ]] || { echo "Deployment sudoers file is a symlink; refusing to continue." >&2; exit 1; }
 cat > "$sudoers_tmp" <<'SUDOERS'
 # GitHub Actions may invoke only the fixed deployment entry point.
-vps-mcp-deploy ALL=(vps-mcp) NOPASSWD: /usr/bin/node /usr/local/libexec/vps-mcp/deploy-production.mjs ""
-# The service account may only restart its own fixed systemd unit.
-vps-mcp ALL=(root) NOPASSWD: /usr/bin/systemctl restart vps-mcp.service
+vps-mcp-deploy ALL=(root) NOPASSWD: /usr/bin/node /usr/local/libexec/vps-mcp/deploy-production.mjs ""
 SUDOERS
 visudo -cf "$sudoers_tmp"
 install -o root -g root -m 0440 "$sudoers_tmp" /etc/sudoers.d/vps-mcp-deploy
@@ -81,7 +91,7 @@ install -o root -g root -m 0440 "$sudoers_tmp" /etc/sudoers.d/vps-mcp-deploy
 printf '\nDeployment access provisioned.\n'
 printf 'SSH user: vps-mcp-deploy\n'
 printf 'Forced command: /usr/local/libexec/vps-mcp/deploy-gateway.sh\n'
-printf 'Allowed service action: restart vps-mcp.service only\n'
+printf 'Allowed privileged action: fixed deployment script only\n'
 printf 'Public key fingerprint: '
 ssh-keygen -lf "$key_tmp"
 printf '\nAdd the matching PRIVATE key to the GitHub production environment secret VPS_PRODUCTION_DEPLOY_KEY.\n'

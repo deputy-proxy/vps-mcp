@@ -26,6 +26,8 @@ jobs:
       - run: node --check scripts/vps-sandboxctl.mjs
       - run: node --check scripts/vps-sandboxctl-broker.mjs
       - run: node --check scripts/rootless-runtime-acceptance.mjs
+      - run: bash -n scripts/deploy-gateway.sh
+      - run: bash -n scripts/provision-production-deploy-access.sh
       - run: bash -n scripts/provision-rootless-podman.sh
       - run: bash -n scripts/install-vps-sandboxctl.sh
       - run: npm run typecheck

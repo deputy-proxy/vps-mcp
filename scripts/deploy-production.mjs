@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const DEFAULT_REPOSITORY = "/opt/vps-mcp";
@@ -7,7 +7,7 @@ const DEFAULT_LOCK = "/var/lib/vps-mcp/deploy-production.lock";
 const DEFAULT_REMOTE = "https://github.com/deputy-proxy/vps-mcp.git";
 const DEFAULT_HEALTH_URL = "http://127.0.0.1:3000/mcp";
 const DEFAULT_SERVICE = "vps-mcp.service";
-const SAFE_ENV = {
+export const SAFE_DEPLOYMENT_ENV = Object.freeze({
   PATH: "/usr/local/bin:/usr/bin:/bin",
   HOME: "/var/lib/vps-mcp",
   LANG: "C.UTF-8",
@@ -16,7 +16,9 @@ const SAFE_ENV = {
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_TERMINAL_PROMPT: "0",
   NPM_CONFIG_UPDATE_NOTIFIER: "false",
-};
+  NPM_CONFIG_USERCONFIG: "/dev/null",
+  NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+});
 
 export function isCommitSha(value) {
   return typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
@@ -25,7 +27,7 @@ export function isCommitSha(value) {
 function defaultRun(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
-    env: SAFE_ENV,
+    env: SAFE_DEPLOYMENT_ENV,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     timeout: options.timeoutMs ?? 10 * 60 * 1000,
@@ -48,10 +50,37 @@ export function createProductionDeployer({
   healthAttempts = 15,
   healthIntervalMs = 2_000,
 } = {}) {
-  const git = (args, options = {}) => run("/usr/bin/git", ["-C", repository, ...args], options);
-  const npm = (args) => run("/usr/bin/npm", args, { cwd: repository, timeoutMs: 10 * 60 * 1000 });
-  const sudo = (args) => run("/usr/bin/sudo", ["-n", ...args]);
+  const git = (args, options = {}) => run("/usr/bin/git", ["-c", "credential.helper=", "-C", repository, ...args], options);
+  const npm = (args) => run("/usr/sbin/runuser", [
+    "-u", "vps-mcp", "--", "/usr/bin/env", "-i",
+    ...Object.entries(SAFE_DEPLOYMENT_ENV).map(([key, value]) => `${key}=${value}`),
+    "/usr/bin/npm", ...args,
+  ], { cwd: repository, timeoutMs: 10 * 60 * 1000 });
   const systemctl = (args) => run("/usr/bin/systemctl", args);
+
+  function getBuildDirectory(name) {
+    const target = path.join(repository, name);
+    let stats;
+    try {
+      stats = lstatSync(target);
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error(`Refusing non-directory or symlink build path: ${target}`);
+    return target;
+  }
+
+  function validateBuildDirectories() {
+    for (const name of ["node_modules", "dist"]) getBuildDirectory(name);
+  }
+
+  function prepareBuildDirectories() {
+    for (const name of ["node_modules", "dist"]) {
+      const target = getBuildDirectory(name);
+      if (target) requireSuccess(run("/usr/bin/chown", ["-R", "vps-mcp:vps-mcp", target]), `Set ${name} ownership for the service account`);
+    }
+  }
 
   function output(result) {
     if (result.stdout) process.stdout.write(result.stdout);
@@ -77,9 +106,10 @@ export function createProductionDeployer({
     console.error(`Deployment failed. Attempting rollback to ${previousSha}.`);
     try {
       requireSuccess(git(["reset", "--hard", previousSha]), "Git rollback");
+      prepareBuildDirectories();
       requireSuccess(npm(["ci"]), "Rollback dependency installation");
       requireSuccess(npm(["run", "build"]), "Rollback build");
-      requireSuccess(sudo(["/usr/bin/systemctl", "restart", serviceName]), "Rollback service restart");
+      requireSuccess(systemctl(["restart", serviceName]), "Rollback service restart");
       requireSuccess(systemctl(["is-active", "--quiet", serviceName]), "Rollback service status");
       await waitForHealth();
       console.error(`Rollback completed successfully at ${previousSha}.`);
@@ -105,6 +135,7 @@ export function createProductionDeployer({
       if (branch !== "main") throw new Error(`Production checkout must be on main, not ${branch || "detached HEAD"}`);
       const dirty = requireSuccess(git(["status", "--porcelain", "--untracked-files=all"]), "Check production checkout");
       if (dirty) throw new Error("Production checkout is dirty; refusing to overwrite local changes");
+      validateBuildDirectories();
       previousSha = requireSuccess(git(["rev-parse", "HEAD"]), "Read current production commit");
 
       requireSuccess(git(["fetch", "--prune", "origin", "main"], { timeoutMs: 120_000 }), "Fetch main");
@@ -120,9 +151,10 @@ export function createProductionDeployer({
       try {
         const deployedSha = requireSuccess(git(["rev-parse", "HEAD"]), "Verify checked-out release");
         if (deployedSha !== expectedSha) throw new Error(`Checked-out commit ${deployedSha} does not match requested release ${expectedSha}`);
+        prepareBuildDirectories();
         requireSuccess(npm(["ci"]), "Install production dependencies");
         requireSuccess(npm(["run", "build"]), "Build production application");
-        requireSuccess(sudo(["/usr/bin/systemctl", "restart", serviceName]), "Restart production service");
+        requireSuccess(systemctl(["restart", serviceName]), "Restart production service");
         requireSuccess(systemctl(["is-active", "--quiet", serviceName]), "Verify production service status");
         await waitForHealth();
       } catch (error) {

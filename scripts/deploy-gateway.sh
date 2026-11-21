@@ -13,4 +13,4 @@ case "$expected_sha" in
 esac
 [ "${#expected_sha}" -eq 40 ] || { echo "Rejected deployment commit identifier." >&2; exit 64; }
 
-printf '%s\n' "$expected_sha" | /usr/bin/sudo -n -H -u vps-mcp /usr/bin/node /usr/local/libexec/vps-mcp/deploy-production.mjs
+printf '%s\n' "$expected_sha" | /usr/bin/sudo -n -H /usr/bin/node /usr/local/libexec/vps-mcp/deploy-production.mjs
