@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const HELPER = '/usr/local/libexec/vps-mcp/vps-sandboxctl.mjs';
-const OPERATIONS = new Set(['preflight', 'info', 'smoke']);
+const OPERATIONS = new Set(['preflight', 'info', 'smoke', 'acceptance']);
 const MAX_REQUEST_BYTES = 256;
 const MAX_OUTPUT_BYTES = 1_048_576;
 const OPERATION_TIMEOUT_MS = 900_000;
@@ -37,12 +37,7 @@ export async function executeBrokerOperation(operation) {
   } catch (error) {
     const result = error;
     if (typeof result.code === 'number') {
-      return {
-        operation,
-        exitCode: result.code,
-        stdout: result.stdout ?? '',
-        stderr: result.stderr ?? '',
-      };
+      return { operation, exitCode: result.code, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
     }
     return {
       operation,
