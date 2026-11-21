@@ -47,3 +47,10 @@ This evidence validates the initial rootless feasibility path only. The remainin
 ## Restricted diagnostics privilege boundary
 
 The public MCP service retains `NoNewPrivileges=true`; it must not use setuid sudo to cross into a privileged context. The acceptance diagnostics use a separate root-owned, systemd socket-activated broker. Its Unix socket is restricted to the `vps-mcp` group, and its protocol accepts only the fixed `preflight`, `info` and `smoke` operations. The broker itself retains `NoNewPrivileges=yes` and an empty capability bounding set, and delegates only to the root-owned helper with fixed arguments. The helper creates a separate transient unit for the dedicated `vps-sandbox` identity. This is an acceptance-only bridge, not the general workload control plane for #33.
+
+
+## Host filesystem isolation acceptance update (2026-11-21)
+
+The acceptance helper now validates that the host's protected paths exist before launching the test unit, then applies systemd `InaccessiblePaths=` to the MCP environment directory, production MCP checkout, private connector checkout and root home. The live acceptance operation checks that the `vps-sandbox` process cannot read `/etc/shadow` or `/etc/vps-mcp/vps-mcp.env`, and cannot traverse either MCP checkout or `/root`. This is deliberately separate from the container's own no-host-mount test: both the runtime executor and the container must be constrained.
+
+This code change is not live evidence until deployed and the post-deployment acceptance operation passes. The managed workspace root `/srv/vps-mcp-workspaces` is not provisioned at this stage; per-task workspace isolation and ownership are part of the repository/worktree lifecycle work (#31/#32) and must be validated when those paths are introduced. General workload execution remains disabled.

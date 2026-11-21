@@ -147,3 +147,10 @@ If the transient unit cannot provide the required user namespace and delegated c
 - cgroup limits unavailable: verify the lingering `user@<uid>.service` is active with `Delegate=yes`, its D-Bus socket exists, the helper passes `DBUS_SESSION_BUS_ADDRESS`, and Podman reports `cgroupManager: systemd`. Do not fall back to rootless `cgroupfs` for workload limits and do not mount or remount host cgroups from the MCP process.
 - storage is not writable: verify `/var/lib/vps-sandbox/.local/share/containers` ownership and the unit's `ReadWritePaths`.
 - overlay storage fails: validate `fuse-overlayfs` and filesystem support; do not switch to a less isolated storage mode without review.
+
+
+### Host filesystem isolation checks
+
+The fixed runtime helper validates that these protected host paths exist before starting a test unit: `/etc/vps-mcp`, `/etc/vps-mcp/vps-mcp.env`, `/opt/vps-mcp`, `/srv/vps-mcp`, `/root` and `/etc/shadow`. The transient unit masks the MCP environment directory, both private MCP checkouts and root's home with systemd `InaccessiblePaths=`. The acceptance suite then verifies from the actual `vps-sandbox` execution identity that the shadow file and MCP environment are unreadable and the protected directories cannot be traversed. This host-side check complements the container-side check for absent host-root and runtime-socket mounts.
+
+The future managed workspace root `/srv/vps-mcp-workspaces` is intentionally not created by runtime feasibility provisioning. Once repository/worktree management provisions it, #31/#32 must add explicit per-workspace ownership and access tests before task sandboxes are enabled.
