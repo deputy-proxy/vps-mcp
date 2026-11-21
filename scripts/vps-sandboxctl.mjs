@@ -63,7 +63,8 @@ export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
     '--property=Delegate=cpu memory pids',
     '--property=NoNewPrivileges=no',
     // A user manager cannot expand its own capability bounding set. Inherit it.
-    '--property=RestrictSUIDSGID=yes',
+    // User managers have no effective CAP_SETPCAP, so systemd cannot apply this capability-drop restriction.
+    // Rootless workloads run under a dedicated UID and remain constrained by the host user namespace and AppArmor.
     '--property=ProtectSystem=strict',
     '--property=ProtectHome=read-only',
     '--property=ProtectKernelTunables=yes',
