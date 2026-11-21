@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 const PODMAN = '/usr/bin/podman';
 const IMAGE = 'docker.io/library/alpine:3.21';
+const CGROUP_PARENT = process.env.VPS_SANDBOXCTL_CGROUP ?? '';
 const checks = [];
 const add = (id, ok, detail) => {
   checks.push({ id, status: ok ? 'pass' : 'fail', detail });
@@ -24,6 +25,11 @@ function main() {
     process.exit(77);
   }
 
+  if (!/^\/system\.slice\/vps-sandboxctl-acceptance-[0-9]+\.service$/.test(CGROUP_PARENT)) {
+    console.error('Acceptance suite requires an authenticated delegated system-service cgroup parent.');
+    process.exit(77);
+  }
+
   const workspace = mkdtempSync('/var/lib/vps-sandbox/acceptance-');
   const name = `vps-acceptance-${process.pid}`;
   const sentinel = join(workspace, 'host-sentinel.txt');
@@ -37,7 +43,7 @@ function main() {
     add('rootless-identity', hostUser === 'vps-sandbox' && uid === '0', `container namespace root uid=${uid}; host executor=${hostUser}`);
 
     run([
-      'create', '--name', name, '--pull=missing',
+      'create', '--cgroup-parent', CGROUP_PARENT, '--name', name, '--pull=missing',
       '--network=none', '--read-only', '--cap-drop=ALL',
       '--security-opt=no-new-privileges',
       '--pids-limit=64', '--memory=128m', '--cpus=0.5',
@@ -88,7 +94,7 @@ function main() {
     add('container-stop-remove', true, 'acceptance container stopped and removed');
 
     const writableFile = join(workspace, 'rw-proof.txt');
-    run(['run', '--rm', '--pull=missing', '--network=none', '--read-only',
+    run(['run', '--cgroup-parent', CGROUP_PARENT, '--rm', '--pull=missing', '--network=none', '--read-only',
       '--cap-drop=ALL', '--security-opt=no-new-privileges',
       '--volume', `${workspace}:/workspace:rw`, IMAGE,
       'sh', '-c', 'echo writable-mount-proof > /workspace/rw-proof.txt']);
