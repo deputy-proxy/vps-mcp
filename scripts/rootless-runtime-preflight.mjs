@@ -16,6 +16,7 @@ export function evaluateSnapshot(snapshot) {
   add('subuid', snapshot.subuid === true, snapshot.subuidDetail ?? `${SERVICE_USER} subordinate UID range`);
   add('subgid', snapshot.subgid === true, snapshot.subgidDetail ?? `${SERVICE_USER} subordinate GID range`);
   add('uidmap-helpers', snapshot.newuidmap && snapshot.newgidmap, `newuidmap=${snapshot.newuidmap}; newgidmap=${snapshot.newgidmap}`);
+  add('mapping-helper-capabilities', snapshot.capSetuid && snapshot.capSetgid, `CAP_SETUID in bounding set=${snapshot.capSetuid}; CAP_SETGID in bounding set=${snapshot.capSetgid}`);
   add('network-helper', snapshot.slirp4netns || snapshot.pasta, `slirp4netns=${snapshot.slirp4netns}; pasta=${snapshot.pasta}`);
   add('overlay-helper', snapshot.fuseOverlayfs, `fuse-overlayfs=${snapshot.fuseOverlayfs}`, false);
   add('podman', snapshot.podman, `podman=${snapshot.podmanVersion ?? 'not installed'}`);
@@ -51,6 +52,10 @@ export function collectSnapshot() {
   const podmanVersion = command('podman', ['--version']);
   const processStatus = read('/proc/self/status') ?? '';
   const noNewPrivileges = /^NoNewPrivs:\s+1$/m.test(processStatus);
+  const capBnd = processStatus.match(/^CapBnd:\s+([0-9a-f]+)$/mi)?.[1];
+  const capBndValue = capBnd ? BigInt(`0x${capBnd}`) : 0n;
+  const capSetgid = Boolean(capBndValue & (1n << 6n));
+  const capSetuid = Boolean(capBndValue & (1n << 7n));
   let storageWritable = false;
   let storageDetail = 'HOME is not writable';
   try { accessSync(os.homedir(), constants.W_OK); storageWritable = true; storageDetail = `HOME=${os.homedir()}`; } catch { /* reported below */ }
@@ -81,6 +86,7 @@ export function collectSnapshot() {
     podman: Boolean(podmanVersion), podmanVersion,
     unitReadable: Boolean(unit),
     noNewPrivileges,
+    capSetuid, capSetgid,
     protectSystem: unit?.match(/^ProtectSystem\s*=\s*(.+)$/im)?.[1] ?? null,
     protectControlGroups: unit?.match(/^ProtectControlGroups\s*=\s*(.+)$/im)?.[1] ?? null,
     storageWritable, storageDetail, memoryBytes, diskAvailableBytes,

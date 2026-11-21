@@ -6,7 +6,7 @@ const readySnapshot = {
   subuid: true, subgid: true, newuidmap: true, newgidmap: true,
   slirp4netns: true, pasta: false, fuseOverlayfs: true,
   podman: true, podmanVersion: 'podman version 5.0.0',
-  unitReadable: true, noNewPrivileges: false,
+  unitReadable: true, noNewPrivileges: false, capSetuid: true, capSetgid: true,
   protectSystem: 'strict', protectControlGroups: true,
   serviceContextProbe: true, storageWritable: true,
   memoryBytes: 8 * 1024 ** 3, diskAvailableBytes: 50 * 1024 ** 3,
@@ -21,6 +21,12 @@ describe('rootless runtime preflight', () => {
     const result = evaluateSnapshot({ ...readySnapshot, cgroupDelegation: false });
     expect(result.ready).toBe(false);
     expect(result.failures.map((failure) => failure.id)).toContain('cgroup-delegation');
+  });
+
+  it('blocks when the capability bounding set excludes mapping-helper capabilities', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, capSetuid: false, capSetgid: false });
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('mapping-helper-capabilities');
   });
 
   it('blocks when user namespaces are unavailable', () => {
