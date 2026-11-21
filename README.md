@@ -1,6 +1,6 @@
 # vps-mcp
 
-An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access and synchronous/background command execution.
+An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access, synchronous/background command execution, and a persistent managed Git repository registry with safe bare-clone caching.
 
 ## Rootless container runtime readiness
 
@@ -21,6 +21,13 @@ The self-hosted sandbox runtime is gated on the rootless Podman feasibility deci
 | `filesystem.list` | List an allowed directory |
 | `filesystem.read` | Read a UTF-8 file (maximum 2 MiB) |
 | `filesystem.write` | Atomically create or replace a UTF-8 file (maximum 2 MiB) |
+| `repository.register` | Register a canonical GitHub repository and inspect required branches |
+| `repository.list` | List the persistent managed repository registry |
+| `repository.inspect` | Inspect remote, cache, worktrees, environments and health |
+| `repository.update` | Update repository metadata and persistent-environment protections |
+| `repository.validate` | Validate remote reachability, branch policy and cache health |
+| `repository.fetch` | Clone/fetch a bare cache without changing worktrees |
+| `repository.remove` | Dry-run or safely remove a repository cache and registry entry |
 
 ## MCP transport
 
@@ -169,6 +176,11 @@ Generate a token with `openssl rand -hex 32`.
 | `MCP_DEFAULT_COMMAND_TIMEOUT_MS` | `30000` | Default command timeout |
 | `MCP_MAX_COMMAND_TIMEOUT_MS` | `900000` | Maximum command timeout |
 | `MCP_MAX_OUTPUT_BYTES` | `1048576` | Maximum synchronous command output |
+| `REPOSITORY_DEV_HOST_SUFFIX` | `.dev.cr8or.be` | Suffix for derived repository development hostnames |
+| `REPOSITORY_MAX_COUNT` | `250` | Configurable managed repository capacity |
+| `REPOSITORY_MAX_CACHE_BYTES` | `21474836480` | Maximum size of each bare repository cache (20 GiB) |
+| `REPOSITORY_CACHE_STALE_AFTER_MS` | `604800000` | Age after which an unfetched cache is reported stale (7 days) |
+| `REPOSITORY_GIT_CREDENTIAL_HELPER` | unset | Optional trusted executable implementing the Git credential-helper protocol |
 
 ## Known boundaries
 
@@ -176,7 +188,11 @@ Generate a token with `openssl rand -hex 32`.
 - Only signed JWT access tokens are supported; opaque-token introspection is not implemented.
 - Active background process supervision is not yet managed by a dedicated process supervisor.
 - Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. General sandbox lifecycle operations remain a later design decision.
-- Git worktree orchestration, concurrency locks, backups, management UI and Railway Sandbox compatibility remain later milestones.
+- Persistent repository registration and bare-clone caching are implemented. Application environment provisioning, task worktree orchestration, branch bootstrap/enforcement (#41), backups, management UI and Railway Sandbox compatibility remain separate milestones.
+
+## Repository management
+
+See [repository management architecture](docs/architecture/repository-management.md) and [repository operations](docs/operations/repositories.md) for the data model, canonical remote and branch policy, cache lifecycle, onboarding and safe cleanup procedures. The service account must have Git installed. Private GitHub repositories require an explicitly configured trusted credential-helper executable via `REPOSITORY_GIT_CREDENTIAL_HELPER`; credentials are never accepted in remote URLs or written to registry metadata.
 
 ## Development checks
 

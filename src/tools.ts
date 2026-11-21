@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import { executeCommand, startExecution, getExecutionStatus, getExecutionLogs, cancelExecution } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
 import { isRuntimeOperation, runRuntimeOperation } from "./runtime.js";
+import { fetchRepository, inspectRepository, listRepositories, registerRepository, removeRepository, updateRepository, validateRepository } from "./repositories.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -136,6 +137,68 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { path: z.string().min(1), content: z.string().max(2 * 1024 * 1024) },
   }, async ({ path, content }) => guarded(() => safely(() => writeFile(path, content))));
+
+  server.registerTool("repository.register", {
+    title: "Register repository",
+    description: "Register a canonical GitHub repository in the persistent managed registry. Inspects remote branches but never creates or changes branches. Git credentials are not stored.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    inputSchema: {
+      remoteUrl: z.string().min(1).max(500),
+      developmentHostname: z.string().max(253).optional(),
+      languageProfile: z.string().max(100).optional(),
+      policyReferences: z.array(z.string().min(1).max(500)).max(30).optional(),
+    },
+  }, async (input) => guarded(() => safely(() => registerRepository(input))));
+
+  server.registerTool("repository.list", {
+    title: "List repositories",
+    description: "List all registered repositories and their persistent metadata.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {},
+  }, async () => guarded(() => safely(() => listRepositories())));
+
+  server.registerTool("repository.inspect", {
+    title: "Inspect repository",
+    description: "Inspect remote branch policy, cache integrity and size, linked worktrees, persistent environments and health indicators.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    inputSchema: { id: z.string().min(1).max(200) },
+  }, async ({ id }) => guarded(() => safely(() => inspectRepository(id))));
+
+  server.registerTool("repository.update", {
+    title: "Update repository metadata",
+    description: "Update repository hostname, language/toolchain profile, policy references or protected persistent environment paths. Paths must be within configured allowed roots.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      id: z.string().min(1).max(200),
+      remoteUrl: z.string().min(1).max(500).optional(),
+      developmentHostname: z.string().max(253).optional(),
+      languageProfile: z.string().max(100).optional(),
+      policyReferences: z.array(z.string().min(1).max(500)).max(30).optional(),
+      persistentEnvironmentPaths: z.array(z.string().min(1).max(4096)).max(30).optional(),
+      requiredBackupPaths: z.array(z.string().min(1).max(4096)).max(30).optional(),
+    },
+  }, async (input) => guarded(() => safely(() => updateRepository(input))));
+
+  server.registerTool("repository.validate", {
+    title: "Validate repository",
+    description: "Validate the canonical remote, required main/development branches, remote reachability, cache integrity and configured resource limits.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    inputSchema: { id: z.string().min(1).max(200) },
+  }, async ({ id }) => guarded(() => safely(() => validateRepository(id))));
+
+  server.registerTool("repository.fetch", {
+    title: "Fetch repository cache",
+    description: "Clone or fetch the persistent bare Git cache. Fetch updates remote-tracking refs only and never checks out, resets, cleans or mutates a branch or worktree. Uses bounded Git execution and per-service registry locking.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    inputSchema: { id: z.string().min(1).max(200) },
+  }, async ({ id }) => guarded(() => safely(() => fetchRepository(id))));
+
+  server.registerTool("repository.remove", {
+    title: "Remove repository",
+    description: "Dry-run or remove a managed repository and its bare cache. Removal is refused when linked worktrees or existing registered persistent environments remain. Set dryRun=false to perform removal.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { id: z.string().min(1).max(200), dryRun: z.boolean().default(true) },
+  }, async ({ id, dryRun }) => guarded(() => safely(() => removeRepository({ id, dryRun }))));
 
   return server;
 }
