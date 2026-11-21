@@ -115,7 +115,7 @@ export function collectSnapshot() {
   // systemd-run creates a cgroup namespace for this delegated unit. In that
   // namespace /proc/self/cgroup is relative to the namespace root (often "/"),
   // not the host's system.slice path. Authenticate the unit using systemd's
-  // invocation ID and ControlGroup, then inspect the delegated mount root.
+  // invocation ID and ControlGroup, then inspect that exact delegated subtree.
   const unitName = process.env.VPS_SANDBOXCTL_UNIT ?? '';
   const invocationId = process.env.INVOCATION_ID ?? '';
   const unitInvocationId = unitName && /^[a-zA-Z0-9_.@-]+$/.test(unitName)
@@ -130,7 +130,7 @@ export function collectSnapshot() {
   );
   const serviceCgroup = unitIdentityValid ? `/sys/fs/cgroup${hostControlGroup}` : null;
   const controllers = serviceCgroup
-    ? read(`${serviceCgroup}/cgroup.controllers`)?.split(/\\s+/).filter(Boolean) ?? []
+    ? read(`${serviceCgroup}/cgroup.controllers`)?.split(/\s+/).filter(Boolean) ?? []
     : [];
   let subtreeControlWritable = false;
   try {
