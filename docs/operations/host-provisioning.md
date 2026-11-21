@@ -50,6 +50,26 @@ The preflight must report `READY`. It verifies the effective runtime identity, u
 
 This is an isolated feasibility test, not the final production service design. Systemd 255 supports only boolean values for `ProtectControlGroups`; `private` is not a valid value on this host. `ProtectControlGroups=no` is required for writable cgroup delegation, while `Delegate=cpu memory pids` transfers ownership only of the unit subtree to `vps-sandbox`; the host manager retains ownership above it. Because the hierarchy remains visible, explicitly verify that writes outside the delegated subtree are denied. `NoNewPrivileges=no` and the two-capability bounding set apply to the entire transient unit process tree, which is why it runs under the dedicated non-login `vps-sandbox` identity. Keep `RestrictSUIDSGID=yes`. Preserve the public MCP service's existing hardening without exception.
 
+## Restricted MCP runtime helper
+
+The public MCP process must not receive general sudo access. The repository includes a root-owned helper that exposes only three fixed diagnostics: `preflight`, `info` and `smoke`. It accepts exactly one operation name and does not accept shell commands, Podman arguments, image names, systemd properties, paths or environment overrides. Each operation runs in a fresh transient systemd service as `vps-sandbox` with the reviewed property set above. The smoke operation runs only the pinned Alpine 3.21 test image and removes its container automatically. This helper is an acceptance/diagnostic bridge, not the future general sandbox lifecycle API; workload create/stop/remove APIs remain subject to the design and review in #33.
+
+After pulling the repository version containing `scripts/vps-sandboxctl.mjs`, install it and its exact-argument sudoers policy once as root:
+
+```bash
+sudo bash scripts/install-vps-sandboxctl.sh
+```
+
+The installer places `/usr/local/sbin/vps-sandboxctl` as `root:root` mode `0755` and `/etc/sudoers.d/vps-mcp-sandboxctl` as `root:root` mode `0440`, validates the policy with `visudo`, and grants `vps-mcp` passwordless permission for only these exact invocations:
+
+```bash
+sudo -n /usr/local/sbin/vps-sandboxctl preflight
+sudo -n /usr/local/sbin/vps-sandboxctl info
+sudo -n /usr/local/sbin/vps-sandboxctl smoke
+```
+
+The MCP tool `runtime.acceptance` invokes those same fixed operations. It does not accept arbitrary command input. Verify the installed helper and sudoers file ownership/modes after installation. Do not add `vps-mcp` to the sudo or Docker groups, do not grant `/usr/bin/systemd-run` directly, and do not change `vps-mcp.service`. Remove `/etc/sudoers.d/vps-mcp-sandboxctl` and `/usr/local/sbin/vps-sandboxctl` to revoke this bridge.
+
 ## Live acceptance matrix
 
 After the transient preflight and basic smoke test pass, verify and record each item:

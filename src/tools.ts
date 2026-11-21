@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { config } from "./config.js";
 import { executeCommand, startExecution, getExecutionStatus, getExecutionLogs, cancelExecution } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
+import { isRuntimeOperation, runRuntimeOperation } from "./runtime.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -104,6 +105,16 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { executionId: z.string().uuid() },
   }, async ({ executionId }) => guarded(() => safely(() => cancelExecution(executionId))));
+
+  server.registerTool("runtime.acceptance", {
+    title: "Rootless runtime acceptance",
+    description: "Run one of the fixed, administrator-approved rootless Podman diagnostics through the narrowly scoped vps-sandboxctl helper. This does not expose arbitrary root commands or enable application workloads.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { operation: z.enum(["preflight", "info", "smoke"]) },
+  }, async ({ operation }) => guarded(() => safely(async () => {
+    if (!isRuntimeOperation(operation)) throw new Error("Unsupported runtime operation");
+    return await runRuntimeOperation(operation);
+  })));
 
   server.registerTool("filesystem.list", {
     title: "List directory",
