@@ -86,3 +86,8 @@ The following live checks passed inside the transient systemd unit using `Delega
 Generic `unshare -Ur` still fails because Ubuntu's enforced `unprivileged_userns` AppArmor profile denies the namespace transition for that executable. The Podman and crun profiles are loaded as unconfined profiles with explicit `userns` permission. No global AppArmor setting was changed.
 
 This establishes a successful initial rootless runtime proof, not full acceptance. Workspace mount confinement, container capability policy, resource-limit enforcement, network egress restrictions, cleanup, restart/reboot recovery and the final runtime service boundary remain outstanding.
+
+
+## Restricted privileged diagnostic bridge
+
+The MCP service may invoke a root-owned `vps-sandboxctl` helper through an exact-argument sudoers allowlist. The only approved operations are `preflight`, `info` and `smoke`; all systemd properties, runtime identity, executable paths and test image are fixed in the helper. The helper rejects additional arguments and verifies that sudo invocation originates from the `vps-mcp` account. It does not expose arbitrary root commands or the Podman API. This bridge exists only to automate the current runtime acceptance diagnostics. It is not enabled until the administrator installs the helper and sudoers drop-in. General workload lifecycle operations require the separate runtime service/API and threat-model review in #33. The public MCP systemd unit remains unchanged.

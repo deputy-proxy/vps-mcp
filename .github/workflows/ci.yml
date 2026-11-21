@@ -21,7 +21,9 @@ jobs:
       - run: node --check scripts/check-oauth-provider.mjs
       - run: node --check scripts/check-public-mcp.mjs
       - run: node --check scripts/rootless-runtime-preflight.mjs
+      - run: node --check scripts/vps-sandboxctl.mjs
       - run: bash -n scripts/provision-rootless-podman.sh
+      - run: bash -n scripts/install-vps-sandboxctl.sh
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

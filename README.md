@@ -4,7 +4,7 @@ An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping 
 
 ## Rootless container runtime readiness
 
-The self-hosted sandbox runtime is gated on the rootless Podman feasibility decision. Read [the runtime architecture](docs/architecture/container-runtime.md), [host provisioning and acceptance](docs/operations/host-provisioning.md), and [ADR-0001](docs/adr/0001-rootless-container-runtime.md) before provisioning. The administrator provisioning step installs a read-only copy of the preflight at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`; run that copy as the dedicated `vps-sandbox` identity inside the documented transient systemd test unit. Do not run the feasibility test as `vps-mcp` or weaken the public `vps-mcp.service`. The administrator-only provisioning script is `scripts/provision-rootless-podman.sh`; it does not alter systemd hardening. A passing preflight alone does not authorize production sandbox workloads.
+The self-hosted sandbox runtime is gated on the rootless Podman feasibility decision. Read [the runtime architecture](docs/architecture/container-runtime.md), [host provisioning and acceptance](docs/operations/host-provisioning.md), and [ADR-0001](docs/adr/0001-rootless-container-runtime.md) before provisioning. The administrator provisioning step installs a read-only copy of the preflight at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`. The restricted `vps-sandboxctl` helper runs it as the dedicated `vps-sandbox` identity inside the documented transient systemd test unit. Do not run the feasibility test as `vps-mcp` or weaken the public `vps-mcp.service`. The administrator-only provisioning script is `scripts/provision-rootless-podman.sh`; it does not alter systemd hardening. A restricted root-owned diagnostic helper can expose only the fixed `preflight`, `info` and `smoke` checks to MCP through exact-argument sudoers rules. Install it with `sudo bash scripts/install-vps-sandboxctl.sh` after pulling the change. This is not a general privileged command interface and does not authorize production sandbox workloads.
 
 ## Current capabilities
 
@@ -12,6 +12,7 @@ The self-hosted sandbox runtime is gated on the rootless Podman feasibility deci
 |---|---|
 | `system.health` | Service and data-directory health |
 | `system.info` | OS, CPU, memory, load, uptime and filesystem information |
+| `runtime.acceptance` | Run fixed rootless runtime preflight, info or smoke checks through a restricted helper |
 | `terminal.execute` | Execute a bounded Bash command |
 | `terminal.start` | Start a detached command with persistent logs |
 | `terminal.status` | Inspect a background execution |
@@ -174,7 +175,7 @@ Generate a token with `openssl rand -hex 32`.
 - External OAuth provider selection and tenant-specific configuration remain deployment decisions.
 - Only signed JWT access tokens are supported; opaque-token introspection is not implemented.
 - Active background process supervision is not yet managed by a dedicated process supervisor.
-- Privileged host administration requires a separately designed, narrowly scoped helper; unrestricted sudo is not supported.
+- Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. General sandbox lifecycle operations remain a later design decision.
 - Git worktree orchestration, concurrency locks, backups, management UI and Railway Sandbox compatibility remain later milestones.
 
 ## Development checks
