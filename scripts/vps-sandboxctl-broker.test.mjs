@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parseBrokerRequest } from './vps-sandboxctl-broker.mjs';
 
 describe('rootless runtime broker request validation', () => {
-  it.each(['preflight', 'info', 'smoke'])('accepts the fixed %s operation', (operation) => {
+  it.each(['preflight', 'info', 'smoke', 'acceptance'])('accepts the fixed %s operation', (operation) => {
     expect(parseBrokerRequest(JSON.stringify({ operation }))).toBe(operation);
   });
 

@@ -108,9 +108,9 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("runtime.acceptance", {
     title: "Rootless runtime acceptance",
-    description: "Run one of the fixed, administrator-approved rootless Podman diagnostics through the narrowly scoped vps-sandboxctl helper. This does not expose arbitrary root commands or enable application workloads.",
+    description: "Run fixed rootless Podman diagnostics or the isolated live acceptance suite through the narrowly scoped vps-sandboxctl helper. This does not expose arbitrary root commands or enable application workloads.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    inputSchema: { operation: z.enum(["preflight", "info", "smoke"]) },
+    inputSchema: { operation: z.enum(["preflight", "info", "smoke", "acceptance"]) },
   }, async ({ operation }) => guarded(() => safely(async () => {
     if (!isRuntimeOperation(operation)) throw new Error("Unsupported runtime operation");
     return await runRuntimeOperation(operation);

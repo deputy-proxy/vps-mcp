@@ -3,11 +3,12 @@ import { execFileSync } from 'node:child_process';
 
 const SANDBOX_USER = 'vps-sandbox';
 const PREFLIGHT = '/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs';
+const ACCEPTANCE = '/usr/local/libexec/vps-mcp/rootless-runtime-acceptance.mjs';
 const PODMAN = '/usr/bin/podman';
 const NODE = '/usr/bin/node';
 const BASH = '/usr/bin/bash';
 const ALPINE_IMAGE = 'docker.io/library/alpine:3.21';
-const OPERATIONS = new Set(['preflight', 'info', 'smoke']);
+const OPERATIONS = new Set(['preflight', 'info', 'smoke', 'acceptance']);
 
 function fail(message, code = 2) {
   console.error(message);
@@ -37,18 +38,18 @@ function buildUnitScript(operation, unitName) {
   const preflight = `${NODE} ${PREFLIGHT}`;
   const info = `${PODMAN} --cgroup-manager=cgroupfs info --debug`;
   const smoke = `${PODMAN} --cgroup-manager=cgroupfs run --rm --pull=missing ${ALPINE_IMAGE} id`;
+  const acceptanceCommand = `${NODE} ${ACCEPTANCE}`;
 
-  if (operation === 'preflight') return `${preflight}${String.fromCharCode(10)}${checks}`;
+  if (operation === 'preflight') return `${preflight}\n${checks}`;
   if (operation === 'info') return info;
-  if (operation === 'smoke') {
-    return [preflight, checks, info, smoke, 'echo \"ROOTLESS ACCEPTANCE SMOKE PASSED\"'].join(String.fromCharCode(10));
-  }
+  if (operation === 'smoke') return [preflight, checks, info, smoke, 'echo "ROOTLESS ACCEPTANCE SMOKE PASSED"'].join('\n');
+  if (operation === 'acceptance') return [preflight, checks, acceptanceCommand].join('\n');
   throw new Error('Unsupported operation');
 }
 
 export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
   if (!OPERATIONS.has(operation)) throw new Error('Unsupported runtime operation');
-  if (!/^vps-sandboxctl-(preflight|info|smoke)-[0-9]+$/.test(unitName)) throw new Error('Invalid transient unit name');
+  if (!/^vps-sandboxctl-(preflight|info|smoke|acceptance)-[0-9]+$/.test(unitName)) throw new Error('Invalid transient unit name');
   if (!/^[0-9]+$/.test(String(sandboxUid))) throw new Error('Invalid sandbox UID');
 
   return [
@@ -74,7 +75,7 @@ export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
 function main() {
   assertCaller();
   if (process.argv.length !== 3 || !OPERATIONS.has(process.argv[2])) {
-    fail('Usage: vps-sandboxctl {preflight|info|smoke}');
+    fail('Usage: vps-sandboxctl {preflight|info|smoke|acceptance}');
   }
 
   const operation = process.argv[2];
