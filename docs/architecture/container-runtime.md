@@ -2,7 +2,7 @@
 
 ## Status
 
-**Decision: rootless Podman is the preferred candidate, but it is not approved for production use.** The public `vps-mcp.service` cannot create the required user namespace or delegate the required cgroup controllers under its current hardening. No container runtime is installed. Do not enable sandbox workloads until the dedicated runtime identity has passed the administrator provisioning and live acceptance gates.
+**Decision: rootless Podman is the preferred candidate and has passed the initial live rootless smoke test, but it is not approved for production use.** The public `vps-mcp.service` remains intentionally unable to create the required user namespace or delegate the required cgroup controllers under its current hardening. The dedicated `vps-sandbox` identity can create Podman user namespaces and run a container inside the transient systemd boundary. Do not enable sandbox workloads until the remaining isolation and lifecycle acceptance gates pass.
 
 ## Host facts captured
 
@@ -17,7 +17,7 @@ Captured on 2026-11-21 from the public `vps-mcp` execution identity on the produ
 - No Podman, Docker, Buildah, `newuidmap`, `newgidmap`, `slirp4netns`, `pasta` or `fuse-overlayfs` binary was present at inspection.
 - `/etc/subuid` and `/etc/subgid` contain only `ubuntu:100000:65536`; no subordinate range exists for `vps-sandbox`.
 - Kernel settings allow unprivileged user namespaces (`user.max_user_namespaces=47690`, `kernel.unprivileged_userns_clone=1`), so the host sysctls are not the blocker.
-- The unprivileged user-namespace probe (`unshare -Ur ...`) fails with `Operation not permitted` inside `vps-mcp.service`.
+- The generic `unshare -Ur` executable is denied by Ubuntu's enforced AppArmor `unprivileged_userns` profile on this host. This is not a valid proxy for Podman's runtime capability: the installed `podman` and `crun` profiles explicitly permit `userns`, and `podman unshare` succeeds as `vps-sandbox`.
 
 The administrator confirmed the public unit has `User=vps-mcp`, an empty `CapabilityBoundingSet`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, and `ReadWritePaths=/srv /var/lib/vps-mcp`. Effective properties confirm `Delegate=no`.
 
@@ -65,8 +65,24 @@ The MCP filesystem allowlist does not yet include `/srv/vps-mcp-workspaces`; lat
 
 The administrator provisioning script installs Podman prerequisites, allocates subordinate IDs for `vps-sandbox`, prepares its rootless storage directory, enables lingering, and installs a read-only copy of the preflight at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`. It does not edit the public MCP systemd unit.
 
-Run the preflight and smoke test as `vps-sandbox` inside the transient systemd unit shown in `docs/operations/host-provisioning.md`. The preflight inspects the effective process identity, `NoNewPrivileges`, capability bounding set, user namespace, cgroup delegation, subordinate IDs, helpers and storage. It deliberately does not read `vps-mcp.service`, because that is not the runtime test context.
+Run the preflight and smoke test as `vps-sandbox` inside the transient systemd unit shown in `docs/operations/host-provisioning.md`. The preflight inspects the effective process identity, `NoNewPrivileges`, capability bounding set, Podman's own user-namespace path, cgroup delegation, subordinate IDs, helpers and storage. It deliberately probes `podman unshare`, not generic `unshare -Ur`, because Ubuntu AppArmor policy can treat those executables differently. It deliberately does not read `vps-mcp.service`, because that is not the runtime test context.
 
 ## Acceptance gate
 
 A passing preflight is necessary but not sufficient. Before selecting Podman as the runtime, complete the live test matrix in `docs/operations/host-provisioning.md` and record sanitized command output in issue #30. The preflight must report `READY`, the container smoke test and isolation/resource checks must pass, and the dedicated runtime service design must be reviewed. Until then, sandbox creation remains disabled. Merging the feasibility code does not close issue #30.
+
+## Live provisioning update (2026-11-21)
+
+The administrator provisioned Podman 4.9.3 and the dedicated `vps-sandbox` identity on Ubuntu 24.04.5. The package-created rootful Podman system services, socket and timers were disabled; rootless Podman remains available to the dedicated identity.
+
+The following live checks passed inside the transient systemd unit using `Delegate=cpu memory pids`, `ProtectControlGroups=no`, `NoNewPrivileges=no`, `CapabilityBoundingSet=CAP_SETUID CAP_SETGID` and `RestrictSUIDSGID=yes`:
+
+- `podman unshare` creates the user namespace with the configured subordinate UID/GID maps.
+- The unit can write its own `cgroup.subtree_control`, while writes to the root cgroup and `system.slice` controls are denied.
+- `podman --cgroup-manager=cgroupfs info` reports `rootless: true`, cgroup v2 and the expected overlay storage.
+- An Alpine 3.21 container runs successfully and reports container UID/GID 0.
+- The public `vps-mcp.service` policy was not modified.
+
+Generic `unshare -Ur` still fails because Ubuntu's enforced `unprivileged_userns` AppArmor profile denies the namespace transition for that executable. The Podman and crun profiles are loaded as unconfined profiles with explicit `userns` permission. No global AppArmor setting was changed.
+
+This establishes a successful initial rootless runtime proof, not full acceptance. Workspace mount confinement, container capability policy, resource-limit enforcement, network egress restrictions, cleanup, restart/reboot recovery and the final runtime service boundary remain outstanding.

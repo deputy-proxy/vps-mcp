@@ -48,6 +48,27 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends podman uidmap slirp4netns fuse-overlayfs
 
+# Ubuntu's Podman package enables system-level (rootful) units by default.
+# This platform uses only the dedicated rootless vps-sandbox context.
+ROOTFUL_PODMAN_UNITS=(
+  podman.socket
+  podman.service
+  podman-auto-update.timer
+  podman-restart.service
+  podman-clean-transient.service
+)
+for unit in "${ROOTFUL_PODMAN_UNITS[@]}"; do
+  if systemctl is-enabled "$unit" 2>/dev/null | grep -qx 'enabled'; then
+    systemctl disable "$unit"
+  fi
+  systemctl stop "$unit" 2>/dev/null || true
+  systemctl reset-failed "$unit" 2>/dev/null || true
+  if systemctl is-active --quiet "$unit"; then
+    echo "Rootful Podman unit remains active: $unit" >&2
+    exit 1
+  fi
+done
+
 # Allocate subordinate IDs only when no range already exists. Never overwrite an
 # existing allocation; an administrator must resolve overlaps manually.
 find_free_range() {

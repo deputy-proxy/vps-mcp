@@ -1,6 +1,6 @@
 # ADR-0001: Rootless container runtime for managed development sandboxes
 
-- Status: **Proposed, blocked on administrator validation**
+- Status: **Proposed; initial live rootless smoke passed, full acceptance outstanding**
 - Date: 2026-11-21
 - Issue: [#30](https://github.com/deputy-proxy/vps-mcp/issues/30)
 
@@ -33,3 +33,13 @@ The transient unit is a feasibility boundary, not automatically the final produc
 - The MCP checkout is private to `vps-mcp`, so provisioning installs a read-only preflight copy under `/usr/local/libexec/vps-mcp/` for execution by `vps-sandbox`.
 - A single-ID user namespace is not considered equivalent to the planned subordinate UID/GID mapping without an explicit threat-model and workspace-ownership review.
 - Merging the feasibility/provisioning code does not close issue #30 or authorize runtime workloads; live host evidence is still required.
+
+## Live evidence update (2026-11-21)
+
+The dedicated `vps-sandbox` identity was provisioned on the Ubuntu 24.04.5 VPS with a 65,536-ID subordinate UID/GID range. Podman 4.9.3, crun, mapping helpers and rootless networking/storage prerequisites are installed. Rootful Podman system-level services, sockets and timers created by the package were disabled.
+
+Inside the dedicated transient systemd unit, Podman successfully created a user namespace, reported rootless mode, and ran an Alpine 3.21 container. The unit's cgroup subtree was writable while the root and `system.slice` cgroup control files were not writable. The public `vps-mcp.service` policy remains unchanged.
+
+Ubuntu's enforced `unprivileged_userns` AppArmor profile denies generic `unshare -Ur`; the packaged Podman and crun profiles explicitly permit `userns`. Therefore the preflight must test `podman unshare`, not generic `unshare`. No global AppArmor restriction was disabled.
+
+This evidence validates the initial rootless feasibility path only. The remaining isolation, resource, networking, cleanup and lifecycle acceptance matrix must pass before production approval.

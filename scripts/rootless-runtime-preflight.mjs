@@ -64,10 +64,21 @@ function hasSubordinateRange(file, username) {
 }
 
 function probeUserNamespace() {
-  const output = command('unshare', ['-Ur', 'sh', '-c', 'cat /proc/self/uid_map']);
+  // Probe the namespace path the selected runtime actually uses. Generic
+  // unshare may be restricted by Ubuntu's AppArmor unprivileged_userns
+  // transition even when Podman's dedicated AppArmor profile permits it.
+  const output = command('podman', [
+    '--cgroup-manager=cgroupfs',
+    'unshare',
+    'sh',
+    '-c',
+    'printf "uid_map\n"; cat /proc/self/uid_map; printf "gid_map\n"; cat /proc/self/gid_map',
+  ]);
   return {
-    ok: Boolean(output),
-    detail: output ? `unshare succeeded; uid_map=${output.replace(/\s+/g, ' ')}` : 'unshare -Ur failed in this execution context',
+    ok: Boolean(output && output.includes('uid_map') && output.includes('gid_map')),
+    detail: output
+      ? `podman unshare succeeded; maps=${output.replace(/\s+/g, ' ')}`
+      : 'podman unshare failed in this execution context',
   };
 }
 
