@@ -19,7 +19,7 @@ An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping 
 
 ## MCP transport
 
-The server exposes MCP Streamable HTTP at both `/` and `/mcp` in stateless request/response mode. The root endpoint supports clients, including ChatGPT, that are configured with the origin URL; `/mcp` remains available for clients using the explicit path. Both endpoints share the same authentication boundary and transport implementation. MCP requests use POST; GET, DELETE and PATCH return 405. The server does not issue session IDs or support server-initiated SSE streams. Each POST creates a fresh MCP server and transport instance. Background execution metadata and logs persist under `MCP_DATA_DIR`.
+The server exposes MCP Streamable HTTP at `/mcp` in stateless request/response mode. MCP requests use POST; GET, DELETE and PATCH return 405. The server does not issue session IDs or support server-initiated SSE streams. Each POST creates a fresh MCP server and transport instance. Background execution metadata and logs persist under `MCP_DATA_DIR`.
 
 ## Authentication
 
