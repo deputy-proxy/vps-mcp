@@ -36,8 +36,8 @@ function cgroupChecks(unitName) {
 function buildUnitScript(operation, unitName) {
   const checks = cgroupChecks(unitName);
   const preflight = `${NODE} ${PREFLIGHT}`;
-  const info = `${PODMAN} --cgroup-manager=cgroupfs info --debug`;
-  const smoke = `${PODMAN} --cgroup-manager=cgroupfs run --rm --pull=missing ${ALPINE_IMAGE} id`;
+  const info = `${PODMAN} --cgroup-manager=systemd info --debug`;
+  const smoke = `${PODMAN} --cgroup-manager=systemd run --rm --pull=missing ${ALPINE_IMAGE} id`;
   const acceptanceCommand = `${NODE} ${ACCEPTANCE}`;
 
   if (operation === 'preflight') return `${preflight}\n${checks}`;
@@ -57,6 +57,7 @@ export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
     `--uid=${SANDBOX_USER}`,
     '--setenv=HOME=/var/lib/vps-sandbox',
     `--setenv=XDG_RUNTIME_DIR=/run/user/${sandboxUid}`,
+    `--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${sandboxUid}/bus`,
     '--property=Delegate=cpu memory pids',
     '--property=ProtectControlGroups=no',
     '--property=NoNewPrivileges=no',
