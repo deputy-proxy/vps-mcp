@@ -2,7 +2,7 @@ import express from "express";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config } from "./config.js";
-import { authenticate } from "./security.js";
+import { authenticate, verifyOAuthAccessToken } from "./security.js";
 import { createMcpServer } from "./tools.js";
 
 const CORS_ALLOWED_METHODS = ["GET", "POST"];
@@ -44,9 +44,9 @@ async function proxyAuthorizationServerMetadata(response: express.Response): Pro
   }
 }
 
-export function createHttpServer(dependencies: { authenticateRequest?: typeof authenticate } = {}) {
+export function createHttpServer(dependencies: { verifyOAuthAccessToken?: typeof verifyOAuthAccessToken } = {}) {
   const app = createMcpExpressApp({ host: config.host });
-  const authenticateRequest = dependencies.authenticateRequest ?? authenticate;
+  const verifyToken = dependencies.verifyOAuthAccessToken ?? verifyOAuthAccessToken;
 
   app.use((request, response, next) => {
     const origin = request.header("origin");
@@ -130,23 +130,31 @@ export function createHttpServer(dependencies: { authenticateRequest?: typeof au
         status: response.statusCode,
         durationMs: Math.round(durationMs * 100) / 100,
         rpcMethod: typeof body?.method === "string" ? body.method : undefined,
+        origin: request.header("origin") ?? null,
+        userAgent: request.header("user-agent") ?? null,
       }));
     });
     next();
   });
 
-  // Authenticate every MCP HTTP request, including initialize and tools/list.
-  // OAuth clients discover the authorization server from the HTTP 401 challenge
-  // and its RFC 9728 resource_metadata parameter before retrying with a token.
-  app.use("/mcp", (request, response, next) => {
-    void authenticateRequest(request, response, next).catch((error: unknown) => {
-      console.error("Authentication middleware failed", error);
-      if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
+  // ChatGPT's mixed OAuth flow requires initialize and tools/list to remain
+  // unauthenticated. OAuth is enforced inside each tool using its advertised
+  // securitySchemes and an MCP-level mcp/www_authenticate challenge.
+  // Static bearer-token mode remains protected at the HTTP transport layer.
+  if (config.authMode !== "oauth") {
+    app.use("/mcp", (request, response, next) => {
+      void authenticate(request, response, next).catch((error: unknown) => {
+        console.error("Authentication middleware failed", error);
+        if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
+      });
     });
-  });
+  }
 
   app.post("/mcp", async (request, response) => {
-    const server = createMcpServer();
+    const authorizeToolCall = config.authMode === "oauth"
+      ? () => verifyToken(request.header("authorization"))
+      : undefined;
+    const server = createMcpServer(authorizeToolCall);
     const transport = new StreamableHTTPServerTransport({});
     response.on("close", () => { void transport.close(); });
 
