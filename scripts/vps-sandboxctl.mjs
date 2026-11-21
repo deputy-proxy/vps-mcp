@@ -29,9 +29,10 @@ function cgroupChecks() {
     'CGROUP=$(systemctl show "$UNIT" --property=ControlGroup --value)',
     'case "$CGROUP" in /system.slice/vps-sandboxctl-*.service) ;; *) echo "Transient unit is outside the expected system.slice boundary: $CGROUP" >&2; exit 1 ;; esac',
     'MOUNT_ROOT=/sys/fs/cgroup',
-    'echo "Delegated system-service cgroup: $CGROUP (namespace mount root: $MOUNT_ROOT)"',
-    'test -d "$MOUNT_ROOT"',
-    'test -w "$MOUNT_ROOT/cgroup.subtree_control"',
+    'DELEGATED_CGROUP="$MOUNT_ROOT$CGROUP"',
+    'echo "Delegated system-service cgroup: $CGROUP (mount root: $MOUNT_ROOT)"',
+    'test -d "$DELEGATED_CGROUP"',
+    'test -w "$DELEGATED_CGROUP/cgroup.subtree_control"',
     'echo "SYSTEM-SERVICE CGROUP DELEGATION CHECK PASSED"',
   ].join(String.fromCharCode(10));
 }
