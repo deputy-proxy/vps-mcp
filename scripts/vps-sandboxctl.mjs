@@ -38,12 +38,12 @@ function buildUnitScript(operation, unitName) {
   const preflight = `${NODE} ${PREFLIGHT}`;
   const info = `${PODMAN} --cgroup-manager=cgroupfs info --debug`;
   const smoke = `${PODMAN} --cgroup-manager=cgroupfs run --rm --pull=missing ${ALPINE_IMAGE} id`;
-  const acceptance = `${NODE} ${ACCEPTANCE}`;
+  const acceptanceCommand = `${NODE} ${ACCEPTANCE}`;
 
   if (operation === 'preflight') return `${preflight}\n${checks}`;
   if (operation === 'info') return info;
   if (operation === 'smoke') return [preflight, checks, info, smoke, 'echo "ROOTLESS ACCEPTANCE SMOKE PASSED"'].join('\n');
-  if (operation === 'acceptance') return [preflight, checks, acceptance].join('\n');
+  if (operation === 'acceptance') return [preflight, checks, acceptanceCommand].join('\n');
   throw new Error('Unsupported operation');
 }
 
