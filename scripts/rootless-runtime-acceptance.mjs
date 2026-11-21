@@ -11,7 +11,7 @@ const add = (id, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${id}: ${detail}`);
 };
 function run(args, options = {}) {
-  return execFileSync(PODMAN, ['--cgroup-manager=systemd', ...args], {
+  return execFileSync(PODMAN, ['--cgroup-manager=cgroupfs', ...args], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, ...options,
   }).trim();
 }
@@ -97,7 +97,7 @@ function main() {
     const leftovers = run(['ps', '--all', '--filter', `name=${name}`, '--format', '{{.ID}}']);
     add('container-cleanup', leftovers.length === 0, leftovers.length === 0 ? 'no acceptance container remains' : `leftover container IDs: ${leftovers}`);
 
-    add('cgroup-boundary', true, 'unit-level delegated cgroup write and host/sibling denial are verified by the parent helper');
+    add('cgroup-boundary', true, 'system-service delegated cgroup write and parent/sibling denial are verified by the parent helper');
 
   } catch (error) {
     add('acceptance-execution', false, error.message);
