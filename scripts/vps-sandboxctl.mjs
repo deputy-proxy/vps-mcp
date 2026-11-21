@@ -1,5 +1,6 @@
 #!/usr/bin/node
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
 const SANDBOX_USER = 'vps-sandbox';
 const PREFLIGHT = '/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs';
@@ -9,6 +10,7 @@ const NODE = '/usr/bin/node';
 const BASH = '/usr/bin/bash';
 const ALPINE_IMAGE = 'docker.io/library/alpine:3.21';
 const OPERATIONS = new Set(['preflight', 'info', 'smoke', 'acceptance']);
+const PROTECTED_HOST_PATHS = ['/etc/vps-mcp', '/opt/vps-mcp', '/srv/vps-mcp', '/root'];
 
 function fail(message, code = 2) {
   console.error(message);
@@ -17,6 +19,9 @@ function fail(message, code = 2) {
 
 function assertCaller() {
   if (process.getuid() !== 0) fail('vps-sandboxctl must be invoked by the root-owned diagnostics broker.', 77);
+  for (const path of [...PROTECTED_HOST_PATHS, '/etc/vps-mcp/vps-mcp.env', '/etc/shadow']) {
+    if (!existsSync(path)) fail(`Required protected host path is missing: ${path}`, 1);
+  }
 }
 
 function cgroupChecks() {
@@ -36,7 +41,8 @@ function cgroupChecks() {
     'test -w "$DELEGATED_CGROUP/cgroup.procs"',
     'INIT_CGROUP="$DELEGATED_CGROUP/init.scope"',
     'test -d "$INIT_CGROUP"',
-    'CURRENT_CGROUP=$(awk -F: \'$1 == "0" { print $3 }\' "/proc/$$/cgroup")',
+    'CURRENT_CGROUP=',
+    'while IFS=: read -r HIERARCHY CONTROLLERS CGROUP_PATH; do if [ "$HIERARCHY" = "0" ]; then CURRENT_CGROUP="$CGROUP_PATH"; break; fi; done < /proc/self/cgroup',
     'test "$CURRENT_CGROUP" = "$CGROUP/init.scope" || { echo "Main process is not in delegated init subgroup: $CURRENT_CGROUP" >&2; exit 1; }',
     'test -z "$(cat "$DELEGATED_CGROUP/cgroup.procs")" || { echo "Delegated parent cgroup unexpectedly contains processes" >&2; exit 1; }',
     'for CONTROLLER in cpu memory pids; do echo "+$CONTROLLER" > "$DELEGATED_CGROUP/cgroup.subtree_control" || { echo "Failed to enable delegated controller: $CONTROLLER" >&2; exit 1; }; done',
@@ -84,6 +90,7 @@ export function buildSystemdRunArgs(operation, unitName, sandboxUid) {
     // cgroupfs keeps Podman-created cgroups inside this service's delegated subtree.
     '--property=ProtectSystem=strict',
     '--property=ProtectHome=read-only',
+    `--property=InaccessiblePaths=${PROTECTED_HOST_PATHS.join(' ')}`,
     '--property=ProtectKernelTunables=yes',
     '--property=ProtectKernelModules=yes',
     '--property=PrivateTmp=yes',

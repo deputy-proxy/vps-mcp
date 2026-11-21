@@ -114,3 +114,10 @@ The first automated live acceptance run confirmed that Podman 4.9.3 accepted CPU
 The runtime now selects `--cgroup-manager=systemd` consistently for preflight, info, smoke and acceptance. The helper explicitly passes `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus` to the fixed transient test unit. Provisioning verifies that the lingering `user@<uid>.service` manager is active, has `Delegate=yes`, exposes CPU/memory/PID controllers and has its user bus socket. Preflight checks the same manager and delegation before reporting ready.
 
 The live acceptance suite verifies the effective `cpu.max`, `memory.max`, `pids.max` and `CapEff` from inside the running container. A configuration-only inspect result is not sufficient. This change is not accepted until the live suite passes all enforcement checks.
+
+
+## Host filesystem isolation acceptance
+
+The transient acceptance unit masks `/etc/vps-mcp`, `/opt/vps-mcp`, `/srv/vps-mcp` and `/root` using systemd `InaccessiblePaths=`. The root-owned fixed helper first confirms the protected paths and sensitive files exist, preventing a missing test target from being mistaken for a successful denial. The live acceptance suite verifies the dedicated runtime identity cannot read `/etc/shadow` or the MCP environment file and cannot traverse the protected checkouts or root home. This is host-executor isolation in addition to the container mount policy.
+
+The managed task workspace root is not provisioned by #30; per-workspace access control is owned by #31/#32 and must be proven before task execution is enabled.
