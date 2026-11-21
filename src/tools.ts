@@ -7,7 +7,7 @@ import { config } from "./config.js";
 import { executeCommand, startExecution, getExecutionStatus, getExecutionLogs, cancelExecution } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
 import { isRuntimeOperation, runRuntimeOperation } from "./runtime.js";
-import { fetchRepository, inspectRepository, listRepositories, registerRepository, removeRepository, updateRepository, validateRepository } from "./repositories.js";
+import { applyRepositoryBranchPolicy, fetchRepository, inspectRepository, listRepositories, registerRepository, removeRepository, updateRepository, validateRepository } from "./repositories.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -140,13 +140,14 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("repository.register", {
     title: "Register repository",
-    description: "Register a canonical GitHub repository in the persistent managed registry. Inspects remote branches but never creates or changes branches. Git credentials are not stored.",
+    description: "Register a canonical GitHub repository in the persistent managed registry. Inspects remote branches and active branch rulesets, returning safe remediation and governance status. Never creates or changes branches. Git credentials are not stored.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       remoteUrl: z.string().min(1).max(500),
       developmentHostname: z.string().max(253).optional(),
       languageProfile: z.string().max(100).optional(),
       policyReferences: z.array(z.string().min(1).max(500)).max(30).optional(),
+      requiredStatusChecks: z.array(z.string().min(1).max(200)).min(1).max(20).optional(),
     },
   }, async (input) => guarded(() => safely(() => registerRepository(input))));
 
@@ -166,7 +167,7 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("repository.update", {
     title: "Update repository metadata",
-    description: "Update repository hostname, language/toolchain profile, policy references or protected persistent environment paths. Paths must be within configured allowed roots.",
+    description: "Update repository hostname, language/toolchain profile, policy references, required GitHub status-check contexts or protected persistent environment paths. Paths must be within configured allowed roots.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       id: z.string().min(1).max(200),
@@ -174,6 +175,7 @@ export function createMcpServer(): McpServer {
       developmentHostname: z.string().max(253).optional(),
       languageProfile: z.string().max(100).optional(),
       policyReferences: z.array(z.string().min(1).max(500)).max(30).optional(),
+      requiredStatusChecks: z.array(z.string().min(1).max(200)).min(1).max(20).optional(),
       persistentEnvironmentPaths: z.array(z.string().min(1).max(4096)).max(30).optional(),
       requiredBackupPaths: z.array(z.string().min(1).max(4096)).max(30).optional(),
     },
@@ -181,10 +183,24 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("repository.validate", {
     title: "Validate repository",
-    description: "Validate the canonical remote, required main/development branches, remote reachability, cache integrity and configured resource limits.",
+    description: "Validate the canonical remote, required main/development branches, active branch rulesets, remote reachability, cache integrity and configured resource limits.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     inputSchema: { id: z.string().min(1).max(200) },
   }, async ({ id }) => guarded(() => safely(() => validateRepository(id))));
+
+  server.registerTool("repository.branch-policy.inspect", {
+    title: "Inspect branch governance",
+    description: "Inspect active GitHub rulesets applying to main and development. Reports compliant, non-compliant or unavailable; missing API access is never treated as protection.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    inputSchema: { id: z.string().min(1).max(200) },
+  }, async ({ id }) => guarded(() => safely(async () => (await inspectRepository(id)).branchPolicy)));
+
+  server.registerTool("repository.branch-policy.apply", {
+    title: "Apply branch governance",
+    description: "Create the managed GitHub ruleset for main and development. Defaults to a dry-run plan. Set confirm=true to apply; requires REPOSITORY_GITHUB_TOKEN with Administration: write. Never creates or repoints branches and never overwrites an existing ruleset.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    inputSchema: { id: z.string().min(1).max(200), confirm: z.boolean().default(false) },
+  }, async ({ id, confirm }) => guarded(() => safely(() => applyRepositoryBranchPolicy(id, confirm))));
 
   server.registerTool("repository.fetch", {
     title: "Fetch repository cache",

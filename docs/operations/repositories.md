@@ -28,7 +28,7 @@ The six initially active repositories are onboarded as ordinary records. There i
 
 Fetch only updates the bare cache's remote-tracking refs and object database. It does not change a working tree, local branch, persistent environment or task sandbox. `main` remains the production branch and `development` remains the required integration branch, regardless of GitHub's default branch.
 
-If either required branch is absent, registration/validation reports it. Do not use this feature to create or rename branches; issue #41 owns branch bootstrap and enforcement. If a remote becomes unreachable, resolve the network or Git credential problem for the service account and retry. Credentials must not be placed in remote URLs or issue comments.
+If either required branch is absent, registration/validation reports it and returns a safe remediation note. Do not create or repoint a branch until its source history has been verified and the change explicitly approved. After registration, inspect and apply branch governance using `repository.branch-policy.inspect` and `repository.branch-policy.apply`. If a remote becomes unreachable, resolve the network or Git credential problem for the service account and retry. Credentials must not be placed in remote URLs or issue comments.
 
 ## Safe cleanup
 
@@ -44,3 +44,14 @@ The removal operation refuses when it finds linked worktrees, an existing regist
 - A corrupt cache is not automatically replaced; inspect and preserve it for recovery before taking corrective action.
 - A corrupt or unsupported registry schema fails closed. Back up `registry.json` before manual repair or migration.
 - Never edit `registry.json` while the service is running. Use the MCP tools so metadata locking and atomic replacement are applied.
+
+## Branch governance onboarding
+
+1. Set `REPOSITORY_REQUIRED_STATUS_CHECKS` to the exact GitHub check-run context names required by the repository. The default is `quality`; confirm it against a successful Actions run before enforcing it.
+2. For public repositories, `repository.branch-policy.inspect` can read active rulesets without a token. For private repositories, configure `REPOSITORY_GITHUB_TOKEN` with `Metadata: read`.
+3. Run `repository.branch-policy.inspect` and review both required branches. An `unavailable` result is not evidence of protection.
+4. Run `repository.branch-policy.apply` without `confirm` to preview the proposed ruleset. It refuses to create missing branches and does not overwrite an existing ruleset with the managed name.
+5. Only after reviewing the plan, call it with `confirm=true`. This requires `REPOSITORY_GITHUB_TOKEN` with `Administration: write`. The ruleset applies to `main` and `development`, requires pull requests, at least one approval, dismissal of stale approvals, the configured required status checks, prevents deletion and force pushes, and grants no bypass actors.
+6. Re-run `repository.branch-policy.inspect` and `repository.validate`. Validation remains false if rules are missing or GitHub cannot be queried.
+
+Store the token in the root-owned service environment file, never in the repository registry, a remote URL, logs or source control. A fine-grained PAT or GitHub App installation token is preferred over a classic PAT. Rotate it through the normal credential-management process.

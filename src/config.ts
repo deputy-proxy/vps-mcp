@@ -42,6 +42,16 @@ const allowedRoots = (process.env.MCP_ALLOWED_ROOTS ?? `/srv,${path.join(os.home
   .split(",").map((entry) => path.resolve(entry.trim())).filter(Boolean);
 if (allowedRoots.length === 0) throw new Error("MCP_ALLOWED_ROOTS must contain at least one directory");
 
+const repositoryGitHubToken = process.env.REPOSITORY_GITHUB_TOKEN?.trim() || undefined;
+if (repositoryGitHubToken && (/\s/.test(repositoryGitHubToken) || repositoryGitHubToken.length > 4096)) {
+  throw new Error("REPOSITORY_GITHUB_TOKEN must be a single-line token of at most 4096 characters");
+}
+const repositoryRequiredStatusChecks = (process.env.REPOSITORY_REQUIRED_STATUS_CHECKS ?? "quality")
+  .split(",").map((entry) => entry.trim()).filter(Boolean);
+if (repositoryRequiredStatusChecks.length === 0 || repositoryRequiredStatusChecks.length > 20 || repositoryRequiredStatusChecks.some((entry) => entry.length > 200)) {
+  throw new Error("REPOSITORY_REQUIRED_STATUS_CHECKS must contain 1 to 20 non-empty check names of at most 200 characters");
+}
+
 export const config = {
   host,
   port: integerFromEnv("MCP_PORT", 3000),
@@ -60,4 +70,6 @@ export const config = {
   defaultCommandTimeoutMs: integerFromEnv("MCP_DEFAULT_COMMAND_TIMEOUT_MS", 30_000),
   maxCommandTimeoutMs: integerFromEnv("MCP_MAX_COMMAND_TIMEOUT_MS", 900_000),
   maxOutputBytes: integerFromEnv("MCP_MAX_OUTPUT_BYTES", 1_048_576),
+  repositoryGitHubToken,
+  repositoryRequiredStatusChecks,
 };

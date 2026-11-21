@@ -1,6 +1,6 @@
 # vps-mcp
 
-An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access, synchronous/background command execution, and a persistent managed Git repository registry with safe bare-clone caching.
+An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access, synchronous/background command execution, and a persistent managed Git repository registry with safe bare-clone caching and enforceable main/development branch governance.
 
 ## Rootless container runtime readiness
 
@@ -28,6 +28,8 @@ The self-hosted sandbox runtime is gated on the rootless Podman feasibility deci
 | `repository.validate` | Validate remote reachability, branch policy and cache health |
 | `repository.fetch` | Clone/fetch a bare cache without changing worktrees |
 | `repository.remove` | Dry-run or safely remove a repository cache and registry entry |
+| `repository.branch-policy.inspect` | Inspect active branch rulesets and report governance compliance |
+| `repository.branch-policy.apply` | Dry-run or explicitly apply required branch rulesets to `main` and `development` |
 
 ## MCP transport
 
@@ -180,6 +182,8 @@ Generate a token with `openssl rand -hex 32`.
 | `REPOSITORY_MAX_COUNT` | `250` | Configurable managed repository capacity |
 | `REPOSITORY_MAX_CACHE_BYTES` | `21474836480` | Maximum size of each bare repository cache (20 GiB) |
 | `REPOSITORY_CACHE_STALE_AFTER_MS` | `604800000` | Age after which an unfetched cache is reported stale (7 days) |
+| `REPOSITORY_REQUIRED_STATUS_CHECKS` | `quality` | Comma-separated required GitHub status-check contexts |
+| `REPOSITORY_GITHUB_TOKEN` | unset | Optional GitHub token; Metadata read for private ruleset inspection, Administration write to apply rulesets |
 | `REPOSITORY_GIT_CREDENTIAL_HELPER` | unset | Optional trusted executable implementing the Git credential-helper protocol |
 
 ## Known boundaries
@@ -188,11 +192,11 @@ Generate a token with `openssl rand -hex 32`.
 - Only signed JWT access tokens are supported; opaque-token introspection is not implemented.
 - Active background process supervision is not yet managed by a dedicated process supervisor.
 - Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. General sandbox lifecycle operations remain a later design decision.
-- Persistent repository registration and bare-clone caching are implemented. Application environment provisioning, task worktree orchestration, branch bootstrap/enforcement (#41), backups, management UI and Railway Sandbox compatibility remain separate milestones.
+- Persistent repository registration and bare-clone caching are implemented. Application environment provisioning, task worktree orchestration, backup/restore, management UI and Railway Sandbox compatibility remain separate milestones.
 
 ## Repository management
 
-See [repository management architecture](docs/architecture/repository-management.md) and [repository operations](docs/operations/repositories.md) for the data model, canonical remote and branch policy, cache lifecycle, onboarding and safe cleanup procedures. The service account must have Git installed. Private GitHub repositories require an explicitly configured trusted credential-helper executable via `REPOSITORY_GIT_CREDENTIAL_HELPER`; credentials are never accepted in remote URLs or written to registry metadata.
+See [repository management architecture](docs/architecture/repository-management.md) and [repository operations](docs/operations/repositories.md) for the data model, canonical remote and branch policy, cache lifecycle, onboarding and safe cleanup procedures. The service account must have Git installed. Private GitHub repositories require an explicitly configured trusted credential-helper executable via `REPOSITORY_GIT_CREDENTIAL_HELPER`; credentials are never accepted in remote URLs or written to registry metadata. Branch governance uses GitHub repository rulesets. Configure `REPOSITORY_GITHUB_TOKEN` with `Metadata: read` to inspect private-repository rulesets and `Administration: write` to apply them. `REPOSITORY_REQUIRED_STATUS_CHECKS` defines the required check contexts (default `quality`). See [branch governance](docs/architecture/branch-and-release-policy.md) and [branch operations](docs/operations/branch-governance.md).
 
 ## Development checks
 

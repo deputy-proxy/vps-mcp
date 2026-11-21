@@ -5,8 +5,9 @@ import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { config } from "./config.js";
 import { resolveAllowedPath } from "./paths.js";
+import { applyBranchPolicy, inspectBranchPolicy, REQUIRED_BRANCHES } from "./branch-policy.js";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const LOCK_TIMEOUT_MS = 10_000;
@@ -22,6 +23,7 @@ export type ManagedRepository = {
   cachePath: string;
   defaultBranch: string;
   requiredBranches: ["main", "development"];
+  requiredStatusChecks: string[];
   languageProfile: string;
   createdAt: string;
   updatedAt: string;
@@ -97,7 +99,8 @@ async function readRegistry(lockHeld = false): Promise<Registry> {
   try {
     const parsed = JSON.parse(await fs.readFile(registryFile, "utf8")) as Partial<Registry>;
     if (!Array.isArray(parsed.repositories)) throw new Error("Corrupt repository registry: repositories must be an array");
-    if (parsed.schemaVersion === 0 || parsed.schemaVersion === undefined) {
+    const version = parsed.schemaVersion ?? 0;
+    if (version === 0 || version === 1) {
       if (!lockHeld) return withLock(async () => readRegistry(true));
       const migrated: Registry = {
         schemaVersion: SCHEMA_VERSION,
@@ -110,7 +113,9 @@ async function readRegistry(lockHeld = false): Promise<Registry> {
             id: item.id ?? slug(identity.fullName), fullName: identity.fullName, remoteUrl: identity.remoteUrl,
             name: identity.name, developmentHostname: item.developmentHostname ?? `${identity.name.toLowerCase().replace(/-/g, ".")}${HOSTNAME_SUFFIX}`,
             cachePath: item.cachePath ?? path.join(cacheRoot, slug(identity.fullName)), defaultBranch: item.defaultBranch ?? "unknown",
-            requiredBranches: ["main", "development"], languageProfile: item.languageProfile ?? "unspecified",
+            requiredBranches: ["main", "development"],
+            requiredStatusChecks: normalizeRequiredStatusChecks(Array.isArray(item.requiredStatusChecks) && item.requiredStatusChecks.length ? item.requiredStatusChecks : config.repositoryRequiredStatusChecks),
+            languageProfile: item.languageProfile ?? "unspecified",
             createdAt: item.createdAt ?? now, updatedAt: now, ...(item.lastFetchAt ? { lastFetchAt: item.lastFetchAt } : {}),
             status: item.status ?? "registered", policyReferences: item.policyReferences ?? [],
             persistentEnvironmentPaths: item.persistentEnvironmentPaths ?? [], requiredBackupPaths: item.requiredBackupPaths ?? [],
@@ -120,14 +125,13 @@ async function readRegistry(lockHeld = false): Promise<Registry> {
       await writeRegistry(migrated);
       return migrated;
     }
-    if (parsed.schemaVersion !== SCHEMA_VERSION) throw new Error(`Unsupported repository registry schema version: ${parsed.schemaVersion}`);
+    if (version !== SCHEMA_VERSION) throw new Error(`Unsupported repository registry schema version: ${version}`);
     return parsed as Registry;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: SCHEMA_VERSION, repositories: [] };
     throw error;
   }
 }
-
 async function writeRegistry(registry: Registry): Promise<void> {
   const temporary = `${registryFile}.${randomUUID()}.tmp`;
   await fs.writeFile(temporary, `${JSON.stringify(registry, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -234,10 +238,10 @@ async function listWorktrees(cachePath: string): Promise<string[]> {
   } catch { return []; }
 }
 
-export async function registerRepository(input: { remoteUrl: string; developmentHostname?: string | undefined; languageProfile?: string | undefined; policyReferences?: string[] | undefined }): Promise<ManagedRepository & { remote: Awaited<ReturnType<typeof discover>> }> {
+export async function registerRepository(input: { remoteUrl: string; developmentHostname?: string | undefined; languageProfile?: string | undefined; policyReferences?: string[] | undefined; requiredStatusChecks?: string[] | undefined }): Promise<ManagedRepository & { remote: Awaited<ReturnType<typeof discover>>; branchPolicy: Awaited<ReturnType<typeof inspectBranchPolicy>> }> {
   assertSafeConfig();
   const identity = parseGitHubRemote(input.remoteUrl);
-  return withLock(async () => {
+  const registered = await withLock(async () => {
     const registry = await readRegistry(true);
     const existing = registry.repositories.find((item) => item.fullName.toLowerCase() === identity.fullName.toLowerCase());
     if (existing) throw new Error(`Repository ${identity.fullName} is already registered as ${existing.id}`);
@@ -249,15 +253,40 @@ export async function registerRepository(input: { remoteUrl: string; development
     const repository: ManagedRepository = {
       id: slug(identity.fullName), fullName: identity.fullName, remoteUrl: identity.remoteUrl, name: identity.name,
       developmentHostname: hostname, cachePath: path.join(cacheRoot, slug(identity.fullName)), defaultBranch: "unknown",
-      requiredBranches: ["main", "development"], languageProfile: input.languageProfile?.trim() || "unspecified",
+      requiredBranches: [...REQUIRED_BRANCHES], requiredStatusChecks: normalizeRequiredStatusChecks(input.requiredStatusChecks ?? config.repositoryRequiredStatusChecks), languageProfile: input.languageProfile?.trim() || "unspecified",
       createdAt: now, updatedAt: now, status: "registered", policyReferences: input.policyReferences ?? [], persistentEnvironmentPaths: [], requiredBackupPaths: [],
     };
     const remote = await discover(repository);
     repository.defaultBranch = remote.defaultBranch;
-    repository.status = "registered";
     registry.repositories.push(repository);
     await writeRegistry(registry);
-    return { ...repository, remote };
+    return { repository, remote };
+  });
+  const branchPolicy = await inspectBranchPolicy({
+    fullName: registered.repository.fullName,
+    branches: registered.remote.branches,
+    requiredStatusChecks: registered.repository.requiredStatusChecks,
+    ...(config.repositoryGitHubToken ? { token: config.repositoryGitHubToken } : {}),
+  });
+  return { ...registered.repository, remote: registered.remote, branchPolicy };
+}
+function normalizeRequiredStatusChecks(checks: string[]): string[] {
+  const normalized = [...new Set(checks.map((check) => check.trim()).filter(Boolean))];
+  if (normalized.length === 0 || normalized.length > 20 || normalized.some((check) => check.length > 200)) {
+    throw new Error("requiredStatusChecks must contain between 1 and 20 non-empty check names of at most 200 characters");
+  }
+  return normalized;
+}
+
+export async function applyRepositoryBranchPolicy(id: string, confirm: boolean) {
+  const repository = await getById(id);
+  const remote = await discover(repository);
+  return applyBranchPolicy({
+    fullName: repository.fullName,
+    branches: remote.branches,
+    requiredStatusChecks: repository.requiredStatusChecks,
+    ...(config.repositoryGitHubToken ? { token: config.repositoryGitHubToken } : {}),
+    confirm,
   });
 }
 
@@ -269,6 +298,7 @@ export async function listRepositories(): Promise<{ schemaVersion: number; count
 export async function inspectRepository(id: string) {
   const repository = await getById(id);
   const remote = await discover(repository);
+  const branchPolicy = await inspectBranchPolicy({ fullName: repository.fullName, branches: remote.branches, requiredStatusChecks: repository.requiredStatusChecks, ...(config.repositoryGitHubToken ? { token: config.repositoryGitHubToken } : {}) });
   let cache: { exists: boolean; bytes: number; valid: boolean } = { exists: false, bytes: 0, valid: false };
   try {
     const stat = await fs.lstat(repository.cachePath);
@@ -289,16 +319,18 @@ export async function inspectRepository(id: string) {
     try { await fs.access(environmentPath); environments.push({ path: environmentPath, exists: true }); }
     catch { environments.push({ path: environmentPath, exists: false }); }
   }
-  return { repository, remote, cache, worktrees, persistentEnvironments: environments, health: {
+  return { repository, remote, branchPolicy, cache, worktrees, persistentEnvironments: environments, health: {
     remoteReachable: true, requiredBranchesPresent: remote.missingRequiredBranches.length === 0,
     missingRequiredBranches: remote.missingRequiredBranches,
+    branchPolicyCompliant: branchPolicy.compliant,
+    branchPolicyStatus: branchPolicy.status,
     cacheWithinLimit: cache.bytes <= MAX_CACHE_BYTES,
     cacheStale: !repository.lastFetchAt || Date.now() - Date.parse(repository.lastFetchAt) > CACHE_STALE_AFTER_MS,
     branchDrift,
   } };
 }
 
-export async function updateRepository(input: { id: string; remoteUrl?: string | undefined; developmentHostname?: string | undefined; languageProfile?: string | undefined; policyReferences?: string[] | undefined; persistentEnvironmentPaths?: string[] | undefined; requiredBackupPaths?: string[] | undefined }) {
+export async function updateRepository(input: { id: string; remoteUrl?: string | undefined; developmentHostname?: string | undefined; languageProfile?: string | undefined; policyReferences?: string[] | undefined; requiredStatusChecks?: string[] | undefined; persistentEnvironmentPaths?: string[] | undefined; requiredBackupPaths?: string[] | undefined }) {
   return withLock(async () => {
     const registry = await readRegistry(true);
     const repository = registry.repositories.find((item) => item.id === input.id || item.fullName.toLowerCase() === input.id.toLowerCase());
@@ -331,6 +363,7 @@ export async function updateRepository(input: { id: string; remoteUrl?: string |
     }
     if (input.languageProfile !== undefined) repository.languageProfile = input.languageProfile.trim() || "unspecified";
     if (input.policyReferences !== undefined) repository.policyReferences = input.policyReferences;
+    if (input.requiredStatusChecks !== undefined) repository.requiredStatusChecks = normalizeRequiredStatusChecks(input.requiredStatusChecks);
     const normalizeProtectedPaths = async (entries: string[], label: string): Promise<string[]> => Promise.all(entries.map(async (entry) => {
       if (!path.isAbsolute(entry) || entry.includes("\0")) throw new Error(`${label} paths must be absolute paths`);
       const resolved = await resolveAllowedPath(entry, { allowMissingLeaf: true });
@@ -357,7 +390,8 @@ export async function validateRepository(id: string) {
       && inspection.cache.valid
       && inspection.health.cacheWithinLimit
       && !inspection.health.cacheStale
-      && inspection.health.branchDrift.length === 0;
+      && inspection.health.branchDrift.length === 0
+      && inspection.branchPolicy.compliant;
     return { valid, ...inspection };
   } catch (error) {
     return { valid: false, remoteReachable: false, error: error instanceof Error ? error.message : "Repository validation failed" };

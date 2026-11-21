@@ -26,7 +26,7 @@ Git is invoked with an explicit working directory and argument arrays, never a s
 
 ## Branch policy
 
-`main` is the production branch. `development` is the development integration branch. The GitHub default branch is discovered and recorded for information only; it is never treated as the development branch. Registration and validation inspect remote refs and report missing required branches. They do not create, rename, checkout, reset or delete branches. Branch bootstrap and enforcement belong to issue #41.
+`main` is the production branch. `development` is the development integration branch. The GitHub default branch is discovered and recorded for information only; it is never treated as the development branch. Registration and validation inspect remote refs and report missing required branches. They do not create, rename, checkout, reset or delete branches. Branch governance is implemented by the dedicated ruleset policy in [branch and release policy](branch-and-release-policy.md).
 
 ## Cache lifecycle and worktree safety
 
@@ -49,5 +49,7 @@ Inspection reports remote reachability, default and required branches, missing r
 - `repository.validate`: perform remote/cache/branch health validation.
 - `repository.fetch`: clone or fetch the persistent bare cache.
 - `repository.remove`: dry-run or safely remove a managed cache and registry record.
+- `repository.branch-policy.inspect`: inspect active GitHub rulesets for `main` and `development`.
+- `repository.branch-policy.apply`: dry-run or explicitly create the managed branch-governance ruleset.
 
 These APIs are intentionally separate from the generic filesystem and terminal tools. Later repository onboarding, project-environment and task orchestration work can consume the typed registry service without embedding repository lists in MCP handlers.
