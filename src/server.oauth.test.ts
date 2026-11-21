@@ -36,7 +36,7 @@ async function request(method: string, id: number, params: Record<string, unknow
 }
 
 function parseSse(text: string) {
-  const line = text.split("\\n").find((entry) => entry.startsWith("data: "));
+  const line = text.split("\n").find((entry) => entry.startsWith("data: "));
   if (!line) throw new Error("MCP response did not contain an SSE data event");
   return JSON.parse(line.slice(6)) as { result: { serverInfo?: { name: string }; tools?: Array<Record<string, unknown>> } };
 }
