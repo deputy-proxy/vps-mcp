@@ -104,6 +104,23 @@ if [[ ! -d "/run/user/${SANDBOX_UID}" ]]; then
   echo "The vps-sandbox runtime directory was not created at /run/user/${SANDBOX_UID}" >&2
   exit 1
 fi
+systemctl is-active --quiet "user@${SANDBOX_UID}.service"
+USER_MANAGER_DELEGATE="$(systemctl show "user@${SANDBOX_UID}.service" -p Delegate --value)"
+if [[ "${USER_MANAGER_DELEGATE}" != "yes" ]]; then
+  echo "The vps-sandbox user manager must have Delegate=yes; found: ${USER_MANAGER_DELEGATE}" >&2
+  exit 1
+fi
+USER_MANAGER_CONTROLLERS="$(cat "/sys/fs/cgroup/user.slice/user-${SANDBOX_UID}.slice/user@${SANDBOX_UID}.service/cgroup.controllers")"
+for controller in cpu memory pids; do
+  if ! grep -qw "${controller}" <<<"${USER_MANAGER_CONTROLLERS}"; then
+    echo "The vps-sandbox user manager does not expose the required ${controller} cgroup controller" >&2
+    exit 1
+  fi
+done
+if [[ ! -S "/run/user/${SANDBOX_UID}/bus" ]]; then
+  echo "The vps-sandbox systemd user manager bus is unavailable" >&2
+  exit 1
+fi
 
 # The MCP checkout is private to vps-mcp. Install a read-only preflight copy so
 # the dedicated runtime identity can execute it without access to the repository.
