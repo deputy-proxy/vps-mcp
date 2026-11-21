@@ -146,7 +146,7 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
   // Match CR8OR's server-level OAuth boundary: every MCP request, including
   // initialize and tools/list, must carry a valid bearer token.
   app.use("/mcp", (request, response, next) => {
-    void authenticateRequest(request, response, next).catch((error: unknown) => {
+    void Promise.resolve(authenticateRequest(request, response, next)).catch((error: unknown) => {
       console.error("Authentication middleware failed", error);
       if (!response.headersSent) response.status(500).json({ error: "Authentication failed" });
     });
