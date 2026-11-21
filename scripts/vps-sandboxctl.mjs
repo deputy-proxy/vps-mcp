@@ -33,7 +33,16 @@ function cgroupChecks() {
     'echo "Delegated system-service cgroup: $CGROUP (mount root: $MOUNT_ROOT)"',
     'test -d "$DELEGATED_CGROUP"',
     'test -w "$DELEGATED_CGROUP/cgroup.subtree_control"',
-    'echo "SYSTEM-SERVICE CGROUP DELEGATION CHECK PASSED"',
+    'test -w "$DELEGATED_CGROUP/cgroup.procs"',
+    'INIT_CGROUP="$DELEGATED_CGROUP/init.scope"',
+    'mkdir "$INIT_CGROUP"',
+    'printf "%s\\n" "$" > "$INIT_CGROUP/cgroup.procs"',
+    'printf "+cpu +memory +pids" > "$DELEGATED_CGROUP/cgroup.subtree_control"',
+    'ENABLED_CONTROLLERS=$(cat "$DELEGATED_CGROUP/cgroup.subtree_control")',
+    'for CONTROLLER in cpu memory pids; do case " $ENABLED_CONTROLLERS " in *" $CONTROLLER "*) ;; *) echo "Controller not enabled in delegated subtree: $CONTROLLER" >&2; exit 1 ;; esac; done',
+    'export VPS_SANDBOXCTL_CGROUP="$CGROUP"',
+    'echo "Delegated controllers enabled: $ENABLED_CONTROLLERS"',
+    'echo "SYSTEM-SERVICE CGROUP DELEGATION CHECK PASSED"'
   ].join(String.fromCharCode(10));
 }
 
@@ -41,7 +50,7 @@ function buildUnitScript(operation, unitName) {
   const checks = cgroupChecks();
   const preflight = `${NODE} ${PREFLIGHT}`;
   const info = `${PODMAN} --cgroup-manager=cgroupfs info --debug`;
-  const smoke = `${PODMAN} --cgroup-manager=cgroupfs run --rm --pull=missing ${ALPINE_IMAGE} id`;
+  const smoke = `${PODMAN} --cgroup-manager=cgroupfs run --cgroup-parent="$CGROUP" --rm --pull=missing ${ALPINE_IMAGE} id`;
   const acceptanceCommand = `${NODE} ${ACCEPTANCE}`;
 
   if (operation === 'preflight') return `${preflight}\n${checks}`;
