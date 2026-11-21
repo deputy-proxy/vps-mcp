@@ -21,6 +21,28 @@ SANDBOX_UID="$(id -u vps-sandbox)"
 test -d "/run/user/${SANDBOX_UID}"
 ```
 
+## Restricted MCP diagnostics broker
+
+After provisioning the vps-sandbox identity, install the rootless diagnostic helper and its socket-activated broker as root:
+
+```bash
+sudo bash scripts/install-vps-sandboxctl.sh
+```
+
+The installer places the fixed helper and broker under /usr/local/libexec/vps-mcp/, installs vps-sandboxctl-broker.socket and vps-sandboxctl-broker.service, and enables the socket. The socket is owned by root:vps-mcp with mode 0660. The broker runs as root with NoNewPrivileges=yes, an empty capability bounding set and filesystem/kernel hardening. It accepts exactly one JSON operation per connection: preflight, info or smoke. It does not accept commands, arguments, paths, image names or systemd properties.
+
+The MCP service connects to /run/vps-sandboxctl.sock; it does not invoke sudo. This avoids the setuid restriction imposed by NoNewPrivileges=yes on the public MCP service. The broker asks the system manager to start the fixed transient test unit, which runs as vps-sandbox with the reviewed namespace and cgroup settings. The public vps-mcp.service unit remains unchanged.
+
+Verify the socket is active and the legacy sudoers rule has been removed:
+
+```bash
+systemctl is-active vps-sandboxctl-broker.socket
+stat -c '%A %U:%G %n' /run/vps-sandboxctl.sock
+test ! -e /etc/sudoers.d/vps-mcp-sandboxctl
+```
+
+The MCP tool runtime.acceptance exposes only those three fixed operations. To revoke the bridge, stop and disable the socket, then remove the broker units and /usr/local/libexec/vps-mcp/ after confirming no diagnostics are running.
+
 ## Dedicated transient systemd test unit
 
 Run both the preflight and Podman smoke test under the same dedicated transient unit configuration. Do not run them as `vps-mcp`, and do not change the public `vps-mcp.service` security policy.
@@ -54,21 +76,7 @@ This is an isolated feasibility test, not the final production service design. S
 
 The public MCP process must not receive general sudo access. The repository includes a root-owned helper that exposes only three fixed diagnostics: `preflight`, `info` and `smoke`. It accepts exactly one operation name and does not accept shell commands, Podman arguments, image names, systemd properties, paths or environment overrides. Each operation runs in a fresh transient systemd service as `vps-sandbox` with the reviewed property set above. The smoke operation runs only the pinned Alpine 3.21 test image and removes its container automatically. This helper is an acceptance/diagnostic bridge, not the future general sandbox lifecycle API; workload create/stop/remove APIs remain subject to the design and review in #33.
 
-After pulling the repository version containing `scripts/vps-sandboxctl.mjs`, install it and its exact-argument sudoers policy once as root:
-
-```bash
-sudo bash scripts/install-vps-sandboxctl.sh
-```
-
-The installer places `/usr/local/sbin/vps-sandboxctl` as `root:root` mode `0755` and `/etc/sudoers.d/vps-mcp-sandboxctl` as `root:root` mode `0440`, validates the policy with `visudo`, and grants `vps-mcp` passwordless permission for only these exact invocations:
-
-```bash
-sudo -n /usr/local/sbin/vps-sandboxctl preflight
-sudo -n /usr/local/sbin/vps-sandboxctl info
-sudo -n /usr/local/sbin/vps-sandboxctl smoke
-```
-
-The MCP tool `runtime.acceptance` invokes those same fixed operations. It does not accept arbitrary command input. Verify the installed helper and sudoers file ownership/modes after installation. Do not add `vps-mcp` to the sudo or Docker groups, do not grant `/usr/bin/systemd-run` directly, and do not change `vps-mcp.service`. Remove `/etc/sudoers.d/vps-mcp-sandboxctl` and `/usr/local/sbin/vps-sandboxctl` to revoke this bridge.
+The restricted MCP diagnostics broker is installed and managed as described in the section above. Do not install a sudoers rule or modify the public MCP service.
 
 ## Live acceptance matrix
 

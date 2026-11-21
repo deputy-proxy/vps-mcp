@@ -1,0 +1,13 @@
+[Unit]
+Description=Restricted rootless runtime diagnostics socket
+
+[Socket]
+ListenStream=/run/vps-sandboxctl.sock
+SocketUser=root
+SocketGroup=vps-mcp
+SocketMode=0660
+RemoveOnStop=yes
+Service=vps-sandboxctl-broker.service
+
+[Install]
+WantedBy=sockets.target

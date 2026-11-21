@@ -1,0 +1,27 @@
+[Unit]
+Description=Restricted rootless runtime diagnostics broker
+Requires=vps-sandboxctl-broker.socket
+After=vps-sandboxctl-broker.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/node /usr/local/libexec/vps-mcp/vps-sandboxctl-broker.mjs
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+PrivateTmp=yes
+PrivateDevices=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+UMask=0077

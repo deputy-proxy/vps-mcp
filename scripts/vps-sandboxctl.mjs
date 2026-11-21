@@ -15,19 +15,7 @@ function fail(message, code = 2) {
 }
 
 function assertCaller() {
-  if (process.getuid() !== 0) fail('vps-sandboxctl must run as root (through its restricted sudoers entry).', 77);
-
-  // The sudoers rule is the primary caller boundary. This additional check
-  // prevents accidental use through another unprivileged account.
-  if (process.env.SUDO_UID) {
-    let expectedUid;
-    try {
-      expectedUid = execFileSync('/usr/bin/id', ['-u', 'vps-mcp'], { encoding: 'utf8' }).trim();
-    } catch {
-      fail('The vps-mcp service account does not exist.', 77);
-    }
-    if (process.env.SUDO_UID !== expectedUid) fail('Only the vps-mcp account may invoke this helper through sudo.', 77);
-  }
+  if (process.getuid() !== 0) fail('vps-sandboxctl must be invoked by the root-owned diagnostics broker.', 77);
 }
 
 function cgroupChecks(unitName) {

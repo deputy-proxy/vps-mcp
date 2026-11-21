@@ -7,34 +7,44 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE="${SCRIPT_DIR}/vps-sandboxctl.mjs"
-HELPER=/usr/local/sbin/vps-sandboxctl
-SUDOERS=/etc/sudoers.d/vps-mcp-sandboxctl
-TEMP_SUDOERS="$(mktemp)"
-trap 'rm -f "${TEMP_SUDOERS}"' EXIT
+REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+LIBEXEC=/usr/local/libexec/vps-mcp
+SYSTEMD_DIR=/etc/systemd/system
+HELPER_SOURCE="${SCRIPT_DIR}/vps-sandboxctl.mjs"
+BROKER_SOURCE="${SCRIPT_DIR}/vps-sandboxctl-broker.mjs"
+SOCKET_UNIT_SOURCE="${REPO_DIR}/systemd/vps-sandboxctl-broker.socket"
+SERVICE_UNIT_SOURCE="${REPO_DIR}/systemd/vps-sandboxctl-broker.service"
+SOCKET_UNIT="${SYSTEMD_DIR}/vps-sandboxctl-broker.socket"
+SERVICE_UNIT="${SYSTEMD_DIR}/vps-sandboxctl-broker.service"
+LEGACY_HELPER=/usr/local/sbin/vps-sandboxctl
+LEGACY_SUDOERS=/etc/sudoers.d/vps-mcp-sandboxctl
 
-[[ -f "${SOURCE}" ]] || { echo "Missing helper source: ${SOURCE}" >&2; exit 2; }
+[[ -f "${HELPER_SOURCE}" && -f "${BROKER_SOURCE}" ]] || { echo "Missing runtime helper or broker source" >&2; exit 2; }
+[[ -f "${SOCKET_UNIT_SOURCE}" && -f "${SERVICE_UNIT_SOURCE}" ]] || { echo "Missing broker systemd unit files" >&2; exit 2; }
 getent passwd vps-mcp >/dev/null || { echo "Missing vps-mcp account" >&2; exit 2; }
+getent group vps-mcp >/dev/null || { echo "Missing vps-mcp group" >&2; exit 2; }
 getent passwd vps-sandbox >/dev/null || { echo "Missing vps-sandbox account; run host provisioning first" >&2; exit 2; }
-command -v visudo >/dev/null || { echo "visudo is required" >&2; exit 2; }
+command -v systemd-analyze >/dev/null || { echo "systemd-analyze is required" >&2; exit 2; }
 
-install -o root -g root -m 0755 "${SOURCE}" "${HELPER}"
+systemd-analyze verify "${SOCKET_UNIT_SOURCE}" "${SERVICE_UNIT_SOURCE}"
 
-cat > "${TEMP_SUDOERS}" <<SUDOERS_EOF
-# Managed by vps-mcp. Only fixed, reviewed rootless runtime checks are allowed.
-vps-mcp ALL=(root) NOPASSWD: ${HELPER} preflight, ${HELPER} info, ${HELPER} smoke
-SUDOERS_EOF
+install -d -o root -g root -m 0755 "${LIBEXEC}"
+install -o root -g root -m 0755 "${HELPER_SOURCE}" "${LIBEXEC}/vps-sandboxctl.mjs"
+install -o root -g root -m 0755 "${BROKER_SOURCE}" "${LIBEXEC}/vps-sandboxctl-broker.mjs"
+install -o root -g root -m 0644 "${SOCKET_UNIT_SOURCE}" "${SOCKET_UNIT}"
+install -o root -g root -m 0644 "${SERVICE_UNIT_SOURCE}" "${SERVICE_UNIT}"
 
-chmod 0440 "${TEMP_SUDOERS}"
-visudo -cf "${TEMP_SUDOERS}"
-install -o root -g root -m 0440 "${TEMP_SUDOERS}" "${SUDOERS}"
-if ! visudo -c; then
-  rm -f "${SUDOERS}"
-  echo "Installed sudoers policy failed validation and was removed" >&2
-  exit 1
-fi
+systemctl stop vps-sandboxctl-broker.socket vps-sandboxctl-broker.service 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable --now vps-sandboxctl-broker.socket
+systemctl is-active --quiet vps-sandboxctl-broker.socket
 
-printf 'Installed %s (root:root 0755)\n' "${HELPER}"
-printf 'Installed %s (root:root 0440)\n' "${SUDOERS}"
-printf '\nAllowed operations for vps-mcp:\n  sudo -n %s preflight\n  sudo -n %s info\n  sudo -n %s smoke\n' "${HELPER}" "${HELPER}" "${HELPER}"
-printf '\nNo arbitrary command, shell, Podman arguments, or systemd properties are accepted.\n'
+# Remove the obsolete setuid-based bridge only after the socket broker is active.
+rm -f "${LEGACY_SUDOERS}" "${LEGACY_HELPER}"
+systemctl reset-failed vps-sandboxctl-broker.service 2>/dev/null || true
+
+printf 'Installed root-owned helper and broker under %s\n' "${LIBEXEC}"
+printf 'Installed and activated %s\n' "${SOCKET_UNIT}"
+printf 'Broker socket: /run/vps-sandboxctl.sock (root:vps-mcp 0660)\n'
+printf 'Public vps-mcp.service hardening is unchanged.\n'
+printf 'Legacy sudoers bridge removed.\n'
