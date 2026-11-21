@@ -27,9 +27,9 @@ try {
   const failures = [];
   const warnings = [];
   const check = (ok, message) => { if (!ok) failures.push(message); };
-  const configuredIssuer = input.replace(/\\/$/, "");
-  check(typeof oidc.issuer === "string" && oidc.issuer.replace(/\\/$/, "") === configuredIssuer, "OIDC discovery issuer does not match configured issuer");
-  check(typeof oauth.issuer === "string" && oauth.issuer.replace(/\\/$/, "") === configuredIssuer, "OAuth authorization-server issuer does not match configured issuer");
+  const configuredIssuer = input.replace(/\/$/, "");
+  check(typeof oidc.issuer === "string" && oidc.issuer.replace(/\/$/, "") === configuredIssuer, "OIDC discovery issuer does not match configured issuer");
+  check(typeof oauth.issuer === "string" && oauth.issuer.replace(/\/$/, "") === configuredIssuer, "OAuth authorization-server issuer does not match configured issuer");
 
   for (const [metadata, label] of [[oidc, "OIDC"], [oauth, "OAuth"]]) {
     for (const key of ["authorization_endpoint", "token_endpoint", "jwks_uri"]) {
