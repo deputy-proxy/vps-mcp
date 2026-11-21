@@ -6,7 +6,7 @@
 
 ## Context
 
-The sandbox platform needs per-task container isolation without a rootful container daemon or broad host privileges. The production VPS is Ubuntu 24.04.5, kernel 6.8, systemd 255 and cgroup v2. The MCP process runs as unprivileged `vps-mcp` with an empty capability bounding set and hardened systemd restrictions. No container runtime or rootless helper packages were installed at inspection. No subordinate UID/GID ranges were configured for the service account. An unprivileged user-namespace probe from the MCP execution context failed with `Operation not permitted`.
+The sandbox platform needs per-task container isolation without a rootful container daemon or broad host privileges. The production VPS is Ubuntu 24.04.5, kernel 6.8, systemd 255 and cgroup v2. The MCP process runs as unprivileged `vps-mcp` with an empty capability bounding set and hardened systemd restrictions. No container runtime or rootless helper packages were installed at inspection. No subordinate UID/GID ranges were configured for the service account. An unprivileged user-namespace probe from the MCP execution context failed with `Operation not permitted`. The live service cgroup exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable by `vps-mcp`; the checked-in unit does not set `Delegate=yes` and enables `ProtectControlGroups=true`.
 
 The deployed unit is not readable from the service context, so its exact live contents and drop-ins require administrator confirmation. The checked-in unit enables `NoNewPrivileges=true` and `RestrictSUIDSGID=true`, which may prevent the setuid mapping helpers required for multi-ID rootless Podman operation.
 

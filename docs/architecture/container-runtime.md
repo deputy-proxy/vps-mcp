@@ -11,6 +11,7 @@ Captured on 2026-11-21 from the `vps-mcp` execution identity on the production V
 - Ubuntu 24.04.5 LTS, x86_64, kernel `6.8.0-147-generic`.
 - systemd 255; unified cgroup v2 (`cgroup2fs`).
 - `/srv` is ext4, mounted read-write with `nosuid`; approximately 190 GiB free at inspection.
+- The live service cgroup exposes only `memory` and `pids` controllers; `cpu` is not delegated. `cgroup.subtree_control` is not writable by `vps-mcp`.
 - Approximately 11 GiB RAM available at inspection; no swap configured.
 - `/srv` and `/var/lib/vps-mcp` are the MCP service's allowed writable roots.
 - No Podman, Docker, Buildah, `newuidmap`, `newgidmap`, `slirp4netns`, `pasta` or `fuse-overlayfs` binary was present.
@@ -30,6 +31,8 @@ Rootless Podman is preferred because it does not require a rootful daemon or mem
 5. Provide the selected network mode through `slirp4netns` or `pasta`.
 6. Use a supported storage driver on the actual storage filesystem.
 7. Survive service restart and host reboot without leaving untracked containers or processes.
+
+The live service cgroup currently exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. The checked-in unit has `ProtectControlGroups=true` and no `Delegate=yes`. CPU/memory/PID enforcement therefore cannot be assumed; explicit systemd delegation and a narrowly scoped policy design must be proven before accepting Podman.
 
 `NoNewPrivileges=true` prevents setuid privilege gain by `newuidmap`/`newgidmap`. A single-ID mapping is not accepted as a silent substitute for the planned mapping model. `RestrictSUIDSGID=true` is an additional compatibility concern. Do not relax either directive merely to make a smoke test pass. If a narrowly scoped systemd policy change is ultimately necessary, document the exact threat-model impact and prove that all other restrictions remain effective.
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { evaluateSnapshot } from './rootless-runtime-preflight.mjs';
 
 const readySnapshot = {
-  platform: 'linux', cgroup: 'cgroup2fs', userNamespace: true,
+  platform: 'linux', cgroup: 'cgroup2fs', cgroupDelegation: true, userNamespace: true,
   subuid: true, subgid: true, newuidmap: true, newgidmap: true,
   slirp4netns: true, pasta: false, fuseOverlayfs: true,
   podman: true, podmanVersion: 'podman version 5.0.0',
@@ -15,6 +15,12 @@ const readySnapshot = {
 describe('rootless runtime preflight', () => {
   it('accepts a host that satisfies every required prerequisite', () => {
     expect(evaluateSnapshot(readySnapshot).ready).toBe(true);
+  });
+
+  it('blocks when CPU, memory and PID cgroup delegation is unavailable', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, cgroupDelegation: false });
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('cgroup-delegation');
   });
 
   it('blocks when user namespaces are unavailable', () => {

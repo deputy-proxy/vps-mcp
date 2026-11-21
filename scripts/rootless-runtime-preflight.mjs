@@ -11,6 +11,7 @@ export function evaluateSnapshot(snapshot) {
   const add = (id, ok, detail, required = true) => checks.push({ id, status: ok ? 'pass' : required ? 'fail' : 'warning', detail });
   add('linux', snapshot.platform === 'linux', `platform=${snapshot.platform}`);
   add('cgroup-v2', snapshot.cgroup === 'cgroup2fs', `filesystem=${snapshot.cgroup ?? 'unavailable'}`);
+  add('cgroup-delegation', snapshot.cgroupDelegation === true, snapshot.cgroupDelegationDetail ?? 'CPU, memory and PID controllers must be delegated and writable by the service');
   add('user-namespaces', snapshot.userNamespace === true, snapshot.userNamespaceDetail ?? 'unprivileged user namespace probe');
   add('subuid', snapshot.subuid === true, snapshot.subuidDetail ?? `${SERVICE_USER} subordinate UID range`);
   add('subgid', snapshot.subgid === true, snapshot.subgidDetail ?? `${SERVICE_USER} subordinate GID range`);
@@ -55,9 +56,18 @@ export function collectSnapshot() {
   const df = command('df', ['-Pk', os.homedir()]);
   if (df) { const fields = df.split('\n').at(-1)?.trim().split(/\s+/); if (fields?.[3]) diskAvailableBytes = Number(fields[3]) * 1024; }
   const memoryBytes = os.freemem();
+  const cgroupRelativePath = read('/proc/self/cgroup')?.split('\n').find((line) => line.startsWith('0::'))?.slice(3) ?? '';
+  const serviceCgroup = `/sys/fs/cgroup${cgroupRelativePath}`;
+  const controllers = read(`${serviceCgroup}/cgroup.controllers`)?.split(/\s+/).filter(Boolean) ?? [];
+  let subtreeControlWritable = false;
+  try { accessSync(`${serviceCgroup}/cgroup.subtree_control`, constants.W_OK); subtreeControlWritable = true; } catch { /* no delegation */ }
+  const requiredControllers = ['cpu', 'memory', 'pids'];
+  const cgroupDelegation = requiredControllers.every((controller) => controllers.includes(controller)) && subtreeControlWritable;
   return {
     platform: process.platform,
     cgroup: command('stat', ['-fc', '%T', '/sys/fs/cgroup']),
+    cgroupDelegation,
+    cgroupDelegationDetail: `service cgroup=${serviceCgroup}; controllers=${controllers.join(' ') || 'unavailable'}; cgroup.subtree_control writable=${subtreeControlWritable}`,
     userNamespace: userns.ok,
     userNamespaceDetail: userns.detail,
     serviceContextProbe: userns.ok && user === SERVICE_USER,

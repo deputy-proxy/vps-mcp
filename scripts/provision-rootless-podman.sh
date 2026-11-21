@@ -18,6 +18,9 @@ if [[ "$(. /etc/os-release && echo "${ID}:${VERSION_ID}")" != "ubuntu:24.04" ]];
   exit 2
 fi
 
+touch /etc/subuid /etc/subgid
+chmod 0644 /etc/subuid /etc/subgid
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends podman uidmap slirp4netns fuse-overlayfs
