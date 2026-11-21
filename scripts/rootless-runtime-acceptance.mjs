@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const PODMAN = '/usr/bin/podman';
@@ -33,8 +32,9 @@ function main() {
   try {
     writeFileSync(sentinel, 'host-workspace-sentinel\n', { mode: 0o600 });
 
+    const hostUser = execFileSync('/usr/bin/id', ['-un'], { encoding: 'utf8' }).trim();
     const uid = run(['unshare', 'id', '-u']);
-    add('rootless-identity', uid === '0', `container namespace root uid=${uid}; host executor=${process.env.USER}`);
+    add('rootless-identity', hostUser === 'vps-sandbox' && uid === '0', `container namespace root uid=${uid}; host executor=${hostUser}`);
 
     run([
       'create', '--name', name, '--pull=missing',
@@ -86,7 +86,6 @@ function main() {
     const leftovers = run(['ps', '--all', '--filter', `name=${name}`, '--format', '{{.ID}}']);
     add('container-cleanup', leftovers.length === 0, leftovers.length === 0 ? 'no acceptance container remains' : `leftover container IDs: ${leftovers}`);
 
-    const ownCgroup = `/sys/fs/cgroup/system.slice/vps-sandboxctl-acceptance-${process.env.ACCEPTANCE_UNIT_PID ?? 'unknown'}.service`;
     add('cgroup-boundary', true, 'unit-level delegated cgroup write and host/sibling denial are verified by the parent helper');
 
   } catch (error) {
