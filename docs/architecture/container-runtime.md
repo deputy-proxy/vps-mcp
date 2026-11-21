@@ -79,7 +79,7 @@ The following live checks passed inside the transient systemd unit using `Delega
 
 - `podman unshare` creates the user namespace with the configured subordinate UID/GID maps.
 - The unit can write its own `cgroup.subtree_control`, while writes to the root cgroup and `system.slice` controls are denied.
-- `podman --cgroup-manager=cgroupfs info` reports `rootless: true`, cgroup v2 and the expected overlay storage.
+- `podman --cgroup-manager=systemd info` reports `rootless: true`, cgroup v2, `cgroupManager: systemd` and the expected overlay storage.
 - An Alpine 3.21 container runs successfully and reports container UID/GID 0.
 - The public `vps-mcp.service` policy was not modified.
 
@@ -105,3 +105,12 @@ The fixed `runtime.acceptance` operation runs `rootless-runtime-acceptance.mjs` 
 The suite removes its test container in a `finally` cleanup path and deletes its temporary workspace. It reports individual pass/fail checks and exits nonzero on any failure. The parent helper separately verifies write access to the delegated unit cgroup and denial of writes to the root and `system.slice` cgroup controls.
 
 This suite verifies configured/effective container limits and isolation properties; it does not perform load-based CPU or memory exhaustion tests. It also does not reboot the VPS. A planned maintenance-window reboot test remains a manual acceptance item: after reboot, verify the MCP service and broker socket are active, rerun preflight and acceptance, and confirm no stale acceptance container or transient unit remains. Do not reboot automatically from the MCP tool.
+
+
+## Rootless cgroup manager correction (2026-11-21)
+
+The first automated live acceptance run confirmed that Podman 4.9.3 accepted CPU, memory and PID limits in its inspect configuration while the running container still observed `cpu.max=max`, `memory.max=max` and `pids.max=14307`. The cause was the explicit `--cgroup-manager=cgroupfs` selection in the helper and acceptance suite. Rootless `cgroupfs` did not create delegated per-container systemd scopes on this host.
+
+The runtime now selects `--cgroup-manager=systemd` consistently for preflight, info, smoke and acceptance. The helper explicitly passes `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus` to the fixed transient test unit. Provisioning verifies that the lingering `user@<uid>.service` manager is active, has `Delegate=yes`, exposes CPU/memory/PID controllers and has its user bus socket. Preflight checks the same manager and delegation before reporting ready.
+
+The live acceptance suite verifies the effective `cpu.max`, `memory.max`, `pids.max` and `CapEff` from inside the running container. A configuration-only inspect result is not sufficient. This change is not accepted until the live suite passes all enforcement checks.
