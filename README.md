@@ -24,7 +24,7 @@ The server exposes MCP Streamable HTTP at `/mcp` in stateless request/response m
 ## Authentication
 
 - `token`: static bearer token for private integrations and initial deployment.
-- `oauth`: validates signed OAuth access-token JWTs against the configured issuer and JWKS on every MCP HTTP request; checks issuer, audience, expiry and any explicitly configured required scopes; publishes RFC 9728 Protected Resource Metadata and returns an HTTP 401 `WWW-Authenticate` challenge for unauthenticated requests.
+- `oauth`: allows MCP initialization and tool discovery without credentials, advertises OAuth security requirements on each tool, and validates signed access-token JWTs before each protected tool executes; checks issuer, audience, expiry and any explicitly configured required scopes.
 - `none`: permitted only when the listener binds to loopback.
 
 This project is an OAuth protected resource, not an authorization server. The external provider must support Authorization Code + PKCE S256, refresh tokens, resource/audience binding, signed JWT access tokens, and client registration compatible with the intended MCP client (CIMD or DCR where required). Opaque-token introspection is not implemented.
@@ -62,7 +62,7 @@ The checker validates issuer identity, HTTPS endpoints, JWKS availability, Autho
 
 The discovery document issuer must exactly match `OAUTH_ISSUER_URL`; the discovered `jwks_uri` must use HTTPS. The first successful JWKS discovery is cached. Failed discovery returns 503.
 
-The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. Every MCP HTTP request, including initialization and tool discovery, requires a valid bearer token. Missing or invalid credentials receive an HTTP 401 Bearer challenge referencing this endpoint, which triggers OAuth discovery in compatible MCP clients. Configure the provider Resource Indicator to exactly match `MCP_PUBLIC_URL`; the issued access token must contain that value in `aud`. If required scopes are configured, the token must also contain them in `scope` or `scp`.
+The resource metadata endpoint is `/.well-known/oauth-protected-resource/mcp`. In OAuth mode, MCP initialization and `tools/list` are intentionally unauthenticated so ChatGPT can connect and discover tool declarations. Every tool advertises an OAuth 2.0 security scheme, and each tool handler validates the supplied bearer token before performing its operation. Missing or invalid credentials return an MCP tool error with `_meta["mcp/www_authenticate"]`, including the protected-resource metadata URL, `error` and `error_description`, to trigger ChatGPT OAuth linking. In static-token mode, the HTTP transport continues to require a bearer token for every MCP request. Configure the provider Resource Indicator to exactly match `MCP_PUBLIC_URL`; the issued access token must contain that value in `aud`. If required scopes are configured, the token must also contain them in `scope` or `scp`.
 
 ## CORS
 
