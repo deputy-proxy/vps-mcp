@@ -22,7 +22,6 @@ function assertCaller() {
 function cgroupChecks() {
   return [
     'set -eu',
-    'set -eu',
     'UNIT="${VPS_SANDBOXCTL_UNIT:?missing transient unit identity}"',
     'case "$UNIT" in vps-sandboxctl-*) ;; *) echo "Invalid transient unit identity" >&2; exit 1 ;; esac',
     'EXPECTED_INVOCATION=$(systemctl show "$UNIT" --property=InvocationID --value)',
