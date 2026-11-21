@@ -112,23 +112,39 @@ export function collectSnapshot() {
     if (fields?.[3]) diskAvailableBytes = Number(fields[3]) * 1024;
   }
 
-  const cgroupRelativePath = read('/proc/self/cgroup')?.split('\n').find((line) => line.startsWith('0::'))?.slice(3) ?? '';
-  const serviceCgroup = `/sys/fs/cgroup${cgroupRelativePath}`;
-  const controllers = read(`${serviceCgroup}/cgroup.controllers`)?.split(/\s+/).filter(Boolean) ?? [];
+  // systemd-run creates a cgroup namespace for this delegated unit. In that
+  // namespace /proc/self/cgroup is relative to the namespace root (often "/"),
+  // not the host's system.slice path. Authenticate the unit using systemd's
+  // invocation ID and ControlGroup, then inspect the delegated mount root.
+  const unitName = process.env.VPS_SANDBOXCTL_UNIT ?? '';
+  const invocationId = process.env.INVOCATION_ID ?? '';
+  const unitInvocationId = unitName && /^[a-zA-Z0-9_.@-]+$/.test(unitName)
+    ? command('systemctl', ['show', unitName, '--property=InvocationID', '--value'])
+    : null;
+  const hostControlGroup = unitName && /^[a-zA-Z0-9_.@-]+$/.test(unitName)
+    ? command('systemctl', ['show', unitName, '--property=ControlGroup', '--value'])
+    : null;
+  const unitIdentityValid = Boolean(
+    invocationId && unitInvocationId === invocationId &&
+    hostControlGroup && /^\\/system\\.slice\\/vps-sandboxctl-[a-z]+-[0-9]+\\.service$/.test(hostControlGroup)
+  );
+  const serviceCgroup = '/sys/fs/cgroup';
+  const controllers = read(`${serviceCgroup}/cgroup.controllers`)?.split(/\\s+/).filter(Boolean) ?? [];
   let subtreeControlWritable = false;
   try {
     accessSync(`${serviceCgroup}/cgroup.subtree_control`, constants.W_OK);
     subtreeControlWritable = true;
   } catch { /* no delegation */ }
   const requiredControllers = ['cpu', 'memory', 'pids'];
-  const cgroupDelegation = requiredControllers.every((controller) => controllers.includes(controller)) && subtreeControlWritable;
+  const cgroupDelegation = unitIdentityValid &&
+    requiredControllers.every((controller) => controllers.includes(controller)) && subtreeControlWritable;
 
   return {
     platform: process.platform,
     executionUser,
     cgroup: command('stat', ['-fc', '%T', '/sys/fs/cgroup']),
     cgroupDelegation,
-    cgroupDelegationDetail: `unit cgroup=${serviceCgroup}; controllers=${controllers.join(' ') || 'unavailable'}; cgroup.subtree_control writable=${subtreeControlWritable}`,
+    cgroupDelegationDetail: `systemd ControlGroup=${hostControlGroup ?? 'unavailable'}; namespace mount root=${serviceCgroup}; unit identity valid=${unitIdentityValid}; controllers=${controllers.join(' ') || 'unavailable'}; cgroup.subtree_control writable=${subtreeControlWritable}`,
     userNamespace: userns.ok,
     userNamespaceDetail: userns.detail,
     subuid,
