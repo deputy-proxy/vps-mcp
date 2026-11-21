@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { evaluateSnapshot } from './rootless-runtime-preflight.mjs';
 
 const readySnapshot = {
-  platform: 'linux', executionUser: 'vps-sandbox', cgroup: 'cgroup2fs', cgroupDelegation: true, userNamespace: true,
+  platform: 'linux', executionUser: 'vps-sandbox', cgroup: 'cgroup2fs', cgroupDelegation: true, userManagerBus: true, userManagerDelegation: true, userNamespace: true,
   subuid: true, subgid: true, newuidmap: true, newgidmap: true,
   slirp4netns: true, pasta: false, fuseOverlayfs: true,
   podman: true, podmanVersion: 'podman version 5.0.0',
@@ -19,6 +19,18 @@ describe('rootless runtime preflight', () => {
     const result = evaluateSnapshot({ ...readySnapshot, executionUser: 'vps-mcp' });
     expect(result.ready).toBe(false);
     expect(result.failures.map((failure) => failure.id)).toContain('runtime-identity');
+  });
+
+  it('blocks when the systemd user manager bus is unavailable', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, userManagerBus: false });
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('systemd-user-manager');
+  });
+
+  it('blocks when the systemd user manager does not delegate resource controllers', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, userManagerDelegation: false });
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('systemd-user-manager-delegation');
   });
 
   it('blocks when CPU, memory and PID cgroup delegation is unavailable', () => {

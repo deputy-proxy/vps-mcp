@@ -11,7 +11,7 @@ const add = (id, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${id}: ${detail}`);
 };
 function run(args, options = {}) {
-  return execFileSync(PODMAN, ['--cgroup-manager=cgroupfs', ...args], {
+  return execFileSync(PODMAN, ['--cgroup-manager=systemd', ...args], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, ...options,
   }).trim();
 }
@@ -52,21 +52,22 @@ function main() {
     const host = config.HostConfig ?? {};
     add('container-read-only-rootfs', host.ReadonlyRootfs === true, `ReadonlyRootfs=${host.ReadonlyRootfs}`);
     add('container-no-network', host.NetworkMode === 'none', `NetworkMode=${host.NetworkMode}`);
-    add('container-capabilities-dropped', Array.isArray(host.CapDrop) && host.CapDrop.some((value) => String(value).toUpperCase() === 'ALL'), `CapDrop=${JSON.stringify(host.CapDrop ?? [])}`);
+    add('container-capabilities-dropped', Array.isArray(host.CapDrop) && host.CapDrop.length > 0, `Podman expanded CapDrop=${JSON.stringify(host.CapDrop ?? [])}`);
     add('container-no-new-privileges', Array.isArray(host.SecurityOpt) && host.SecurityOpt.some((value) => String(value).includes('no-new-privileges')), `SecurityOpt=${JSON.stringify(host.SecurityOpt ?? [])}`);
     add('cpu-limit-configured', Number(host.NanoCpus) === 500_000_000, `NanoCpus=${host.NanoCpus}`);
     add('memory-limit-configured', Number(host.Memory) === 134_217_728, `Memory=${host.Memory}`);
     add('pid-limit-configured', Number(host.PidsLimit) === 64, `PidsLimit=${host.PidsLimit}`);
 
     const cgroupLimits = run(['exec', name, 'sh', '-c',
-      'printf "cpu="; cat /sys/fs/cgroup/cpu.max; printf "memory="; cat /sys/fs/cgroup/memory.max; printf "pids="; cat /sys/fs/cgroup/pids.max']);
-    const limitValues = Object.fromEntries(cgroupLimits.split('\\n').map((line) => {
+      'printf "cpu="; cat /sys/fs/cgroup/cpu.max; printf "memory="; cat /sys/fs/cgroup/memory.max; printf "pids="; cat /sys/fs/cgroup/pids.max; printf "capeff="; awk \'/^CapEff:/ {print $2}\' /proc/1/status']);
+    const limitValues = Object.fromEntries(cgroupLimits.split('\n').map((line) => {
       const [key, ...value] = line.split('=');
       return [key, value.join('=')];
     }));
     add('cpu-limit-enforced', limitValues.cpu === '50000 100000', `cpu.max=${limitValues.cpu ?? 'unavailable'}`);
     add('memory-limit-enforced', limitValues.memory === '134217728', `memory.max=${limitValues.memory ?? 'unavailable'}`);
     add('pid-limit-enforced', limitValues.pids === '64', `pids.max=${limitValues.pids ?? 'unavailable'}`);
+    add('container-effective-capabilities-empty', Boolean(limitValues.capeff) && BigInt(`0x${limitValues.capeff}`) === 0n, `CapEff=${limitValues.capeff ?? 'unavailable'}`);
 
     let readOnlyRejected = false;
     try {
