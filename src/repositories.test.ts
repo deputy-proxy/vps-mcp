@@ -22,6 +22,7 @@ const remotePath = path.join(temporaryDirectory, "remote.git");
 const sourcePath = path.join(temporaryDirectory, "source");
 process.env.MCP_DATA_DIR = path.join(temporaryDirectory, "data");
 process.env.MCP_ALLOWED_ROOTS = temporaryDirectory;
+process.env.MCP_AUTH_TOKEN = "test-token-with-at-least-32-characters";
 process.env.REPOSITORY_DEV_HOST_SUFFIX = ".dev.example.test";
 paths.remotePath = remotePath;
 
