@@ -40,7 +40,7 @@ export async function resolveJwksUrl(issuer: string | URL, explicitJwksUrl?: URL
   return jwksUrl;
 }
 
-function unauthorized(response: Response, reason: string | undefined = "invalid_token", publicUrl?: URL, scopes: string[] = []): void {
+function unauthorized(response: Response, reason: string | undefined, publicUrl?: URL, scopes: string[] = []): void {
   const metadataUrl = publicUrl
     ? new URL("/.well-known/oauth-protected-resource/mcp", publicUrl).toString()
     : undefined;
