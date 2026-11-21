@@ -19,16 +19,16 @@ The command exits nonzero when a required prerequisite fails. JSON output is ava
 Review the script before running it. From a privileged administrator session:
 
 ```bash
-sudo bash scripts/provision-rootless-podman.sh vps-mcp
+sudo bash scripts/provision-rootless-podman.sh vps-sandbox
 ```
 
-The script is intentionally limited to Ubuntu 24.04. It installs `podman`, `uidmap`, `slirp4netns` and `fuse-overlayfs`; allocates subordinate UID/GID ranges only when none exist; enables lingering; and creates the service-owned storage directory. It does not edit `/opt/vps-mcp`, modify the active unit, enable a rootful daemon, add `vps-mcp` to sudo or Docker groups, or broaden capabilities.
+The script is intentionally limited to Ubuntu 24.04. It creates the dedicated non-login `vps-sandbox` system identity when absent, installs `podman`, `uidmap`, `slirp4netns` and `fuse-overlayfs`; allocates subordinate UID/GID ranges only when none exist; enables lingering; and creates the service-owned storage directory. It does not edit `/opt/vps-mcp`, modify `vps-mcp.service`, enable a rootful daemon, add either identity to sudo or Docker groups, or broaden the MCP service capabilities.
 
 If the subordinate ID range is already assigned, inspect it for overlap before changing it. Never blindly replace an existing range.
 
 ## Live acceptance matrix
 
-Run each check as `vps-mcp` under the actual production `vps-mcp.service` restrictions, not from an administrator shell:
+Run each check as `vps-sandbox` inside the dedicated transient systemd test unit described below. Do not change the public `vps-mcp.service` security policy for this experiment:
 
 1. `unshare -Ur` succeeds and the UID/GID maps match the documented model.
 2. `podman info --debug` reports rootless mode and the expected storage driver.
@@ -46,31 +46,36 @@ Capture command output, runtime versions, systemd unit checksum and test results
 
 ## Systemd policy review
 
-The administrator-confirmed unit enables `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectControlGroups=true`, and an empty `CapabilityBoundingSet`; effective `Delegate=no`. The live cgroup exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. Kernel user-namespace sysctls are enabled. The missing prerequisites are therefore the service sandbox policy and subordinate IDs, not the host sysctls.
+The administrator-confirmed `vps-mcp.service` enables `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectControlGroups=true`, and an empty `CapabilityBoundingSet`; effective `Delegate=no`. The live cgroup exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. Kernel user-namespace sysctls are enabled. **Leave this public MCP service unchanged.**
 
-For a controlled feasibility test on systemd 255, the candidate drop-in is:
+The rootless mapping helpers need privilege-gain behavior that conflicts with the public MCP service policy. Test them under a separate, non-login `vps-sandbox` identity and a transient systemd unit. Example administrator-run test (after provisioning and confirming the UID with `id -u vps-sandbox`):
 
-```ini
-# /etc/systemd/system/vps-mcp.service.d/20-rootless-runtime-test.conf
-[Service]
-Delegate=cpu memory pids
-ProtectControlGroups=private
-NoNewPrivileges=false
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+```bash
+SANDBOX_UID="$(id -u vps-sandbox)"
+sudo systemd-run --wait --pipe --collect \
+  --unit=vps-sandbox-rootless-smoke \
+  --uid=vps-sandbox \
+  --setenv=HOME=/var/lib/vps-sandbox \
+  --setenv=XDG_RUNTIME_DIR="/run/user/${SANDBOX_UID}" \
+  --property='Delegate=cpu memory pids' \
+  --property=ProtectControlGroups=private \
+  --property=NoNewPrivileges=no \
+  --property='CapabilityBoundingSet=CAP_SETUID CAP_SETGID' \
+  --property=RestrictSUIDSGID=yes \
+  --property=ProtectSystem=strict \
+  --property=ProtectHome=read-only \
+  --property='ReadWritePaths=/var/lib/vps-sandbox /run/user/'"${SANDBOX_UID}" \
+  /usr/bin/podman run --rm docker.io/library/alpine:3.21 id
 ```
 
-This is a **temporary test configuration**, not yet the approved production policy. `Delegate=` grants the service control of its own cgroup subtree; `ProtectControlGroups=private` provides a private writable cgroup namespace instead of exposing the host hierarchy read-write. `NoNewPrivileges=false` is required to let the mapping helpers gain the privileges needed to write the user namespace maps. The existing empty `CapabilityBoundingSet=` must also be replaced for the test with the minimum `CAP_SETUID CAP_SETGID` bounding set so the helpers can obtain those capabilities. Keep `RestrictSUIDSGID=true` and all other hardening settings unchanged. Do not add sudo or broader capabilities. Disabling `NoNewPrivileges` and allowing `CAP_SETUID CAP_SETGID` in the bounding set broadens the privilege-escalation surface for the whole service process tree: child processes may execute other setuid binaries and obtain those two capabilities. Production approval must consider a separate runtime service identity and a narrowly scoped runtime API.
-
-Apply only during an approved maintenance window, after backing up the unit and confirming a rollback path. Then run `systemctl daemon-reload`, restart the service, and verify `systemctl show vps-mcp.service -p Delegate -p ProtectControlGroups -p NoNewPrivileges -p RestrictSUIDSGID -p CapabilityBoundingSet`. Re-run the preflight as `vps-mcp`; it must show the expected delegated controllers and writable `cgroup.subtree_control`. Then prove CPU, memory and PID limits with actual test containers. If any check fails, revert the drop-in and restart the service. Do not assume that the directive values alone prove the controls work.
-
-`RestrictSUIDSGID=true` only blocks creating SUID/SGID file bits; it does not prevent executing the already-installed `newuidmap`/`newgidmap` helpers, so leave it enabled. `NoNewPrivileges=true` blocks privilege gain through setuid/file capabilities, while an empty `CapabilityBoundingSet=` prevents the mapping helpers from acquiring `CAP_SETUID`/`CAP_SETGID`. The production decision must document the security consequences and consider moving the runtime into a dedicated service identity before enabling general sandbox workloads.
+This is an isolated feasibility test, not the final production service design. `NoNewPrivileges=no` and the two-capability bounding set apply to the test unit's process tree, which is why the unit runs under a dedicated non-login identity rather than `vps-mcp`. Keep `RestrictSUIDSGID=yes`; it does not block execution of the installed mapping helpers. Preserve the public MCP service's existing hardening. After the smoke test, run the complete acceptance matrix above as `vps-sandbox`, including actual CPU, memory and PID limit enforcement. Capture the effective transient-unit properties and cgroup controller files. If the transient unit cannot provide the required namespace and cgroup behavior, stop and revise the runtime architecture rather than weakening `vps-mcp.service`.
 
 The MCP service identity cannot read the deployed unit or perform administrator actions. An administrator must compare `/etc/systemd/system/vps-mcp.service` with the checked-in unit and confirm any drop-ins before provisioning.
 
 ## Rollback
 
 1. Stop any test containers and remove only the test images/containers created for this acceptance run.
-2. Disable lingering for the service user only if it was enabled solely for this experiment and no other service relies on it: `loginctl disable-linger vps-mcp`.
+2. Disable lingering for the service user only if it was enabled solely for this experiment and no other service relies on it: `loginctl disable-linger vps-sandbox`.
 3. Preserve subordinate ID allocations until confirming no process/container storage uses them. Removing or reassigning ranges can corrupt ownership of existing files.
 4. Back up and then remove the rootless Podman storage directory only after confirming it contains no required state.
 5. Remove packages only if they were installed solely for this experiment and no other host service depends on them.
