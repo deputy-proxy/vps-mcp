@@ -42,6 +42,8 @@ WorkOS AuthKit is the configured authorization provider for this deployment.
 
 The WorkOS issuer for this staging environment is `https://stalwart-insight-17-staging.authkit.app`. Set `OAUTH_ISSUER_URL` to that exact issuer (without adding a trailing slash), and set both `MCP_PUBLIC_URL` and `OAUTH_AUDIENCE` to the exact resource indicator above.
 
+See [AUTHKIT_SCOPES.md](./AUTHKIT_SCOPES.md) for the verified AuthKit scope set and the distinction between resource authentication and VPS tool authorization.
+
 ### ChatGPT client compatibility
 
 Create and manage custom MCP server connections from **ChatGPT on the web**. The ChatGPT mobile apps do not currently support creating custom MCP server connections. Use the web app at `https://chatgpt.com` for connector setup and discovery tests.
