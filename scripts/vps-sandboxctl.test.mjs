@@ -6,11 +6,14 @@ describe('privileged runtime helper command construction', () => {
     const args = buildSystemdRunArgs('smoke', 'vps-sandboxctl-smoke-1234', '995');
     expect(args[0]).toBe('--system');
     expect(args).toContain('--uid=vps-sandbox');
+    expect(args).toContain('--setenv=VPS_SANDBOXCTL_UNIT=vps-sandboxctl-smoke-1234');
     expect(args).toContain('--property=Delegate=cpu memory pids');
     expect(args).toContain('--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/995/bus');
     expect(args.at(-1)).toContain('--cgroup-manager=cgroupfs');
     expect(args).toContain('--property=NoNewPrivileges=no');
-    expect(args.at(-1)).toContain('Delegated system-service cgroup');
+    expect(args.at(-1)).toContain('systemctl show');
+    expect(args.at(-1)).toContain('INVOCATION_ID');
+    expect(args.at(-1)).not.toContain('/proc/self/cgroup');
     expect(args).toContain('--property=Delegate=cpu memory pids');
     expect(args).toContain('--property=ProtectSystem=strict');
     expect(args.at(-3)).toBe('/usr/bin/bash');
