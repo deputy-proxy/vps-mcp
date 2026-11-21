@@ -59,6 +59,7 @@ install -d -o root -g root -m 0755 /usr/local/libexec/vps-mcp
 install -o root -g root -m 0755 scripts/deploy-gateway.sh /usr/local/libexec/vps-mcp/deploy-gateway.sh
 install -o root -g root -m 0755 scripts/deploy-production.mjs /usr/local/libexec/vps-mcp/deploy-production.mjs
 
+[[ ! -L /var/lib/vps-mcp-deploy && ! -L /var/lib/vps-mcp-deploy/.ssh ]] || { echo "Deployment account home or SSH directory is a symlink; refusing to continue." >&2; exit 1; }
 install -d -o root -g root -m 0700 /var/lib/vps-mcp-deploy/.ssh
 chown root:root /var/lib/vps-mcp-deploy
 chmod 0755 /var/lib/vps-mcp-deploy
