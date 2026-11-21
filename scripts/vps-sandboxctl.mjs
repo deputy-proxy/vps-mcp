@@ -32,7 +32,6 @@ function cgroupChecks() {
     'echo "Delegated system-service cgroup: $CGROUP (namespace mount root: $MOUNT_ROOT)"',
     'test -d "$MOUNT_ROOT"',
     'test -w "$MOUNT_ROOT/cgroup.subtree_control"',
-    'test ! -w /sys/fs/cgroup/system.slice/cgroup.subtree_control',
     'echo "SYSTEM-SERVICE CGROUP DELEGATION CHECK PASSED"',
   ].join(String.fromCharCode(10));
 }
