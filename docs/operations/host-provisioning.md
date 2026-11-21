@@ -12,7 +12,7 @@ Review `scripts/provision-rootless-podman.sh` before running it. From a privileg
 sudo bash scripts/provision-rootless-podman.sh vps-sandbox
 ```
 
-The script is intentionally limited to Ubuntu 24.04. It creates the dedicated non-login `vps-sandbox` identity and private primary group when absent, installs `podman`, `uidmap`, `slirp4netns` and `fuse-overlayfs`; allocates subordinate UID/GID ranges only when none exist; prepares the service-owned storage directory; enables lingering; starts the user manager; and installs a read-only preflight copy at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`. It does not edit `/opt/vps-mcp`, modify `vps-mcp.service`, enable a rootful daemon, add either identity to sudo or Docker groups, or broaden the public MCP service capabilities.
+The script is intentionally limited to Ubuntu 24.04. It creates the dedicated non-login `vps-sandbox` identity and private primary group when absent, installs `podman`, `uidmap`, `slirp4netns` and `fuse-overlayfs`; allocates subordinate UID/GID ranges only when none exist; prepares the service-owned storage directory; disables the package-enabled rootful Podman socket, service, auto-update service/timer and helper units; enables lingering; starts the user manager; and installs a read-only preflight copy at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`. It does not edit `/opt/vps-mcp`, modify `vps-mcp.service`, enable a rootful daemon, add either identity to sudo or Docker groups, or broaden the public MCP service capabilities.
 
 If a subordinate ID range is already assigned, inspect it for overlap before changing it. Never blindly replace an existing range. Confirm the runtime directory exists after provisioning:
 
@@ -43,7 +43,7 @@ sudo systemd-run --wait --pipe --collect \
   --property=ProtectKernelModules=yes \
   --property=PrivateTmp=yes \
   --property="ReadWritePaths=/var/lib/vps-sandbox /run/user/${SANDBOX_UID}" \
-  /usr/bin/bash -lc '/usr/bin/node /usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs && UNIT_CGROUP="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)" && test -w "${UNIT_CGROUP}/cgroup.subtree_control" && test ! -w /sys/fs/cgroup/cgroup.subtree_control && test ! -w /sys/fs/cgroup/system.slice/cgroup.subtree_control && /usr/bin/podman info --debug && /usr/bin/podman run --rm --pull=missing docker.io/library/alpine:3.21 id'
+  /usr/bin/bash -lc '/usr/bin/node /usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs && UNIT_CGROUP="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)" && test -w "${UNIT_CGROUP}/cgroup.subtree_control" && test ! -w /sys/fs/cgroup/cgroup.subtree_control && test ! -w /sys/fs/cgroup/system.slice/cgroup.subtree_control && /usr/bin/podman --cgroup-manager=cgroupfs info --debug && /usr/bin/podman --cgroup-manager=cgroupfs run --rm --pull=missing docker.io/library/alpine:3.21 id'
 ```
 
 The preflight must report `READY`. It verifies the effective runtime identity, user namespace, subordinate IDs, mapping helpers, `NoNewPrivileges=false`, the two mapping-helper capabilities, cgroup v2 delegation, network helper, Podman and writable rootless storage. The inline cgroup checks also confirm that the unit can write its own delegated subtree but cannot write the root or `system.slice` cgroup control files. A preflight run from a normal administrator shell or from the public MCP service is not equivalent.
@@ -54,8 +54,8 @@ This is an isolated feasibility test, not the final production service design. S
 
 After the transient preflight and basic smoke test pass, verify and record each item:
 
-1. `unshare -Ur` succeeds and the UID/GID maps match the documented subordinate mapping model.
-2. `podman info --debug` reports rootless mode and the expected storage driver.
+1. `podman unshare` succeeds and its UID/GID maps match the documented subordinate mapping model. Do not use generic `unshare -Ur` as the acceptance probe: Ubuntu's AppArmor `unprivileged_userns` transition can deny that executable while Podman's dedicated AppArmor profile permits the runtime's namespace path.
+2. `podman --cgroup-manager=cgroupfs info --debug` reports rootless mode and the expected storage driver.
 3. Pull a pinned, trusted test image.
 4. Create and start a container with no added capabilities, no privileged mode, read-only rootfs, bounded tmpfs and explicit resource limits.
 5. Execute a command and verify the expected container identity and UID/GID mapping.
@@ -86,7 +86,7 @@ If the transient unit cannot provide the required user namespace and delegated c
 
 ## Troubleshooting
 
-- `unshare ... Operation not permitted`: verify the transient unit's effective `NoNewPrivileges`, capabilities, `Delegate`, `ProtectControlGroups` and cgroup namespace. Enabled kernel sysctls do not prove the unit can create namespaces.
+- Generic `unshare -Ur` may be denied by Ubuntu's enforced AppArmor `unprivileged_userns` profile even when Podman is permitted. Use `podman unshare` for the runtime acceptance test. If that fails, inspect the Podman/crun AppArmor profiles, transient unit's effective `NoNewPrivileges`, capabilities, `Delegate` and `ProtectControlGroups`; do not disable the host-wide AppArmor restriction.
 - `newuidmap`/`newgidmap` fails: check `/etc/subuid`, `/etc/subgid`, helper ownership/mode, `NoNewPrivileges` and the effective capability bounding set. `RestrictSUIDSGID` should normally remain enabled.
 - cgroup limits unavailable: verify cgroup v2 delegation for the transient unit. Do not mount or remount host cgroups from the MCP process.
 - storage is not writable: verify `/var/lib/vps-sandbox/.local/share/containers` ownership and the unit's `ReadWritePaths`.

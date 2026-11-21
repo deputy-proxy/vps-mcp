@@ -33,7 +33,12 @@ describe('rootless runtime preflight', () => {
     expect(result.failures.map((failure) => failure.id)).toContain('mapping-helper-capabilities');
   });
 
-  it('blocks when user namespaces are unavailable', () => {
+  it('accepts Podman user namespaces even when generic unshare is restricted', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, genericUnshare: false, userNamespace: true });
+    expect(result.ready).toBe(true);
+  });
+
+  it('blocks when Podman cannot create a user namespace', () => {
     const result = evaluateSnapshot({ ...readySnapshot, userNamespace: false });
     expect(result.ready).toBe(false);
     expect(result.failures.map((failure) => failure.id)).toContain('user-namespaces');
