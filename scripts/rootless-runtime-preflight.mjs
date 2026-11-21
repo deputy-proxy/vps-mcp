@@ -126,7 +126,7 @@ export function collectSnapshot() {
     : null;
   const unitIdentityValid = Boolean(
     invocationId && unitInvocationId === invocationId &&
-    hostControlGroup && /^\\/system\\.slice\\/vps-sandboxctl-[a-z]+-[0-9]+\\.service$/.test(hostControlGroup)
+    hostControlGroup && /^\/system\.slice\/vps-sandboxctl-[a-z]+-[0-9]+\.service$/.test(hostControlGroup)
   );
   const serviceCgroup = '/sys/fs/cgroup';
   const controllers = read(`${serviceCgroup}/cgroup.controllers`)?.split(/\\s+/).filter(Boolean) ?? [];
