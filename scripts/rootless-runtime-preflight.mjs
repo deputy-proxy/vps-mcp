@@ -12,8 +12,6 @@ export function evaluateSnapshot(snapshot) {
 
   add('linux', snapshot.platform === 'linux', `platform=${snapshot.platform}`);
   add('runtime-identity', snapshot.executionUser === RUNTIME_USER, `execution user=${snapshot.executionUser ?? 'unknown'}; expected=${RUNTIME_USER}`);
-  add('systemd-user-manager', snapshot.userManagerBus === true, snapshot.userManagerDetail ?? 'systemd user manager bus must be available for delegated rootless cgroups');
-  add('systemd-user-manager-delegation', snapshot.userManagerDelegation === true, snapshot.userManagerDelegationDetail ?? 'user@.service must delegate cpu, memory and pids controllers');
   add('cgroup-v2', snapshot.cgroup === 'cgroup2fs', `filesystem=${snapshot.cgroup ?? 'unavailable'}`);
   add('cgroup-delegation', snapshot.cgroupDelegation === true, snapshot.cgroupDelegationDetail ?? 'CPU, memory and PID controllers must be delegated and writable by this unit');
   add('user-namespaces', snapshot.userNamespace === true, snapshot.userNamespaceDetail ?? 'unprivileged user namespace probe');
@@ -70,7 +68,7 @@ function probeUserNamespace() {
   // unshare may be restricted by Ubuntu's AppArmor unprivileged_userns
   // transition even when Podman's dedicated AppArmor profile permits it.
   const output = command('podman', [
-    '--cgroup-manager=systemd',
+    '--cgroup-manager=cgroupfs',
     'unshare',
     'sh',
     '-c',
@@ -87,9 +85,6 @@ function probeUserNamespace() {
 export function collectSnapshot() {
   const userns = probeUserNamespace();
   const executionUser = command('id', ['-un']);
-  const runtimeDir = process.env.XDG_RUNTIME_DIR;
-  const userBus = runtimeDir ? `${runtimeDir}/bus` : null;
-  const userManagerBus = Boolean(userBus && command('systemctl', ['--user', 'show-environment']) !== null && process.env.DBUS_SESSION_BUS_ADDRESS === `unix:path=${userBus}`);
   const subuid = hasSubordinateRange('/etc/subuid', RUNTIME_USER);
   const subgid = hasSubordinateRange('/etc/subgid', RUNTIME_USER);
   const podmanVersion = command('podman', ['--version']);
@@ -127,20 +122,10 @@ export function collectSnapshot() {
   } catch { /* no delegation */ }
   const requiredControllers = ['cpu', 'memory', 'pids'];
   const cgroupDelegation = requiredControllers.every((controller) => controllers.includes(controller)) && subtreeControlWritable;
-  const sandboxUid = command('id', ['-u']);
-  const userManagerCgroup = sandboxUid ? `/sys/fs/cgroup/user.slice/user-${sandboxUid}.slice/user@${sandboxUid}.service` : '';
-  const userManagerControllers = read(`${userManagerCgroup}/cgroup.controllers`)?.split(/\s+/).filter(Boolean) ?? [];
-  let userManagerSubtreeWritable = false;
-  try { accessSync(`${userManagerCgroup}/cgroup.subtree_control`, constants.W_OK); userManagerSubtreeWritable = true; } catch { /* no delegated user manager cgroup */ }
-  const userManagerDelegation = requiredControllers.every((controller) => userManagerControllers.includes(controller)) && userManagerSubtreeWritable;
 
   return {
     platform: process.platform,
     executionUser,
-    userManagerBus,
-    userManagerDelegation,
-    userManagerDelegationDetail: `user manager cgroup=${userManagerCgroup}; controllers=${userManagerControllers.join(' ') || 'unavailable'}; subtree writable=${userManagerSubtreeWritable}`,
-    userManagerDetail: `user bus=${userBus ?? 'unset'}; socket=${userManagerBus}; DBUS_SESSION_BUS_ADDRESS configured=${process.env.DBUS_SESSION_BUS_ADDRESS === (userBus ? `unix:path=${userBus}` : '')}`,
     cgroup: command('stat', ['-fc', '%T', '/sys/fs/cgroup']),
     cgroupDelegation,
     cgroupDelegationDetail: `unit cgroup=${serviceCgroup}; controllers=${controllers.join(' ') || 'unavailable'}; cgroup.subtree_control writable=${subtreeControlWritable}`,
