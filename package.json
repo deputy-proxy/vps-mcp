@@ -13,7 +13,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --exclude **/dist/**",
-    "check:oauth": "node scripts/check-oauth-provider.mjs"
+    "check:oauth": "node scripts/check-oauth-provider.mjs",
+    "check:public": "node scripts/check-public-mcp.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
