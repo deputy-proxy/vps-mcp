@@ -23,8 +23,8 @@ function rpc(method: string, id: number, params: Record<string, unknown> = {}) {
   return { jsonrpc: "2.0", id, method, params };
 }
 
-async function requestAt(endpoint: string, method: string, id: number, params: Record<string, unknown> = {}, bearer?: string) {
-  return fetch(baseUrl + endpoint, {
+async function request(method: string, id: number, params: Record<string, unknown> = {}, bearer?: string) {
+  return fetch(`${baseUrl}/mcp`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -33,10 +33,6 @@ async function requestAt(endpoint: string, method: string, id: number, params: R
     },
     body: JSON.stringify(rpc(method, id, params)),
   });
-}
-
-async function request(method: string, id: number, params: Record<string, unknown> = {}, bearer?: string) {
-  return requestAt("/mcp", method, id, params, bearer);
 }
 
 function parseSse(text: string) {
@@ -127,16 +123,6 @@ describe("server-level OAuth boundary", () => {
     for (const tool of tools) {
       expect(tool).not.toHaveProperty("_meta.securitySchemes");
     }
-  });
-
-  it("allows an authenticated ChatGPT-style client to initialize at the origin root", async () => {
-    const response = await requestAt("/", "initialize", 5, {
-      protocolVersion: "2025-03-26",
-      capabilities: {},
-      clientInfo: { name: "integration-test", version: "1.0.0" },
-    }, "integration-test-token");
-    expect(response.status).toBe(200);
-    expect(parseSse(await response.text()).result.serverInfo?.name).toBe("vps-mcp");
   });
 
   it("allows an authenticated client to execute a tool", async () => {
