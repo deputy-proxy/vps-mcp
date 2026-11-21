@@ -4,51 +4,26 @@
 
 The current candidate target is Ubuntu 24.04 LTS, x86_64, systemd 255 or newer, cgroup v2, ext4 or another explicitly validated rootless-storage filesystem, and at least 2 GiB available RAM plus 10 GiB free disk for the runtime baseline. Production sizing and per-container limits will be established by the resource-governance issue.
 
-## Read-only preflight
-
-Run as `vps-mcp` in the same execution context used by the MCP service:
-
-```bash
-node scripts/rootless-runtime-preflight.mjs
-```
-
-The command exits nonzero when a required prerequisite fails. JSON output is available with `--json`. Warnings identify optional tuning or policy compatibility concerns. A successful host-level shell check does not replace a test under the actual systemd unit.
-
 ## Administrator provisioning
 
-Review the script before running it. From a privileged administrator session:
+Review `scripts/provision-rootless-podman.sh` before running it. From a privileged administrator session in the checked-out repository:
 
 ```bash
 sudo bash scripts/provision-rootless-podman.sh vps-sandbox
 ```
 
-The script is intentionally limited to Ubuntu 24.04. It creates the dedicated non-login `vps-sandbox` system identity when absent, installs `podman`, `uidmap`, `slirp4netns` and `fuse-overlayfs`; allocates subordinate UID/GID ranges only when none exist; enables lingering; and creates the service-owned storage directory. It does not edit `/opt/vps-mcp`, modify `vps-mcp.service`, enable a rootful daemon, add either identity to sudo or Docker groups, or broaden the MCP service capabilities.
+The script is intentionally limited to Ubuntu 24.04. It creates the dedicated non-login `vps-sandbox` identity and private primary group when absent, installs `podman`, `uidmap`, `slirp4netns` and `fuse-overlayfs`; allocates subordinate UID/GID ranges only when none exist; prepares the service-owned storage directory; enables lingering; starts the user manager; and installs a read-only preflight copy at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`. It does not edit `/opt/vps-mcp`, modify `vps-mcp.service`, enable a rootful daemon, add either identity to sudo or Docker groups, or broaden the public MCP service capabilities.
 
-If the subordinate ID range is already assigned, inspect it for overlap before changing it. Never blindly replace an existing range.
+If a subordinate ID range is already assigned, inspect it for overlap before changing it. Never blindly replace an existing range. Confirm the runtime directory exists after provisioning:
 
-## Live acceptance matrix
+```bash
+SANDBOX_UID="$(id -u vps-sandbox)"
+test -d "/run/user/${SANDBOX_UID}"
+```
 
-Run each check as `vps-sandbox` inside the dedicated transient systemd test unit described below. Do not change the public `vps-mcp.service` security policy for this experiment:
+## Dedicated transient systemd test unit
 
-1. `unshare -Ur` succeeds and the UID/GID maps match the documented model.
-2. `podman info --debug` reports rootless mode and the expected storage driver.
-3. Pull a pinned, trusted test image.
-4. Create and start a container with no added capabilities, no privileged mode, read-only rootfs, bounded tmpfs, and explicit resource limits.
-5. Execute a command and verify the expected container identity and UID/GID mapping.
-6. Verify the container cannot read `/etc/shadow`, another user's home, the host runtime socket, or arbitrary host paths.
-7. Verify only the explicit workspace mount is visible; verify read-only mounts reject writes.
-8. Verify CPU, memory and PID limits are enforced and observable under cgroup v2.
-9. Verify the selected network mode works without exposing host networking; confirm default egress behavior.
-10. Stop and remove the container; verify no process, mount or writable layer is left behind.
-11. Restart `vps-mcp.service` and the host (during an approved maintenance window); verify runtime state reconciliation and no orphaned workloads.
-
-Capture command output, runtime versions, systemd unit checksum and test results. Redact tokens, registry credentials, private repository URLs and environment values.
-
-## Systemd policy review
-
-The administrator-confirmed `vps-mcp.service` enables `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectControlGroups=true`, and an empty `CapabilityBoundingSet`; effective `Delegate=no`. The live cgroup exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. Kernel user-namespace sysctls are enabled. **Leave this public MCP service unchanged.**
-
-The rootless mapping helpers need privilege-gain behavior that conflicts with the public MCP service policy. Test them under a separate, non-login `vps-sandbox` identity and a transient systemd unit. Example administrator-run test (after provisioning and confirming the UID with `id -u vps-sandbox`):
+Run both the preflight and Podman smoke test under the same dedicated transient unit configuration. Do not run them as `vps-mcp`, and do not change the public `vps-mcp.service` security policy.
 
 ```bash
 SANDBOX_UID="$(id -u vps-sandbox)"
@@ -56,34 +31,63 @@ sudo systemd-run --wait --pipe --collect \
   --unit=vps-sandbox-rootless-smoke \
   --uid=vps-sandbox \
   --setenv=HOME=/var/lib/vps-sandbox \
-  --setenv=XDG_RUNTIME_DIR="/run/user/${SANDBOX_UID}" \
+  --setenv="XDG_RUNTIME_DIR=/run/user/${SANDBOX_UID}" \
   --property='Delegate=cpu memory pids' \
-  --property=ProtectControlGroups=private \
+  --property=ProtectControlGroups=no \
   --property=NoNewPrivileges=no \
   --property='CapabilityBoundingSet=CAP_SETUID CAP_SETGID' \
   --property=RestrictSUIDSGID=yes \
   --property=ProtectSystem=strict \
   --property=ProtectHome=read-only \
-  --property='ReadWritePaths=/var/lib/vps-sandbox /run/user/'"${SANDBOX_UID}" \
-  /usr/bin/podman run --rm docker.io/library/alpine:3.21 id
+  --property=ProtectKernelTunables=yes \
+  --property=ProtectKernelModules=yes \
+  --property=PrivateTmp=yes \
+  --property="ReadWritePaths=/var/lib/vps-sandbox /run/user/${SANDBOX_UID}" \
+  /usr/bin/bash -lc '/usr/bin/node /usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs && UNIT_CGROUP="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)" && test -w "${UNIT_CGROUP}/cgroup.subtree_control" && test ! -w /sys/fs/cgroup/cgroup.subtree_control && test ! -w /sys/fs/cgroup/system.slice/cgroup.subtree_control && /usr/bin/podman info --debug && /usr/bin/podman run --rm --pull=missing docker.io/library/alpine:3.21 id'
 ```
 
-This is an isolated feasibility test, not the final production service design. `NoNewPrivileges=no` and the two-capability bounding set apply to the test unit's process tree, which is why the unit runs under a dedicated non-login identity rather than `vps-mcp`. Keep `RestrictSUIDSGID=yes`; it does not block execution of the installed mapping helpers. Preserve the public MCP service's existing hardening. After the smoke test, run the complete acceptance matrix above as `vps-sandbox`, including actual CPU, memory and PID limit enforcement. Capture the effective transient-unit properties and cgroup controller files. If the transient unit cannot provide the required namespace and cgroup behavior, stop and revise the runtime architecture rather than weakening `vps-mcp.service`.
+The preflight must report `READY`. It verifies the effective runtime identity, user namespace, subordinate IDs, mapping helpers, `NoNewPrivileges=false`, the two mapping-helper capabilities, cgroup v2 delegation, network helper, Podman and writable rootless storage. The inline cgroup checks also confirm that the unit can write its own delegated subtree but cannot write the root or `system.slice` cgroup control files. A preflight run from a normal administrator shell or from the public MCP service is not equivalent.
 
-The MCP service identity cannot read the deployed unit or perform administrator actions. An administrator must compare `/etc/systemd/system/vps-mcp.service` with the checked-in unit and confirm any drop-ins before provisioning.
+This is an isolated feasibility test, not the final production service design. Systemd 255 supports only boolean values for `ProtectControlGroups`; `private` is not a valid value on this host. `ProtectControlGroups=no` is required for writable cgroup delegation, while `Delegate=cpu memory pids` transfers ownership only of the unit subtree to `vps-sandbox`; the host manager retains ownership above it. Because the hierarchy remains visible, explicitly verify that writes outside the delegated subtree are denied. `NoNewPrivileges=no` and the two-capability bounding set apply to the entire transient unit process tree, which is why it runs under the dedicated non-login `vps-sandbox` identity. Keep `RestrictSUIDSGID=yes`. Preserve the public MCP service's existing hardening without exception.
+
+## Live acceptance matrix
+
+After the transient preflight and basic smoke test pass, verify and record each item:
+
+1. `unshare -Ur` succeeds and the UID/GID maps match the documented subordinate mapping model.
+2. `podman info --debug` reports rootless mode and the expected storage driver.
+3. Pull a pinned, trusted test image.
+4. Create and start a container with no added capabilities, no privileged mode, read-only rootfs, bounded tmpfs and explicit resource limits.
+5. Execute a command and verify the expected container identity and UID/GID mapping.
+6. Verify the container cannot read `/etc/shadow`, another user's home, the host runtime socket or arbitrary host paths.
+7. Verify only the explicit workspace mount is visible; verify read-only mounts reject writes.
+8. Verify CPU, memory and PID limits are enforced and observable under cgroup v2. Confirm the runtime identity cannot write to any cgroup outside its delegated transient-unit subtree.
+9. Verify the selected network mode works without exposing host networking; confirm and document egress behavior.
+10. Stop and remove the container; verify no process, mount or writable layer is left behind.
+11. Run the smoke test a second time and verify rootless storage remains usable. Record whether any transient unit or container state remains after the first run.
+
+Capture command output, runtime versions, effective transient-unit properties, cgroup controller files and test results. Redact tokens, registry credentials, private repository URLs and environment values. Do not claim MCP restart/host reboot reconciliation from this feasibility test; persistent lifecycle recovery is validated by later runtime lifecycle issues.
+
+## Systemd policy review
+
+The administrator-confirmed `vps-mcp.service` enables `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectControlGroups=true`, and an empty `CapabilityBoundingSet`; effective `Delegate=no`. The live cgroup exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. Kernel user-namespace sysctls are enabled. **Leave this public MCP service unchanged.**
+
+If the transient unit cannot provide the required user namespace and delegated cgroup behavior, or can modify cgroups outside its own delegated subtree, stop and revise the runtime architecture rather than weakening `vps-mcp.service`. The final production service identity, control API and systemd policy must be designed and threat-model reviewed in #33 before runtime workloads are enabled.
 
 ## Rollback
 
 1. Stop any test containers and remove only the test images/containers created for this acceptance run.
-2. Disable lingering for the service user only if it was enabled solely for this experiment and no other service relies on it: `loginctl disable-linger vps-sandbox`.
+2. Disable lingering for `vps-sandbox` only if it was enabled solely for this experiment and no other service relies on it: `loginctl disable-linger vps-sandbox`.
 3. Preserve subordinate ID allocations until confirming no process/container storage uses them. Removing or reassigning ranges can corrupt ownership of existing files.
-4. Back up and then remove the rootless Podman storage directory only after confirming it contains no required state.
+4. Back up and then remove `/var/lib/vps-sandbox` only after confirming it contains no required state.
 5. Remove packages only if they were installed solely for this experiment and no other host service depends on them.
-6. Restore any administrator-managed configuration from the recorded backup. The provisioning script itself does not change the systemd unit.
+6. Remove `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs` only if it was installed solely for this experiment.
+7. Restore any administrator-managed configuration from the recorded backup. The provisioning script itself does not change the public systemd unit.
 
 ## Troubleshooting
 
-- `unshare ... Operation not permitted`: verify `NoNewPrivileges`, `Delegate`, `ProtectControlGroups`, and the effective service cgroup namespace. The kernel sysctls being enabled does not prove the service can create namespaces.
-- `newuidmap`/`newgidmap` fails: check `/etc/subuid`, `/etc/subgid`, helper ownership/mode and `NoNewPrivileges`. `RestrictSUIDSGID` controls creation of SUID/SGID file bits and should normally remain enabled.
-- cgroup limits unavailable: verify cgroup v2 delegation for the service slice. Do not mount or remount host cgroups from the MCP process.
+- `unshare ... Operation not permitted`: verify the transient unit's effective `NoNewPrivileges`, capabilities, `Delegate`, `ProtectControlGroups` and cgroup namespace. Enabled kernel sysctls do not prove the unit can create namespaces.
+- `newuidmap`/`newgidmap` fails: check `/etc/subuid`, `/etc/subgid`, helper ownership/mode, `NoNewPrivileges` and the effective capability bounding set. `RestrictSUIDSGID` should normally remain enabled.
+- cgroup limits unavailable: verify cgroup v2 delegation for the transient unit. Do not mount or remount host cgroups from the MCP process.
+- storage is not writable: verify `/var/lib/vps-sandbox/.local/share/containers` ownership and the unit's `ReadWritePaths`.
 - overlay storage fails: validate `fuse-overlayfs` and filesystem support; do not switch to a less isolated storage mode without review.

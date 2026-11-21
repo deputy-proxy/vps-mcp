@@ -2,19 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { evaluateSnapshot } from './rootless-runtime-preflight.mjs';
 
 const readySnapshot = {
-  platform: 'linux', cgroup: 'cgroup2fs', cgroupDelegation: true, userNamespace: true,
+  platform: 'linux', executionUser: 'vps-sandbox', cgroup: 'cgroup2fs', cgroupDelegation: true, userNamespace: true,
   subuid: true, subgid: true, newuidmap: true, newgidmap: true,
   slirp4netns: true, pasta: false, fuseOverlayfs: true,
   podman: true, podmanVersion: 'podman version 5.0.0',
-  unitReadable: true, noNewPrivileges: false, capSetuid: true, capSetgid: true,
-  protectSystem: 'strict', protectControlGroups: true,
-  serviceContextProbe: true, storageWritable: true,
-  memoryBytes: 8 * 1024 ** 3, diskAvailableBytes: 50 * 1024 ** 3,
+  noNewPrivileges: false, capSetuid: true, capSetgid: true,
+  storageWritable: true, memoryBytes: 8 * 1024 ** 3, diskAvailableBytes: 50 * 1024 ** 3,
 };
 
 describe('rootless runtime preflight', () => {
-  it('accepts a host that satisfies every required prerequisite', () => {
+  it('accepts a dedicated runtime context that satisfies every required prerequisite', () => {
     expect(evaluateSnapshot(readySnapshot).ready).toBe(true);
+  });
+
+  it('blocks when the process is not running as the dedicated runtime identity', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, executionUser: 'vps-mcp' });
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('runtime-identity');
   });
 
   it('blocks when CPU, memory and PID cgroup delegation is unavailable', () => {
@@ -35,9 +39,22 @@ describe('rootless runtime preflight', () => {
     expect(result.failures.map((failure) => failure.id)).toContain('user-namespaces');
   });
 
-  it('reports NoNewPrivileges incompatibility with setuid mapping helpers', () => {
+  it('blocks when NoNewPrivileges prevents mapping-helper privilege gain', () => {
     const result = evaluateSnapshot({ ...readySnapshot, noNewPrivileges: true });
-    expect(result.checks.find((check) => check.id === 'setuid-helper-compatibility')?.status).toBe('warning');
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('no-new-privileges');
+  });
+
+  it('blocks when effective NoNewPrivileges cannot be read', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, noNewPrivileges: null });
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('no-new-privileges');
+  });
+
+  it('blocks when the rootless container storage directory is not writable', () => {
+    const result = evaluateSnapshot({ ...readySnapshot, storageWritable: false });
+    expect(result.ready).toBe(false);
+    expect(result.failures.map((failure) => failure.id)).toContain('storage-writable');
   });
 
   it('does not treat a missing optional overlay helper as a hard blocker', () => {
