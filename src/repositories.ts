@@ -145,6 +145,8 @@ export function sanitizeGitError(value: string): string {
 function safeGitEnvironment(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  delete env.SSH_AUTH_SOCK;
+  delete env.SSH_AGENT_PID;
   return { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
 }
 
@@ -204,6 +206,19 @@ async function getById(id: string, lockHeld = false): Promise<ManagedRepository>
   const repository = (await readRegistry(lockHeld)).repositories.find((item) => item.id === id || item.fullName.toLowerCase() === id.toLowerCase());
   if (!repository) throw new Error(`Repository '${id}' is not registered`);
   return repository;
+}
+
+export async function getManagedRepository(id: string): Promise<ManagedRepository> {
+  return getById(id);
+}
+
+export async function withRepositoryLock<T>(id: string, operation: (repository: ManagedRepository) => Promise<T>): Promise<T> {
+  const initial = await getById(id);
+  return withLock(async () => operation(await getById(initial.id)), path.join(root, ".repository-locks", initial.id));
+}
+
+export async function runManagedGit(args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<string> {
+  return git(args, options);
 }
 
 async function discover(repository: ManagedRepository): Promise<{ defaultBranch: string; branches: string[]; branchHeads: Record<string, string>; missingRequiredBranches: string[] }> {
@@ -331,7 +346,8 @@ export async function inspectRepository(id: string) {
 }
 
 export async function updateRepository(input: { id: string; remoteUrl?: string | undefined; developmentHostname?: string | undefined; languageProfile?: string | undefined; policyReferences?: string[] | undefined; requiredStatusChecks?: string[] | undefined; persistentEnvironmentPaths?: string[] | undefined; requiredBackupPaths?: string[] | undefined }) {
-  return withLock(async () => {
+  const initial = await getById(input.id);
+  return withLock(async () => withLock(async () => {
     const registry = await readRegistry(true);
     const repository = registry.repositories.find((item) => item.id === input.id || item.fullName.toLowerCase() === input.id.toLowerCase());
     if (!repository) throw new Error(`Repository '${input.id}' is not registered`);
@@ -379,7 +395,7 @@ export async function updateRepository(input: { id: string; remoteUrl?: string |
     repository.updatedAt = new Date().toISOString();
     await writeRegistry(registry);
     return repository;
-  });
+  }, lockDirectory), path.join(root, ".repository-locks", initial.id));
 }
 
 export async function validateRepository(id: string) {

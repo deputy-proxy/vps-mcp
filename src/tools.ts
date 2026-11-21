@@ -10,6 +10,7 @@ import { listDirectory, readFile, writeFile } from "./filesystem.js";
 import { isRuntimeOperation, runRuntimeOperation } from "./runtime.js";
 import { applyRepositoryBranchPolicy, fetchRepository, inspectRepository, listRepositories, registerRepository, removeRepository, updateRepository, validateRepository } from "./repositories.js";
 import { validateTaskBranchCreation } from "./branch-policy.js";
+import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -210,6 +211,69 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { branchName: z.string().min(1).max(255), baseBranch: z.string().min(1).max(255).default("development") },
   }, async ({ branchName, baseBranch }) => guarded(() => safely(async () => validateTaskBranchCreation({ branchName, baseBranch }))));
+
+  server.registerTool("task-workspace.create", {
+    title: "Create task workspace",
+    description: "Create an isolated Git worktree and unique task branch from origin/development in the registered repository cache. Branch names are generated from task IDs, never task titles.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(1).max(200), taskId: z.string().min(1).max(128), sandboxId: z.string().min(1).max(128).optional(), retentionDays: z.number().int().min(1).max(3650).optional() },
+  }, async ({ repositoryId, taskId, sandboxId, retentionDays }) => guarded(() => safely(() => createTaskWorkspace({ repositoryId, taskId, ...(sandboxId ? { sandboxId } : {}), ...(retentionDays ? { retentionDays } : {}) }))));
+
+  server.registerTool("task-workspace.list", {
+    title: "List task workspaces",
+    description: "List durable task workspace records, optionally filtered by repository or task ID.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(1).max(200).optional(), taskId: z.string().min(1).max(128).optional(), includeRemoved: z.boolean().optional() },
+  }, async ({ repositoryId, taskId, includeRemoved }) => guarded(() => safely(() => listTaskWorkspaces({ ...(repositoryId ? { repositoryId } : {}), ...(taskId ? { taskId } : {}), ...(includeRemoved !== undefined ? { includeRemoved } : {}) }))));
+
+  server.registerTool("task-workspace.inspect", {
+    title: "Inspect task workspace",
+    description: "Inspect task workspace metadata, Git worktree linkage, branch, base commit and dirty state.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { id: z.string().uuid() },
+  }, async ({ id }) => guarded(() => safely(() => inspectTaskWorkspace(id))));
+
+  server.registerTool("task-workspace.status", {
+    title: "Task workspace status",
+    description: "Return lifecycle, worktree availability, branch and modified/staged/untracked change counts.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { id: z.string().uuid() },
+  }, async ({ id }) => guarded(() => safely(() => getTaskWorkspaceStatus(id))));
+
+  server.registerTool("task-workspace.diff", {
+    title: "Task workspace diff summary",
+    description: "Return a bounded Git diff summary and list untracked and ignored files without exposing file contents.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { id: z.string().uuid() },
+  }, async ({ id }) => guarded(() => safely(() => getTaskWorkspaceDiff(id))));
+
+  server.registerTool("task-workspace.retain", {
+    title: "Retain task workspace",
+    description: "Mark a task worktree as retained without removing it or discarding dirty/untracked work.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { id: z.string().uuid() },
+  }, async ({ id }) => guarded(() => safely(() => retainTaskWorkspace(id))));
+
+  server.registerTool("task-workspace.resume", {
+    title: "Resume task workspace",
+    description: "Resume an existing retained worktree. Missing or unlinked worktrees are not recreated automatically.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { id: z.string().uuid() },
+  }, async ({ id }) => guarded(() => safely(() => resumeTaskWorkspace(id))));
+
+  server.registerTool("task-workspace.remove", {
+    title: "Remove task workspace",
+    description: "Remove a task worktree only with confirm=true. Dirty, staged or untracked work is preserved unless discardChanges=true is also explicitly confirmed.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { id: z.string().uuid(), confirm: z.boolean(), discardChanges: z.boolean().optional() },
+  }, async ({ id, confirm, discardChanges }) => guarded(() => safely(() => removeTaskWorkspace({ id, confirm, ...(discardChanges !== undefined ? { discardChanges } : {}) }))));
+
+  server.registerTool("task-workspace.prune", {
+    title: "Prune expired task workspaces",
+    description: "Preview or remove only expired, retained, clean task worktrees. Dry-run is the default; actual pruning requires confirm=true.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { olderThanDays: z.number().int().min(1).max(3650), dryRun: z.boolean().default(true), confirm: z.boolean().optional() },
+  }, async ({ olderThanDays, dryRun, confirm }) => guarded(() => safely(() => pruneTaskWorkspaces({ olderThanDays, dryRun, ...(confirm !== undefined ? { confirm } : {}) }))));
 
   server.registerTool("repository.fetch", {
     title: "Fetch repository cache",

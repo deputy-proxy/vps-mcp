@@ -121,7 +121,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(21);
+    expect(tools.size).toBe(30);
 
     for (const name of [
       "system.health",
@@ -159,6 +159,15 @@ describe("Streamable HTTP endpoint", () => {
     expect(tools.get("repository.branch-policy.inspect")?.annotations).toMatchObject({
       readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true,
     });
+    for (const name of ["task-workspace.list", "task-workspace.inspect", "task-workspace.status", "task-workspace.diff"]) {
+      expect(tools.get(name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    }
+    for (const name of ["task-workspace.create", "task-workspace.remove", "task-workspace.prune"]) {
+      expect(tools.get(name)?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false });
+    }
+    for (const name of ["task-workspace.retain", "task-workspace.resume"]) {
+      expect(tools.get(name)?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    }
     expect(tools.get("runtime.acceptance")?.annotations).toMatchObject({
       readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false,
     });
