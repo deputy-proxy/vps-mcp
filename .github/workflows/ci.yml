@@ -20,6 +20,8 @@ jobs:
       - run: npm ci
       - run: node --check scripts/check-oauth-provider.mjs
       - run: node --check scripts/check-public-mcp.mjs
+      - run: node --check scripts/check-branch-policy.mjs
+      - run: npm run check:branch-policy
       - run: node --check scripts/rootless-runtime-preflight.mjs
       - run: node --check scripts/vps-sandboxctl.mjs
       - run: node --check scripts/vps-sandboxctl-broker.mjs
