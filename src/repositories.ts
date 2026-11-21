@@ -142,12 +142,31 @@ export function sanitizeGitError(value: string): string {
   return value.replace(/https:\/\/[^\s/@]+:[^\s/@]+@/g, "https://[redacted]@").slice(0, 1000);
 }
 
+const SAFE_GIT_ENVIRONMENT_KEYS = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "TZ",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+] as const;
+
 function safeGitEnvironment(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
-  delete env.SSH_AUTH_SOCK;
-  delete env.SSH_AGENT_PID;
-  return { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of SAFE_GIT_ENVIRONMENT_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return {
+    ...env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    LC_ALL: "C",
+  };
 }
 
 function git(args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<string> {
