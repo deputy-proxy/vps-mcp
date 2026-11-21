@@ -43,3 +43,7 @@ Inside the dedicated transient systemd unit, Podman successfully created a user 
 Ubuntu's enforced `unprivileged_userns` AppArmor profile denies generic `unshare -Ur`; the packaged Podman and crun profiles explicitly permit `userns`. Therefore the preflight must test `podman unshare`, not generic `unshare`. No global AppArmor restriction was disabled.
 
 This evidence validates the initial rootless feasibility path only. The remaining isolation, resource, networking, cleanup and lifecycle acceptance matrix must pass before production approval.
+
+## Restricted diagnostics privilege boundary
+
+The public MCP service retains `NoNewPrivileges=true`; it must not use setuid sudo to cross into a privileged context. The acceptance diagnostics use a separate root-owned, systemd socket-activated broker. Its Unix socket is restricted to the `vps-mcp` group, and its protocol accepts only the fixed `preflight`, `info` and `smoke` operations. The broker itself retains `NoNewPrivileges=yes` and an empty capability bounding set, and delegates only to the root-owned helper with fixed arguments. The helper creates a separate transient unit for the dedicated `vps-sandbox` identity. This is an acceptance-only bridge, not the general workload control plane for #33.
