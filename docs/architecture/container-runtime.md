@@ -15,10 +15,11 @@ Captured on 2026-11-21 from the `vps-mcp` execution identity on the production V
 - Approximately 11 GiB RAM available at inspection; no swap configured.
 - `/srv` and `/var/lib/vps-mcp` are the MCP service's allowed writable roots.
 - No Podman, Docker, Buildah, `newuidmap`, `newgidmap`, `slirp4netns`, `pasta` or `fuse-overlayfs` binary was present.
-- `/etc/subuid` and `/etc/subgid` had no allocation for `vps-mcp`.
-- The unprivileged user-namespace probe (`unshare -Ur ...`) failed with `Operation not permitted` in the MCP execution context.
+- `/etc/subuid` and `/etc/subgid` contain only `ubuntu:100000:65536`; `vps-mcp` has no subordinate UID/GID range.
+- Kernel settings allow unprivileged user namespaces (`user.max_user_namespaces=47690`, `kernel.unprivileged_userns_clone=1`), so the host sysctls are not the blocker.
+- The unprivileged user-namespace probe (`unshare -Ur ...`) fails with `Operation not permitted` inside `vps-mcp.service`.
 
-The service unit tracked in this repository runs as `vps-mcp`, has an empty capability bounding set, and enables `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, and `ReadWritePaths=/srv /var/lib/vps-mcp`. The deployed unit is outside the MCP service's readable roots, so its live contents must be confirmed by an administrator before any host changes.
+The administrator confirmed the deployed unit matches the checked-in hardening: `User=vps-mcp`, empty `CapabilityBoundingSet`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, and `ReadWritePaths=/srv /var/lib/vps-mcp`. Effective properties confirm `Delegate=no`.
 
 ## Candidate and compatibility constraints
 
@@ -32,9 +33,9 @@ Rootless Podman is preferred because it does not require a rootful daemon or mem
 6. Use a supported storage driver on the actual storage filesystem.
 7. Survive service restart and host reboot without leaving untracked containers or processes.
 
-The live service cgroup currently exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. The checked-in unit has `ProtectControlGroups=true` and no `Delegate=yes`. CPU/memory/PID enforcement therefore cannot be assumed; explicit systemd delegation and a narrowly scoped policy design must be proven before accepting Podman.
+The live service cgroup exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. The confirmed causes are `Delegate=no` and `ProtectControlGroups=yes`. Systemd 255 supports a more confined candidate configuration using `Delegate=cpu memory pids` together with `ProtectControlGroups=private`, which gives the service a private writable cgroup namespace while limiting delegation to its own subtree. This must be verified after a controlled drop-in is applied.
 
-`NoNewPrivileges=true` prevents setuid privilege gain by `newuidmap`/`newgidmap`. A single-ID mapping is not accepted as a silent substitute for the planned mapping model. `RestrictSUIDSGID=true` is an additional compatibility concern. Do not relax either directive merely to make a smoke test pass. If a narrowly scoped systemd policy change is ultimately necessary, document the exact threat-model impact and prove that all other restrictions remain effective.
+`NoNewPrivileges=true` prevents `newuidmap`/`newgidmap` from gaining the privileges provided by their setuid/file-capability mechanism. For a conventional multi-ID rootless Podman test, `NoNewPrivileges=false` is therefore likely required. **Keep `RestrictSUIDSGID=true`**: systemd documents this as blocking creation of SUID/SGID file bits, not execution of already-installed mapping helpers. The trade-off is that disabling `NoNewPrivileges` affects the entire service process tree, not just the mapping helpers. Treat the same-service override as a temporary feasibility test, not automatically an acceptable final production design. Consider isolating the runtime behind a dedicated, narrowly scoped service identity before production. Do not add capabilities or sudo access. A single-ID mapping is not an accepted substitute for the planned subordinate mapping model.
 
 ## Security baseline
 
@@ -75,7 +76,7 @@ An administrator may install Ubuntu 24.04 prerequisites with:
 sudo bash scripts/provision-rootless-podman.sh vps-mcp
 ```
 
-The provisioning script installs Podman and helper packages, allocates subordinate IDs only if absent, enables user lingering and prepares the rootless storage directory. It does not edit the systemd unit, grant sudo, add capabilities or change `NoNewPrivileges`.
+The provisioning script installs Podman and helper packages, allocates subordinate IDs only if absent, enables user lingering and prepares the rootless storage directory. It does not edit the systemd unit, grant sudo, add capabilities or change `NoNewPrivileges`. A proposed systemd drop-in for a controlled feasibility test is documented in the host provisioning guide; do not apply it to production without a rollback window and review.
 
 ## Acceptance gate
 

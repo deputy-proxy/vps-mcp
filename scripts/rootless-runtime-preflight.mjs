@@ -19,7 +19,7 @@ export function evaluateSnapshot(snapshot) {
   add('network-helper', snapshot.slirp4netns || snapshot.pasta, `slirp4netns=${snapshot.slirp4netns}; pasta=${snapshot.pasta}`);
   add('overlay-helper', snapshot.fuseOverlayfs, `fuse-overlayfs=${snapshot.fuseOverlayfs}`, false);
   add('podman', snapshot.podman, `podman=${snapshot.podmanVersion ?? 'not installed'}`);
-  add('service-hardening', snapshot.unitReadable && snapshot.noNewPrivileges !== null, snapshot.unitReadable ? `NoNewPrivileges=${snapshot.noNewPrivileges}; ProtectSystem=${snapshot.protectSystem}; ProtectControlGroups=${snapshot.protectControlGroups}` : 'systemd unit is not readable from this execution context; administrator must verify the deployed unit', false);
+  add('service-hardening', snapshot.unitReadable && snapshot.noNewPrivileges !== null, snapshot.unitReadable ? `NoNewPrivileges=${snapshot.noNewPrivileges}; ProtectSystem=${snapshot.protectSystem}; ProtectControlGroups=${snapshot.protectControlGroups}` : `systemd unit is not readable from this execution context; effective NoNewPrivs=${snapshot.noNewPrivileges}; administrator must verify the deployed unit`, false);
   if (snapshot.noNewPrivileges === true) add('setuid-helper-compatibility', false, 'NoNewPrivileges=true blocks privilege gain through setuid newuidmap/newgidmap helpers; a single-ID mapping must not be assumed equivalent.', false);
   add('service-context-probe', snapshot.serviceContextProbe === true, snapshot.serviceContextDetail ?? 'rootless user namespace probe in the MCP execution context');
   add('storage-writable', snapshot.storageWritable === true, snapshot.storageDetail ?? 'rootless storage directory is writable');
@@ -49,6 +49,8 @@ export function collectSnapshot() {
   const subuid = read('/etc/subuid')?.split('\n').some((line) => line.startsWith(`${SERVICE_USER}:`)) ?? false;
   const subgid = read('/etc/subgid')?.split('\n').some((line) => line.startsWith(`${SERVICE_USER}:`)) ?? false;
   const podmanVersion = command('podman', ['--version']);
+  const processStatus = read('/proc/self/status') ?? '';
+  const noNewPrivileges = /^NoNewPrivs:\s+1$/m.test(processStatus);
   let storageWritable = false;
   let storageDetail = 'HOME is not writable';
   try { accessSync(os.homedir(), constants.W_OK); storageWritable = true; storageDetail = `HOME=${os.homedir()}`; } catch { /* reported below */ }
@@ -78,7 +80,7 @@ export function collectSnapshot() {
     fuseOverlayfs: has('fuse-overlayfs'),
     podman: Boolean(podmanVersion), podmanVersion,
     unitReadable: Boolean(unit),
-    noNewPrivileges: unit ? /^NoNewPrivileges\s*=\s*true/im.test(unit) : null,
+    noNewPrivileges,
     protectSystem: unit?.match(/^ProtectSystem\s*=\s*(.+)$/im)?.[1] ?? null,
     protectControlGroups: unit?.match(/^ProtectControlGroups\s*=\s*(.+)$/im)?.[1] ?? null,
     storageWritable, storageDetail, memoryBytes, diskAvailableBytes,

@@ -46,7 +46,23 @@ Capture command output, runtime versions, systemd unit checksum and test results
 
 ## Systemd policy review
 
-The checked-in unit currently enables `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectControlGroups=true`, and an empty `CapabilityBoundingSet`. The live service cgroup currently exposes only `memory` and `pids` (not `cpu`), and `cgroup.subtree_control` is not writable by `vps-mcp`; the unit does not configure `Delegate=yes`. CPU/memory/PID resource enforcement is therefore not yet delegated to the service. These protections must remain unless an ADR amendment explains a narrowly scoped change and its security consequences. In particular, do not disable `NoNewPrivileges` or grant broad capabilities solely to make `newuidmap` work. Any proposal for cgroup delegation must explain the interaction between `Delegate=`, `ProtectControlGroups`, controller availability and writable subtree ownership, then prove the result with live CPU, memory and PID limit tests. Test alternatives, including single-ID mapping limitations, before proposing a change.
+The administrator-confirmed unit enables `NoNewPrivileges=true`, `RestrictSUIDSGID=true`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ProtectControlGroups=true`, and an empty `CapabilityBoundingSet`; effective `Delegate=no`. The live cgroup exposes only `memory` and `pids`, not `cpu`, and `cgroup.subtree_control` is not writable. Kernel user-namespace sysctls are enabled. The missing prerequisites are therefore the service sandbox policy and subordinate IDs, not the host sysctls.
+
+For a controlled feasibility test on systemd 255, the candidate drop-in is:
+
+```ini
+# /etc/systemd/system/vps-mcp.service.d/20-rootless-runtime-test.conf
+[Service]
+Delegate=cpu memory pids
+ProtectControlGroups=private
+NoNewPrivileges=false
+```
+
+This is a **temporary test configuration**, not yet the approved production policy. `Delegate=` grants the service control of its own cgroup subtree; `ProtectControlGroups=private` provides a private writable cgroup namespace instead of exposing the host hierarchy read-write. `NoNewPrivileges=false` is required to let the mapping helpers gain the privileges needed to write the user namespace maps. Keep `RestrictSUIDSGID=true`, the empty capability bounding set, and all other hardening settings unchanged. Do not add sudo or capabilities. Disabling `NoNewPrivileges` broadens the privilege-escalation surface for the whole service process tree, so production approval must consider a separate runtime service identity and a narrowly scoped runtime API.
+
+Apply only during an approved maintenance window, after backing up the unit and confirming a rollback path. Then run `systemctl daemon-reload`, restart the service, and verify `systemctl show vps-mcp.service -p Delegate -p ProtectControlGroups -p NoNewPrivileges -p RestrictSUIDSGID`. Re-run the preflight as `vps-mcp`; it must show the expected delegated controllers and writable `cgroup.subtree_control`. Then prove CPU, memory and PID limits with actual test containers. If any check fails, revert the drop-in and restart the service. Do not assume that the directive values alone prove the controls work.
+
+`RestrictSUIDSGID=true` only blocks creating SUID/SGID file bits; it does not prevent executing the already-installed `newuidmap`/`newgidmap` helpers, so leave it enabled. `NoNewPrivileges=true` is the directive that blocks privilege gain through setuid/file capabilities. The production decision must document the security consequences and consider moving the runtime into a dedicated service identity before enabling general sandbox workloads.
 
 The MCP service identity cannot read the deployed unit or perform administrator actions. An administrator must compare `/etc/systemd/system/vps-mcp.service` with the checked-in unit and confirm any drop-ins before provisioning.
 
@@ -61,7 +77,7 @@ The MCP service identity cannot read the deployed unit or perform administrator 
 
 ## Troubleshooting
 
-- `unshare ... Operation not permitted`: inspect kernel/user-namespace policy and the actual systemd sandbox. Do not infer that installing Podman fixes it.
-- `newuidmap`/`newgidmap` fails: check `/etc/subuid`, `/etc/subgid`, helper ownership/mode, `NoNewPrivileges` and `RestrictSUIDSGID`.
+- `unshare ... Operation not permitted`: verify `NoNewPrivileges`, `Delegate`, `ProtectControlGroups`, and the effective service cgroup namespace. The kernel sysctls being enabled does not prove the service can create namespaces.
+- `newuidmap`/`newgidmap` fails: check `/etc/subuid`, `/etc/subgid`, helper ownership/mode and `NoNewPrivileges`. `RestrictSUIDSGID` controls creation of SUID/SGID file bits and should normally remain enabled.
 - cgroup limits unavailable: verify cgroup v2 delegation for the service slice. Do not mount or remount host cgroups from the MCP process.
 - overlay storage fails: validate `fuse-overlayfs` and filesystem support; do not switch to a less isolated storage mode without review.
