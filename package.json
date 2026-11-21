@@ -15,7 +15,8 @@
     "test": "vitest run --exclude **/dist/**",
     "check:oauth": "node scripts/check-oauth-provider.mjs",
     "check:public": "node scripts/check-public-mcp.mjs",
-    "check:runtime-preflight": "node scripts/rootless-runtime-preflight.mjs"
+    "check:runtime-preflight": "node scripts/rootless-runtime-preflight.mjs",
+    "check:branch-policy": "node scripts/check-branch-policy.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
@@ -28,6 +29,7 @@
     "@types/node": "^22.19.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
-    "vitest": "^5.1.1"
+    "vitest": "^5.1.1",
+    "yaml": "^2.9.1"
   }
 }
