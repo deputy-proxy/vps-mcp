@@ -19,6 +19,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: node --check scripts/check-oauth-provider.mjs
+      - run: node --check scripts/check-public-mcp.mjs
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
