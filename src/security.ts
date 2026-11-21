@@ -17,7 +17,7 @@ type JwksResolver = () => Promise<JWTVerifyGetKey>;
 export function hasRequiredScopes(payload: object, requiredScopes: string[]): boolean {
   const claims = payload as Record<string, unknown>;
   const grantedScopes = typeof claims.scope === "string"
-    ? claims.scope.split(/\\s+/).filter(Boolean)
+    ? claims.scope.split(/\s+/).filter(Boolean)
     : Array.isArray(claims.scp)
       ? claims.scp.filter((scope): scope is string => typeof scope === "string")
       : [];
@@ -31,7 +31,7 @@ export async function resolveJwksUrl(issuer: string | URL, explicitJwksUrl?: URL
   if (!issuerUrl.pathname.endsWith("/")) issuerUrl.pathname += "/";
   const discoveryUrl = new URL(".well-known/openid-configuration", issuerUrl);
   const response = await fetcher(discoveryUrl, { signal: AbortSignal.timeout(5_000) });
-  if (!response.ok) throw new Error(`OIDC discovery returned HTTP ${response.status}`);
+  if (!response.ok) throw new Error(\`OIDC discovery returned HTTP \${response.status}\`);
   const document = await response.json() as DiscoveryDocument;
   if (document.issuer !== issuerIdentifier) throw new Error("OIDC discovery issuer does not exactly match OAUTH_ISSUER_URL");
   if (typeof document.jwks_uri !== "string") throw new Error("OIDC discovery document is missing jwks_uri");
@@ -44,18 +44,18 @@ function unauthorized(response: Response, reason: string | undefined, publicUrl?
   const metadataUrl = publicUrl
     ? new URL("/.well-known/oauth-protected-resource/mcp", publicUrl).toString()
     : undefined;
-  const errorChallenge = reason ? `error="${reason}", ` : "";
-  const scopeChallenge = scopes.length ? `, scope="${scopes.join(" ")}"` : "";
+  const errorChallenge = reason ? \`error="\${reason}", \` : "";
+  const scopeChallenge = scopes.length ? \`, scope="\${scopes.join(" ")}"\` : "";
   response.setHeader("WWW-Authenticate", metadataUrl
-    ? `Bearer ${errorChallenge}resource_metadata="${metadataUrl}"${scopeChallenge}`
-    : `Bearer ${reason ? `error="${reason}"` : ""}${scopeChallenge}`);
+    ? \`Bearer \${errorChallenge}resource_metadata="\${metadataUrl}"\${scopeChallenge}\`
+    : \`Bearer \${reason ? \`error="\${reason}"\` : ""}\${scopeChallenge}\`);
   response.status(401).json({ error: "Unauthorized" });
 }
 
 export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: JwksResolver) {
   return async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     const authorization = request.header("authorization") ?? "";
-    const match = /^Bearer\\s+(.+)$/i.exec(authorization);
+    const match = /^Bearer\s+(.+)$/i.exec(authorization);
     const supplied = match?.[1] ?? "";
     if (!supplied) {
       console.warn("OAuth authentication rejected", { reason: "missing_bearer_token", method: request.method, path: request.path });
@@ -79,7 +79,7 @@ export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: Jwk
         algorithms: ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
       });
       if (!hasRequiredScopes(payload, options.scopes)) {
-        response.setHeader("WWW-Authenticate", `Bearer error="insufficient_scope", scope="${options.scopes.join(" ")}"`);
+        response.setHeader("WWW-Authenticate", \`Bearer error="insufficient_scope", scope="\${options.scopes.join(" ")}"\`);
         response.status(403).json({ error: "Insufficient scope" });
         return;
       }
@@ -123,7 +123,7 @@ export async function authenticate(request: Request, response: Response, next: N
   if (config.authMode === "none") { next(); return; }
 
   const authorization = request.header("authorization") ?? "";
-  const match = /^Bearer\\s+(.+)$/i.exec(authorization);
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
   const supplied = match?.[1] ?? "";
 
   if (config.authMode === "token") {
