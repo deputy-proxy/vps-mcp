@@ -4,10 +4,12 @@ import { constants } from "node:fs";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { config } from "./config.js";
+import { VERSION } from "./version.js";
 import { executeCommand, startExecution, getExecutionStatus, getExecutionLogs, cancelExecution } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
 import { isRuntimeOperation, runRuntimeOperation } from "./runtime.js";
 import { applyRepositoryBranchPolicy, fetchRepository, inspectRepository, listRepositories, registerRepository, removeRepository, updateRepository, validateRepository } from "./repositories.js";
+import { validateTaskBranchCreation } from "./branch-policy.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -34,7 +36,7 @@ async function guarded<T extends ToolResult>(operation: () => Promise<T>): Promi
 
 export function createMcpServer(): McpServer {
   const server = new McpServer(
-    { name: "vps-mcp", version: "0.1.0" },
+    { name: "vps-mcp", version: VERSION },
     { instructions: "Authenticated VPS administration and development execution. Filesystem tool paths and command working directories are restricted to configured allowed roots. Shell commands otherwise have the operating-system permissions of the unprivileged service account." },
   );
 
@@ -45,7 +47,7 @@ export function createMcpServer(): McpServer {
     inputSchema: {},
   }, async () => guarded(() => safely(async () => {
     await fs.access(config.dataDir, constants.R_OK | constants.W_OK);
-    return { status: "healthy", service: "vps-mcp", version: "0.1.0", uptimeSeconds: Math.floor(process.uptime()), dataDirectoryWritable: true, allowedRoots: config.allowedRoots };
+    return { status: "healthy", service: "vps-mcp", version: VERSION, uptimeSeconds: Math.floor(process.uptime()), dataDirectoryWritable: true, allowedRoots: config.allowedRoots };
   })));
 
   server.registerTool("system.info", {
@@ -201,6 +203,13 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { id: z.string().min(1).max(200), confirm: z.boolean().default(false) },
   }, async ({ id, confirm }) => guarded(() => safely(() => applyRepositoryBranchPolicy(id, confirm))));
+
+  server.registerTool("repository.task-branch.validate", {
+    title: "Validate task branch",
+    description: "Preflight a task branch name and enforce development as its base. Task/worktree creation must call the same validator before creating a branch or workspace.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { branchName: z.string().min(1).max(255), baseBranch: z.string().min(1).max(255).default("development") },
+  }, async ({ branchName, baseBranch }) => guarded(() => safely(async () => validateTaskBranchCreation({ branchName, baseBranch }))));
 
   server.registerTool("repository.fetch", {
     title: "Fetch repository cache",
