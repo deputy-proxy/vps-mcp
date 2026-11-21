@@ -76,7 +76,7 @@ An administrator may install Ubuntu 24.04 prerequisites with:
 sudo bash scripts/provision-rootless-podman.sh vps-mcp
 ```
 
-The provisioning script installs Podman and helper packages, allocates subordinate IDs only if absent, enables user lingering and prepares the rootless storage directory. It does not edit the systemd unit, grant sudo, add capabilities or change `NoNewPrivileges`. A proposed systemd drop-in for a controlled feasibility test is documented in the host provisioning guide; do not apply it to production without a rollback window and review.
+The provisioning script installs Podman and helper packages, allocates subordinate IDs only if absent, enables user lingering and prepares the rootless storage directory. It does not edit the systemd unit, grant sudo, add capabilities or change `NoNewPrivileges`. A dedicated transient systemd test unit is documented in the host provisioning guide; do not apply its relaxed privilege settings to `vps-mcp.service`.
 
 ## Acceptance gate
 
