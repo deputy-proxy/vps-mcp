@@ -1,0 +1,13 @@
+[Unit]
+Description=Rootless VPS MCP workload runtime socket
+
+[Socket]
+ListenStream=/run/vps-sandbox-runtime.sock
+SocketUser=vps-sandbox
+SocketGroup=vps-mcp
+SocketMode=0660
+RemoveOnStop=yes
+Service=vps-sandbox-runtime.service
+
+[Install]
+WantedBy=sockets.target
