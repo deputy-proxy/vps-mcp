@@ -30,6 +30,10 @@
 
 See [`production-deployment.md`](production-deployment.md) for the one-time VPS provisioning, SSH key setup, GitHub `production` environment configuration, deployment behavior, rollback and operational recovery. The workflow is intentionally disabled until its explicit enable variable is set.
 
+## Development auto-deployment
+
+See [`development-deployment.md`](development-deployment.md) for the isolated development runtime, WorkOS audience, DNS/TLS, restricted SSH deployment identity, GitHub `development` environment and rollback behavior. Pushes to `development` deploy only to the development service; production remains tied to `main`.
+
 ## Credential requirements
 
 Use a fine-grained personal access token or GitHub App installation token, scoped only to repositories managed by this service:
