@@ -46,11 +46,11 @@ The agent serializes operations within its process. Durable records survive MCP 
 
 Every mutating start/stop/remove request includes the expected workload type. The agent compares it with the durable record and rejects a mismatch. Task cleanup must always pass expectedWorkloadType=task; it cannot accidentally stop or remove a project-service workload.
 
-Task container destruction does not remove worktree records or worktree files. Project-service lifecycle remains separate from task sandbox lifecycle. The adapter never mounts a persistent project's mutable checkout into a task container unless a later trusted manager explicitly provisions and authorizes that path.
+Task container destruction does not remove worktree records or worktree files. Project-service lifecycle remains separate from task sandbox lifecycle. Before a task workload is created, the typed adapter asks the task-workspace manager to verify the registered worktree and grant the vps-sandbox identity execute-only ACLs on ancestor directories plus read/write inherited ACLs on that exact worktree. Arbitrary caller-supplied workspace paths are not accepted. The host acl package is required.
 
 ## Runtime boundary
 
-The rootless agent runs as the dedicated non-login vps-sandbox identity. A systemd socket unit exposes a Unix socket owned by vps-sandbox:vps-mcp, mode 0660. The public MCP process can connect because it belongs to the vps-mcp group; unrelated local users cannot.
+The rootless agent runs as the dedicated non-login vps-sandbox identity with its account primary group unchanged so Podman user-namespace GID mapping remains consistent. A systemd socket unit independently exposes a Unix socket owned by vps-sandbox:vps-mcp, mode 0660. The public MCP process can connect because it belongs to the vps-mcp group; unrelated local users cannot.
 
 The service uses the dedicated rootless Podman storage and user manager, a bounded capability set for UID/GID mapping helpers, and delegated CPU/memory/PID controllers. It does not run as root and does not use the rootful Podman socket. The public MCP service unit remains unchanged.
 
