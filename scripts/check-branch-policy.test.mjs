@@ -15,25 +15,69 @@ describe("branch governance workflow validation", () => {
     expect(validateWorkflows([{ ...ci, document: { ...ci.document, on: { push: { branches: ["main"] }, pull_request: { branches: ["development"] } } } }]).valid).toBe(false);
   });
 
+  it("requires same-workflow deployments to be quality-gated and branch-guarded", () => {
+    const production = {
+      file: ".github/workflows/ci.yml",
+      document: {
+        ...ci.document,
+        jobs: {
+          ...ci.document.jobs,
+          "deploy-production": {
+            needs: ["quality"],
+            environment: "production",
+            if: "github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VPS_PRODUCTION_DEPLOY_ENABLED == 'true'",
+            concurrency: { group: "production", "cancel-in-progress": false },
+          },
+        },
+      },
+    };
+    expect(validateWorkflows([production])).toMatchObject({ valid: true, errors: [] });
+    const crossEnvironment = {
+      ...production,
+      document: {
+        ...production.document,
+        jobs: {
+          ...production.document.jobs,
+          "deploy-production": {
+            ...production.document.jobs["deploy-production"],
+            if: "github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development') && vars.VPS_PRODUCTION_DEPLOY_ENABLED == 'true'",
+          },
+        },
+      },
+    };
+    expect(validateWorkflows([crossEnvironment]).valid).toBe(false);
+    const missingQualityGate = {
+      ...production,
+      document: {
+        ...production.document,
+        jobs: {
+          ...production.document.jobs,
+          "deploy-production": { environment: "production", if: "github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VPS_PRODUCTION_DEPLOY_ENABLED == 'true'", concurrency: { group: "production", "cancel-in-progress": false } },
+        },
+      },
+    };
+    expect(validateWorkflows([missingQualityGate]).valid).toBe(false);
+  });
+
   it("requires deployment workflows to be branch-scoped and guarded", () => {
     const production = {
       file: ".github/workflows/deploy-production.yml",
       document: {
         on: { push: { branches: ["main"] } },
-        jobs: { deploy: { environment: "production", if: "github.ref == 'refs/heads/main'" } },
+        jobs: { deploy: { environment: "production", if: "github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VPS_PRODUCTION_DEPLOY_ENABLED == 'true'", concurrency: { group: "production", "cancel-in-progress": false } } },
       },
     };
     const development = {
       file: ".github/workflows/deploy-development.yml",
       document: {
         on: { push: { branches: ["development"] } },
-        jobs: { deploy: { environment: "development", if: "github.ref_name == 'development'" } },
+        jobs: { deploy: { environment: "development", if: "github.event_name == 'push' && github.ref_name == 'development'", concurrency: { group: "development", "cancel-in-progress": false } } },
       },
     };
     expect(validateWorkflows([ci, production, development])).toMatchObject({ valid: true, errors: [] });
-    const unsafe = { ...production, document: { ...production.document, on: { push: { branches: ["main", "development"] } }, jobs: { deploy: { environment: "production", if: "always()" } } } };
+    const unsafe = { ...production, document: { ...production.document, on: { push: { branches: ["main", "development"] } }, jobs: { deploy: { environment: "production", if: "always()", concurrency: { group: "production", "cancel-in-progress": false } } } } };
     expect(validateWorkflows([ci, unsafe]).valid).toBe(false);
-    const missingEnvironment = { ...production, document: { ...production.document, jobs: { deploy: { "runs-on": "ubuntu-latest" } } } };
+    const missingEnvironment = { ...production, document: { ...production.document, jobs: { deploy: { "runs-on": "ubuntu-latest", concurrency: { group: "production", "cancel-in-progress": false } } } } };
     expect(validateWorkflows([ci, missingEnvironment]).valid).toBe(false);
   });
 
