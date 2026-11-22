@@ -7,11 +7,19 @@ import { execFileSync } from "node:child_process";
 const paths = vi.hoisted(() => ({
   remotePath: "",
   spawnedGitEnvironments: [] as Array<Record<string, string | undefined>>,
+  aclCalls: [] as Array<{ command: string; args: string[] }>,
 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
+    execFileSync: (command: string, args?: readonly string[], options?: Parameters<typeof actual.execFileSync>[2]) => {
+      if (command === "/usr/bin/setfacl" || command === "/usr/bin/find") {
+        paths.aclCalls.push({ command, args: [...(args ?? [])] });
+        return "";
+      }
+      return actual.execFileSync(command, args, options);
+    },
     spawn: (command: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => {
       if (command === "git") paths.spawnedGitEnvironments.push({ ...(options?.env ?? {}) });
       return actual.spawn(
@@ -41,7 +49,7 @@ vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rules), { s
 const { registerRepository, fetchRepository } = await import("./repositories.js");
 const {
   createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceDiff,
-  getTaskWorkspaceStatus, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces,
+  getTaskWorkspaceStatus, prepareTaskWorkspaceForRuntime, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces,
 } = await import("./task-workspaces.js");
 
 function git(args: string[], cwd?: string): string {
@@ -187,4 +195,49 @@ it("requires confirmation, recovers interrupted transitions and prunes only expi
   expect(await pruneTaskWorkspaces({ olderThanDays: 1, dryRun: true })).toMatchObject({ dryRun: true, candidates: [{ id: workspace.id, eligible: true }], removedCount: 0 });
   expect(await pruneTaskWorkspaces({ olderThanDays: 1, dryRun: false, confirm: true })).toMatchObject({ dryRun: false, removedCount: 1 });
   expect((await getTaskWorkspaceStatus(workspace.id)).status).toBe("removed");
+});
+
+
+it("authorizes only a verified registered worktree for the rootless runtime", async () => {
+  const workspace = await createTaskWorkspace({ repositoryId, taskId: "issue-runtime-access" });
+  paths.aclCalls.length = 0;
+  const prepared = await prepareTaskWorkspaceForRuntime(workspace.id);
+  expect(prepared).toEqual({
+    id: workspace.id,
+    repositoryId,
+    worktreeId: workspace.id,
+    workspacePath: workspace.worktreePath,
+  });
+  expect(paths.aclCalls).toHaveLength(3);
+  expect(paths.aclCalls[0]!.command).toBe("/usr/bin/setfacl");
+  expect(paths.aclCalls[0]!.args.slice(0, 2)).toEqual(["-m", "u:vps-sandbox:--x"]);
+  expect(paths.aclCalls[0]!.args).toContain(process.env.MCP_DATA_DIR!);
+  expect(paths.aclCalls[1]).toMatchObject({
+    command: "/usr/bin/setfacl",
+    args: ["-R", "-m", "u:vps-sandbox:rwX", workspace.worktreePath],
+  });
+  expect(paths.aclCalls[2]!.command).toBe("/usr/bin/find");
+  expect(paths.aclCalls[2]!.args).toContain(workspace.worktreePath);
+  await retainTaskWorkspace(workspace.id);
+  await expect(prepareTaskWorkspaceForRuntime(workspace.id)).resolves.toMatchObject({ id: workspace.id });
+  await removeTaskWorkspace({ id: workspace.id, confirm: true, discardChanges: true });
+  await expect(prepareTaskWorkspaceForRuntime(workspace.id)).rejects.toThrow("Only active or retained");
+});
+
+
+it("refuses symlinked repository paths before granting runtime ACLs", async () => {
+  const workspace = await createTaskWorkspace({ repositoryId, taskId: "issue-runtime-symlink" });
+  const repositoryDirectory = path.dirname(workspace.worktreePath);
+  const backupDirectory = repositoryDirectory + ".backup";
+  paths.aclCalls.length = 0;
+  await fs.rename(repositoryDirectory, backupDirectory);
+  await fs.symlink(backupDirectory, repositoryDirectory, "dir");
+  try {
+    await expect(prepareTaskWorkspaceForRuntime(workspace.id)).rejects.toThrow("symlink or non-directory");
+    expect(paths.aclCalls).toHaveLength(0);
+  } finally {
+    await fs.rm(repositoryDirectory, { force: true });
+    await fs.rename(backupDirectory, repositoryDirectory);
+  }
+  await removeTaskWorkspace({ id: workspace.id, confirm: true, discardChanges: true });
 });

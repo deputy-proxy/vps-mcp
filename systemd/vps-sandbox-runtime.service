@@ -6,7 +6,6 @@ After=vps-sandbox-runtime.socket
 [Service]
 Type=simple
 User=vps-sandbox
-Group=vps-mcp
 Environment=USER=vps-sandbox
 Environment=HOME=/var/lib/vps-sandbox
 EnvironmentFile=/etc/vps-sandbox/runtime.env

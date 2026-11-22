@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
@@ -6,6 +7,7 @@ import { validateTaskBranchCreation } from "./branch-policy.js";
 import { fetchRepository, runManagedGit, withRepositoryLock, type ManagedRepository } from "./repositories.js";
 
 const SCHEMA_VERSION = 1;
+const SANDBOX_RUNTIME_USER = "vps-sandbox";
 const LOCK_TIMEOUT_MS = 10_000;
 const root = path.join(config.dataDir, "task-workspaces");
 const worktreeRoot = path.join(root, "worktrees");
@@ -128,15 +130,22 @@ function expectedPath(record: TaskWorkspace) { return path.join(worktreeRoot, re
 async function verifyPath(record: TaskWorkspace, missingOkay = false): Promise<string> {
   const expected = expectedPath(record);
   if (path.resolve(expected) !== path.resolve(record.worktreePath)) throw new Error("Workspace path does not match its managed metadata identity");
-  const stat = await fs.lstat(expected).catch((error: NodeJS.ErrnoException) => {
-    if (missingOkay && error.code === "ENOENT") return undefined;
-    throw error;
-  });
+  const [rootStat, worktreeRootStat, repositoryStat, stat] = await Promise.all([
+    fs.lstat(root), fs.lstat(worktreeRoot), fs.lstat(path.dirname(expected)),
+    fs.lstat(expected).catch((error: NodeJS.ErrnoException) => {
+      if (missingOkay && error.code === "ENOENT") return undefined;
+      throw error;
+    }),
+  ]);
   if (!stat) return expected;
-  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Workspace path is not a managed directory; refusing to follow it");
+  if ([rootStat, worktreeRootStat, repositoryStat, stat].some((item) => item.isSymbolicLink() || !item.isDirectory())) {
+    throw new Error("Workspace path contains a symlink or non-directory component; refusing to follow it");
+  }
   const [realRoot, realPath] = await Promise.all([fs.realpath(worktreeRoot), fs.realpath(expected)]);
   const relative = path.relative(realRoot, realPath);
-  if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) throw new Error("Workspace resolves outside its managed root");
+  if (path.resolve(realPath) !== path.resolve(expected) || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+    throw new Error("Workspace resolves outside its exact managed path");
+  }
   return realPath;
 }
 async function status(repo: ManagedRepository, record: TaskWorkspace) {
@@ -234,6 +243,37 @@ export async function inspectTaskWorkspace(id: string) {
     return { workspace: record, filesystem: { exists: state.exists, linked: state.linked }, git: { branch: state.branch, head: state.head, baseSha: record.baseSha, targetPullRequestBranch: record.targetPullRequestBranch }, changes: { dirty: state.dirty, staged: state.staged, untracked: state.untracked, ignored: state.ignored, porcelain: state.porcelain } };
   });
 }
+export async function prepareTaskWorkspaceForRuntime(id: string) {
+  const initial = await find(id);
+  return withRepositoryLock(initial.repositoryId, async (repo) => {
+    const record = await find(id);
+    if (record.status !== "active" && record.status !== "retained") {
+      throw new Error("Only active or retained task workspaces can be mounted into a runtime");
+    }
+    const target = await verifyPath(record);
+    const linked = (await worktrees(repo)).some((item) => path.resolve(item.path) === path.resolve(target));
+    if (!linked) throw new Error("Task workspace is not a registered Git worktree; refusing runtime access");
+
+    const repositoryDirectory = path.dirname(target);
+    const traversalPaths = [path.dirname(root), root, worktreeRoot, repositoryDirectory];
+    try {
+      execFileSync("/usr/bin/setfacl", ["-m", `u:${SANDBOX_RUNTIME_USER}:--x`, ...traversalPaths], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5_000,
+      });
+      execFileSync("/usr/bin/setfacl", ["-R", "-m", `u:${SANDBOX_RUNTIME_USER}:rwX`, target], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000,
+      });
+      execFileSync("/usr/bin/find", [
+        target, "-type", "d", "-exec", "/usr/bin/setfacl", "-m",
+        `d:u:${SANDBOX_RUNTIME_USER}:rwX`, "{}", "+",
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+    } catch {
+      throw new Error("Cannot authorize the vps-sandbox runtime for this worktree; install the acl package and verify setfacl permissions");
+    }
+    return { id: record.id, repositoryId: record.repositoryId, worktreeId: record.id, workspacePath: target };
+  });
+}
+
 export async function getTaskWorkspaceStatus(id: string) {
   const result = await inspectTaskWorkspace(id);
   return { id, status: result.workspace.status, ...result.filesystem, branch: result.git?.branch ?? null, changes: result.changes };
