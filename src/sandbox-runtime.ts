@@ -25,7 +25,11 @@ export type SandboxRuntimeRequest =
   | { operation: 'container.exec'; workloadId: string; command: string[]; timeoutMs?: number }
   | { operation: 'sandbox.exec'; sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }
   | { operation: 'sandbox.fs.list' | 'sandbox.fs.read'; sandboxId: string; path: string }
-  | { operation: 'sandbox.fs.write'; sandboxId: string; path: string; content: string };
+  | { operation: 'sandbox.fs.write'; sandboxId: string; path: string; content: string }
+  | { operation: 'sandbox.execution.start'; sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number }
+  | { operation: 'sandbox.execution.status' | 'sandbox.execution.cancel'; sandboxId: string; executionId: string }
+  | { operation: 'sandbox.execution.logs'; sandboxId: string; executionId: string; offset?: number; maxBytes?: number }
+  | { operation: 'sandbox.execution.list'; sandboxId: string };
 
 const SOCKET_PATH = process.env.VPS_SANDBOX_RUNTIME_SOCKET ?? '/run/vps-sandbox-runtime.sock';
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -51,9 +55,19 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
         if (!request.env || typeof request.env !== 'object' || Array.isArray(request.env) || Object.entries(request.env).some(([key, value]) => !allowed.has(key) || typeof value !== 'string' || value.length > 256 || value.includes('\0'))) throw new Error('Environment contains unsupported or invalid variables');
       }
       if (request.cwd !== undefined) validateWorkspaceRelativePath(request.cwd, true);
-    } else {
+    } else if (request.operation === 'sandbox.fs.list' || request.operation === 'sandbox.fs.read' || request.operation === 'sandbox.fs.write') {
       validateWorkspaceRelativePath(request.path, request.operation === 'sandbox.fs.list');
       if (request.operation === 'sandbox.fs.write' && (typeof request.content !== 'string' || Buffer.byteLength(request.content, 'utf8') > 1024 * 1024)) throw new Error('File content exceeds the 1 MiB write limit');
+    } else if (request.operation === 'sandbox.execution.start') {
+      validateArgv(request.command);
+      if (request.cwd !== undefined) validateWorkspaceRelativePath(request.cwd, true);
+      if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1000 || request.timeoutMs > 86_400_000)) throw new Error('timeoutMs must be between 1000 and 86400000');
+    } else if (request.operation === 'sandbox.execution.status' || request.operation === 'sandbox.execution.cancel' || request.operation === 'sandbox.execution.logs') {
+      if (!UUID.test(request.executionId)) throw new Error('Invalid execution ID');
+      if (request.operation === 'sandbox.execution.logs') {
+        if (request.offset !== undefined && (!Number.isSafeInteger(request.offset) || request.offset < 0)) throw new Error('offset must be a non-negative safe integer');
+        if (request.maxBytes !== undefined && (!Number.isInteger(request.maxBytes) || request.maxBytes < 1024 || request.maxBytes > 262_144)) throw new Error('maxBytes must be between 1024 and 262144');
+      }
     }
     return;
   }
@@ -176,6 +190,7 @@ export type RuntimeWorkloadRecord = {
   imageDigest: string;
   runtimeId: string | null;
   workspaceMount: { path: string; access: 'read-only' | 'read-write'; destination: '/workspace' } | null;
+  executionMount?: { path: string; destination: '/run/vps-mcp-executions' } | null;
   resources: { cpuMilli: number; memoryMiB: number; pids: number };
   network: 'none';
   status: RuntimeWorkloadStatus;
@@ -204,6 +219,11 @@ export interface SandboxRuntimeAdapter {
   stopTaskSandbox(workloadId: string): Promise<unknown>;
   removeTaskSandbox(workloadId: string): Promise<unknown>;
   readTaskSandboxLogs(workloadId: string): Promise<{ workloadId: string; logs: string }>;
+  startTaskSandboxExecution(input: { sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number }): Promise<Record<string, unknown>>;
+  getTaskSandboxExecutionStatus(input: { sandboxId: string; executionId: string }): Promise<Record<string, unknown>>;
+  listTaskSandboxExecutions(sandboxId: string): Promise<{ sandboxId: string; executions: Record<string, unknown>[] }>;
+  getTaskSandboxExecutionLogs(input: { sandboxId: string; executionId: string; offset?: number; maxBytes?: number }): Promise<Record<string, unknown>>;
+  cancelTaskSandboxExecution(input: { sandboxId: string; executionId: string }): Promise<Record<string, unknown>>;
 }
 function assertTaskWorkload(workload: RuntimeWorkloadRecord): void {
   if (!workload || workload.workloadType !== 'task') throw new Error('SANDBOX_TYPE_MISMATCH: operation is available only for task workloads');
@@ -288,5 +308,10 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
       assertTaskWorkload(inspected.workload);
       return requestSandboxRuntime({ operation: 'container.logs', workloadId }, socketPath);
     },
+    startTaskSandboxExecution: (input) => requestSandboxRuntime({ operation: 'sandbox.execution.start', ...input }, socketPath),
+    getTaskSandboxExecutionStatus: (input) => requestSandboxRuntime({ operation: 'sandbox.execution.status', ...input }, socketPath),
+    listTaskSandboxExecutions: (sandboxId) => requestSandboxRuntime({ operation: 'sandbox.execution.list', sandboxId }, socketPath),
+    getTaskSandboxExecutionLogs: (input) => requestSandboxRuntime({ operation: 'sandbox.execution.logs', ...input }, socketPath),
+    cancelTaskSandboxExecution: (input) => requestSandboxRuntime({ operation: 'sandbox.execution.cancel', ...input }, socketPath),
   };
 }

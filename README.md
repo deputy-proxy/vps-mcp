@@ -1,10 +1,12 @@
 # vps-mcp
 
-An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access, synchronous/background command execution, and a persistent managed Git repository registry with safe bare-clone caching and enforceable main/development branch governance.
+An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping and operating a self-hosted development VPS. It provides system inspection, bounded filesystem access, synchronous host administration commands, durable task-sandbox execution, and a persistent managed Git repository registry with safe bare-clone caching and enforceable main/development branch governance.
 
-## Rootless container runtime readiness
+## Rootless task sandbox runtime
 
-Task sandbox execution and filesystem access are exposed through the separate `sandbox.*` tools. They require a managed task sandbox ID, run only in its running container, and never fall back to host execution. The tools are implemented, but production workloads remain disabled until the rootless runtime passes its remaining approval gates. See [the task sandbox security boundary](docs/security/sandbox-filesystem.md). The self-hosted sandbox runtime is gated on the rootless Podman feasibility decision. Read [the runtime architecture](docs/architecture/container-runtime.md), [host provisioning and acceptance](docs/operations/host-provisioning.md), and [ADR-0001](docs/adr/0001-rootless-container-runtime.md) before provisioning. The administrator provisioning step installs a read-only copy of the preflight at `/usr/local/libexec/vps-mcp/rootless-runtime-preflight.mjs`. The restricted `vps-sandboxctl` helper runs it as the dedicated `vps-sandbox` identity inside the documented transient systemd test unit. Do not run the feasibility test as `vps-mcp` or weaken the public `vps-mcp.service`. The administrator-only provisioning script is `scripts/provision-rootless-podman.sh`; it does not alter systemd hardening. A restricted root-owned diagnostic helper can expose only the fixed `preflight`, `info` and `smoke` checks to MCP through exact-argument sudoers rules. Install it with `sudo bash scripts/install-vps-sandboxctl.sh` after pulling the change. This is not a general privileged command interface and does not authorize production sandbox workloads.
+Task sandbox command, filesystem and durable background execution tools require a managed task sandbox ID. They execute only inside the selected rootless container and never fall back to host execution. The production runtime uses the dedicated vps-sandbox identity, digest-pinned image and workspace allowlists, network isolation, read-only root filesystem, dropped capabilities and bounded resources. See the [runtime architecture](docs/architecture/container-runtime.md), [task sandbox security boundary](docs/security/sandbox-filesystem.md), [execution lifecycle](docs/architecture/execution-lifecycle.md), and [execution operations](docs/operations/executions.md).
+
+The runtime agent and its execution module are installed under /usr/local/libexec/vps-mcp. The administrator installer is scripts/install-vps-sandbox-runtime.sh. It preserves the root-owned runtime environment and does not alter the public vps-mcp.service. The restricted vps-sandboxctl diagnostic helper remains separate; it is not a general privileged command interface.
 
 ## Current capabilities
 
@@ -14,17 +16,27 @@ Task sandbox execution and filesystem access are exposed through the separate `s
 | `system.info` | OS, CPU, memory, load, uptime and filesystem information |
 | `runtime.acceptance` | Run fixed rootless runtime preflight, info or smoke checks through a restricted helper |
 | `terminal.execute` | Execute a bounded Bash command |
-| `terminal.start` | Start a detached command with persistent logs |
-| `terminal.status` | Inspect a background execution |
-| `terminal.logs` | Read recent execution output |
-| `terminal.cancel` | Send SIGTERM to an execution process group |
 | `filesystem.list` | List an allowed directory |
 | `filesystem.read` | Read a UTF-8 file (maximum 2 MiB) |
 | `filesystem.write` | Atomically create or replace a UTF-8 file (maximum 2 MiB) |
-| `sandbox.exec` | Execute an argv command inside a selected running task sandbox |
+| `sandbox.image.inspect` | Inspect an approved digest-pinned task image |
+| `sandbox.image.pull` | Pull an administrator-approved task image |
+| `sandbox.create` | Create a task sandbox linked to a managed worktree |
+| `sandbox.start` | Start a created task sandbox |
+| `sandbox.inspect` | Inspect a task sandbox and its runtime state |
+| `sandbox.list` | List task sandboxes |
+| `sandbox.stop` | Cancel active task executions and stop the selected sandbox |
+| `sandbox.remove` | Cancel active task executions and remove the selected sandbox |
+| `sandbox.logs` | Read container logs for a selected task sandbox |
+| `sandbox.exec` | Execute a bounded synchronous argv command inside a selected running task sandbox |
 | `sandbox.filesystem.list` | List files inside a selected task workspace |
 | `sandbox.filesystem.read` | Read a UTF-8 file from a selected task workspace (maximum 2 MiB) |
 | `sandbox.filesystem.write` | Atomically write a UTF-8 file inside a selected task workspace (maximum 1 MiB) |
+| `sandbox.execution.start` | Start a durable background command in a selected task sandbox |
+| `sandbox.execution.list` | List recent executions belonging to one task sandbox |
+| `sandbox.execution.status` | Reconcile one execution against its container-local process identity |
+| `sandbox.execution.logs` | Read bounded persistent logs with tail/offset support |
+| `sandbox.execution.cancel` | Gracefully cancel one execution, then escalate after two seconds |
 | `repository.register` | Register a canonical GitHub repository and inspect required branches |
 | `repository.list` | List the persistent managed repository registry |
 | `repository.inspect` | Inspect remote, cache, worktrees, environments and health |
@@ -47,7 +59,7 @@ Task sandbox execution and filesystem access are exposed through the separate `s
 
 ## MCP transport
 
-The server exposes MCP Streamable HTTP at `/mcp` in stateless request/response mode. MCP requests use POST; GET, DELETE and PATCH return 405. The server does not issue session IDs or support server-initiated SSE streams. Each POST creates a fresh MCP server and transport instance. Background execution metadata and logs persist under `MCP_DATA_DIR`.
+The server exposes MCP Streamable HTTP at `/mcp` in stateless request/response mode. MCP requests use POST; GET, DELETE and PATCH return 405. The server does not issue session IDs or support server-initiated SSE streams. Each POST creates a fresh MCP server and transport instance. Task execution metadata and logs persist under `/var/lib/vps-sandbox`, independently of MCP process restarts.
 
 ## Authentication
 
@@ -170,7 +182,7 @@ Generate a token with `openssl rand -hex 32`.
 
 6. Configure the OAuth provider and exact resource/audience values, then switch to OAuth mode. Validate metadata, successful authentication, invalid/expired tokens and wrong issuer/audience before registering the MCP client.
 
-7. Connect the intended MCP client and verify initialization, tool discovery, `system.health`, bounded filesystem access and a harmless command. Do not expose the service until all checks pass.
+7. Connect the intended MCP client and verify initialization, tool discovery, `system.health`, bounded host filesystem access, task sandbox creation, `sandbox.exec` and the `sandbox.execution.*` lifecycle. Do not expose the service until all checks pass.
 
 ## Configuration
 
@@ -187,7 +199,7 @@ Generate a token with `openssl rand -hex 32`.
 | `OAUTH_REQUIRED_SCOPES` | empty | Optional required scope tokens |
 | `MCP_CORS_ORIGINS` | empty | Additional exact browser origins; official ChatGPT origins are built in |
 | `MCP_ALLOWED_ROOTS` | `/srv,$HOME/.local/share/vps-mcp` | Allowed filesystem roots |
-| `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent execution metadata and logs |
+| `MCP_DATA_DIR` | `$HOME/.local/share/vps-mcp` | Persistent managed-repository registry and bare-clone cache data |
 | `MCP_MAX_REQUEST_BYTES` | `2097152` | Maximum HTTP JSON request size |
 | `MCP_DEFAULT_COMMAND_TIMEOUT_MS` | `30000` | Default command timeout |
 | `MCP_MAX_COMMAND_TIMEOUT_MS` | `900000` | Maximum command timeout |
@@ -204,8 +216,8 @@ Generate a token with `openssl rand -hex 32`.
 
 - External OAuth provider selection and tenant-specific configuration remain deployment decisions.
 - Only signed JWT access tokens are supported; opaque-token introspection is not implemented.
-- Active background process supervision is not yet managed by a dedicated process supervisor.
-- Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. The separate rootless workload runtime agent is implemented in code but remains gated on reviewed host installation and live lifecycle acceptance.
+- Background commands are supported only inside managed task sandboxes; host-level terminal.execute remains synchronous.
+- Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. The rootless workload runtime agent is installed and active; background task execution uses a separate persistent runtime record/log store.
 - Persistent repository registration, bare-clone caching, durable isolated task workspaces and the typed rootless runtime adapter are implemented. Persistent application environment provisioning, backup/restore, management UI and Railway Sandbox parity remain separate milestones.
 
 ## Repository management

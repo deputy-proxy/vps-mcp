@@ -25,6 +25,7 @@ command -v find >/dev/null || { echo "find is required for inherited worktree AC
 systemd-analyze verify "${REPO_DIR}/systemd/vps-sandbox-runtime.socket" "${REPO_DIR}/systemd/vps-sandbox-runtime.service"
 install -d -o root -g root -m 0755 "${LIBEXEC}" "${ENV_DIR}"
 install -o root -g root -m 0755 "${SCRIPT_DIR}/vps-sandbox-runtime.mjs" "${LIBEXEC}/vps-sandbox-runtime.mjs"
+install -o root -g root -m 0644 "${SCRIPT_DIR}/executions.mjs" "${LIBEXEC}/executions.mjs"
 
 if [[ ! -e "${RUNTIME_ENV}" ]]; then
   umask 027

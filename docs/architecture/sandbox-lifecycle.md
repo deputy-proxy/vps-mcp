@@ -19,7 +19,7 @@ The internal adapter supports:
 - Container create, start, inspect, list, stop, remove, exec and logs.
 - Bounded CPU, memory and PID settings.
 - A read-only container root filesystem, all capabilities dropped, no-new-privileges, private network namespace with network=none, and bounded tmpfs at /tmp.
-- Optional bind mount at /workspace, only when its real path is beneath a root explicitly configured in VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS. The only accepted root paths are /srv/vps-mcp-workspaces and /var/lib/vps-mcp/task-workspaces/worktrees. Task mounts must resolve exactly to <root>/<repository-id>/<worktree-uuid>; the workspace registry identity is part of path validation. No mount root or image digest is approved by default.
+- Required task bind mount at /workspace, only when its real path is beneath a root explicitly configured in VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS. The only accepted root paths are /srv/vps-mcp-workspaces and /var/lib/vps-mcp/task-workspaces/worktrees. Task mounts must resolve exactly to <root>/<repository-id>/<worktree-uuid>; the workspace registry identity is part of path validation. Task workloads also receive a private per-sandbox execution-log mount at /run/vps-mcp-executions. Project-service workloads never receive it. No workspace root or image digest is approved by default.
 - Exec using an argv array, never a host shell command. Command arguments are executed only inside the selected container.
 
 Images must be immutable digest references, for example registry.example/app@sha256:<64-hex-digest>. Mutable tags are rejected. Image pull is an explicit operation; create uses --pull=never so deployment cannot silently fetch a changed image.
@@ -33,6 +33,7 @@ The runtime agent stores one JSON record per workload under /var/lib/vps-sandbox
 - Image reference and digest.
 - Runtime container ID.
 - Workspace mount reference and access mode.
+- Task-only execution log mount reference.
 - Resource/network policy.
 - Lifecycle status and timestamps.
 
@@ -64,19 +65,20 @@ The service unit's cgroup delegation and NoNewPrivileges=no are security-sensiti
 - A failed or interrupted transition is reconciled from the actual runtime state.
 - A missing runtime container does not cause its metadata record to be discarded.
 - Runtime list never removes unknown or unregistered containers.
-- No reaper is included here. Expiry, quotas, lock recovery and cleanup policy are owned by #36.
+- Execution-specific concurrency/log quotas and seven-/30-day execution log/record retention are enforced by the execution manager. General workload expiry, reaping, lock recovery and broader cleanup policy remain owned by #36.
 
 ## Current rollout gate
 
-The code, socket/service units and root-only installer are provided by this issue. The installer is intentionally not run automatically. Before enabling it on the VPS:
+The rootless runtime service and socket were installed and accepted by the prerequisite issues. This issue adds the durable execution module and a task-only execution-log mount. After the reviewed code is merged, redeploy the runtime agent and module together with the root-only installer. The installer is not run automatically. Before redeploying:
 
 1. Review the service unit's cgroup delegation, capabilities, device access and filesystem write paths.
 2. Confirm the vps-sandbox user manager and D-Bus bus are active.
 3. Decide and provision the workspace mount root and ownership model. The installer leaves this unset.
 4. Run the installer as root during a maintenance window.
-5. Run live create/start/exec/logs/stop/remove tests using a digest-pinned test image.
-6. Verify effective cgroup limits, namespace isolation, mount confinement, no host/runtime socket access, restart reconciliation and cleanup.
-7. Record sanitized live evidence before closing #33.
+5. Recreate a disposable task sandbox so the new execution-log mount is present.
+6. Run live execution start/status/logs/cancel, timeout, restart recovery, stop/remove, quota and log-retention tests using a digest-pinned test image.
+7. Verify effective cgroup limits, namespace isolation, mount confinement, no host/runtime socket access, restart reconciliation and cleanup.
+8. Record sanitized live evidence before closing #35.
 
 Until those checks pass, the public MCP runtime adapter fails closed if its socket is unavailable.
 
@@ -84,6 +86,6 @@ Until those checks pass, the public MCP runtime adapter fails closed if its sock
 
 The public MCP surface exposes task-only lifecycle tools: `sandbox.image.inspect`, `sandbox.image.pull`, `sandbox.create`, `sandbox.start`, `sandbox.inspect`, `sandbox.list`, `sandbox.stop`, `sandbox.remove` and `sandbox.logs`. These tools never expose project-service workloads. The create operation takes a registered repository ID, a task-worktree ID and a digest-pinned image; the runtime agent remains the authority for checking the image allowlist, workspace-root allowlist and exact worktree mount identity.
 
-The task-worktree ID and sandbox workload ID are distinct UUIDs. `sandbox.create` generates the workload ID and returns it for subsequent sandbox operations. It grants the runtime identity access to the exact worktree through the existing task-workspace preparation routine. The container is created with network disabled, a read-only root filesystem, all capabilities dropped, no-new-privileges and bounded CPU, memory and PID resources. It is created stopped; callers must explicitly invoke `sandbox.start`.
+The task-worktree ID and sandbox workload ID are distinct UUIDs. `sandbox.create` generates the workload ID and returns it for subsequent sandbox operations. It grants the runtime identity access to the exact worktree through the existing task-workspace preparation routine. The container is created with network disabled, a read-only root filesystem, all capabilities dropped, no-new-privileges and bounded CPU, memory and PID resources. Task containers also receive a per-sandbox host-backed log mount; execution metadata is kept outside the container. It is created stopped; callers must explicitly invoke `sandbox.start`.
 
 Lifecycle operations inspect the durable workload record and enforce `workloadType=task`. Stop and remove requests pass the expected task type to the runtime agent, which independently rejects cross-type lifecycle operations. `sandbox.remove` requires explicit confirmation and removes only the container; task-worktree cleanup remains a separate operation.

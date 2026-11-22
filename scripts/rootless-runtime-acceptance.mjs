@@ -34,6 +34,7 @@ function main() {
   }
 
   const workspace = mkdtempSync('/var/lib/vps-sandbox/acceptance-');
+  const executionLogs = mkdtempSync('/var/lib/vps-sandbox/acceptance-execution-logs-');
   const name = `vps-acceptance-${process.pid}`;
   const sentinel = join(workspace, 'host-sentinel.txt');
   let containerCreated = false;
@@ -47,6 +48,7 @@ function main() {
     add('production-checkout-inaccessible', accessDenied('/opt/vps-mcp', constants.X_OK), 'sandbox identity cannot traverse the production MCP checkout');
     add('connector-checkout-inaccessible', accessDenied('/srv/vps-mcp', constants.X_OK), 'sandbox identity cannot traverse the private connector checkout');
     add('root-home-inaccessible', accessDenied('/root', constants.X_OK), 'sandbox identity cannot traverse the root home directory');
+    add('execution-module-installed', existsSync('/usr/local/libexec/vps-mcp/executions.mjs'), 'durable execution module is installed beside the runtime agent');
     const uid = run(['unshare', 'id', '-u']);
     add('rootless-identity', hostUser === 'vps-sandbox' && uid === '0', `container namespace root uid=${uid}; host executor=${hostUser}`);
 
@@ -56,7 +58,8 @@ function main() {
       '--security-opt=no-new-privileges',
       '--pids-limit=64', '--memory=128m', '--cpus=0.5',
       '--tmpfs=/tmp:rw,noexec,nosuid,size=16m',
-      '--volume', `${workspace}:/workspace:ro`,
+      '--volume', workspace + ':/workspace:ro',
+      '--volume', executionLogs + ':/run/vps-mcp-executions:rw',
       IMAGE, 'sleep', '120',
     ]);
     containerCreated = true;
@@ -97,9 +100,18 @@ function main() {
     run(['exec', name, 'sh', '-c', 'test -w /tmp && echo tmp-writable']);
     add('bounded-tmpfs', true, 'dedicated writable /tmp tmpfs is available');
 
+    const executionTools = run(['exec', name, 'sh', '-c',
+      'for tool in setsid env head mkfifo awk sed grep tr sleep date; do command -v "$tool" >/dev/null 2>&1 || exit 127; done; ulimit -f 4097; fifo=/tmp/execution-watchdog-$$; mkfifo "$fifo"; (exec 3<>"$fifo"; read -r -t 2 value <&3) & reader=$!; sleep 0.1; printf ready > "$fifo"; wait "$reader"; rm -f "$fifo"; echo execution-ready']);
+    add('execution-supervisor-primitives', executionTools === 'execution-ready', 'approved image provides setsid, bounded file-size limits, FIFO and timed-read primitives');
+
+    const executionLogHostFile = join(executionLogs, 'acceptance.log');
+    run(['exec', name, 'sh', '-c', 'printf execution-log-proof > /run/vps-mcp-executions/acceptance.log']);
+    add('execution-log-mount-writable', readFileSync(executionLogHostFile, 'utf8') === 'execution-log-proof', 'container writes to its dedicated host-backed execution log mount');
+
     run(['rm', '--force', name]);
     containerCreated = false;
     add('container-stop-remove', true, 'acceptance container stopped and removed');
+    add('execution-log-persistence', readFileSync(executionLogHostFile, 'utf8') === 'execution-log-proof', 'execution log remains on the host after container removal');
 
     const writableFile = join(workspace, 'rw-proof.txt');
     run(['run', '--cgroup-parent', CGROUP_PARENT, '--rm', '--pull=missing', '--network=none', '--read-only',
@@ -120,6 +132,7 @@ function main() {
       try { run(['rm', '--force', name]); } catch { /* best-effort cleanup; reported below */ }
     }
     try { rmSync(workspace, { recursive: true, force: true }); } catch { /* report via exit status */ }
+    try { rmSync(executionLogs, { recursive: true, force: true }); } catch { /* report via exit status */ }
   }
 
   const failures = checks.filter((check) => check.status === 'fail');
