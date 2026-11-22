@@ -70,7 +70,7 @@ describe("production deployment runner", () => {
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_TERMINAL_PROMPT: "0",
       NPM_CONFIG_USERCONFIG: "/dev/null",
-        });
+    });
     expect(Object.keys(SAFE_DEPLOYMENT_ENV).some((key) => /TOKEN|SECRET|PASSWORD|SSH_AUTH|API_KEY/i.test(key))).toBe(false);
   });
 
