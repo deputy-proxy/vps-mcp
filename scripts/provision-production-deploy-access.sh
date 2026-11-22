@@ -60,15 +60,18 @@ install -o root -g root -m 0755 scripts/deploy-gateway.sh /usr/local/libexec/vps
 install -o root -g root -m 0755 scripts/deploy-production.mjs /usr/local/libexec/vps-mcp/deploy-production.mjs
 
 [[ ! -L /var/lib/vps-mcp-deploy && ! -L /var/lib/vps-mcp-deploy/.ssh ]] || { echo "Deployment account home or SSH directory is a symlink; refusing to continue." >&2; exit 1; }
-install -d -o root -g root -m 0700 /var/lib/vps-mcp-deploy/.ssh
 chown root:root /var/lib/vps-mcp-deploy
 chmod 0755 /var/lib/vps-mcp-deploy
+install -d -o vps-mcp-deploy -g vps-mcp-deploy -m 0700 /var/lib/vps-mcp-deploy/.ssh
+chown vps-mcp-deploy:vps-mcp-deploy /var/lib/vps-mcp-deploy/.ssh
 key_line="restrict,command=\"/usr/local/libexec/vps-mcp/deploy-gateway.sh\" ${public_key}"
+authorized_key_pattern='^restrict,command="/usr/local/libexec/vps-mcp/deploy-gateway\.sh" ssh-ed25519[[:space:]]+[A-Za-z0-9+/]+={0,3}([[:space:]][^[:cntrl:]]*)?$'
 authorized_keys=/var/lib/vps-mcp-deploy/.ssh/authorized_keys
 [[ ! -L "$authorized_keys" ]] || { echo "authorized_keys is a symlink; refusing to continue." >&2; exit 1; }
 if [[ -f "$authorized_keys" ]]; then
   while IFS= read -r existing_line || [[ -n "$existing_line" ]]; do
-    [[ -z "$existing_line" || "$existing_line" == \#* || "$existing_line" == "$key_line" ]] || {
+    [[ -z "$existing_line" || "$existing_line" == \#* ]] && continue
+    [[ "$existing_line" =~ $authorized_key_pattern ]] || {
       echo "Existing authorized_keys contains an entry outside this forced-command policy; inspect it manually." >&2
       exit 1
     }
@@ -78,13 +81,13 @@ if [[ ! -f "$authorized_keys" ]] || ! grep -Fxq -- "$key_line" "$authorized_keys
   touch "$authorized_keys"
   printf '%s\n' "$key_line" >> "$authorized_keys"
 fi
-chown root:root "$authorized_keys"
+chown vps-mcp-deploy:vps-mcp-deploy "$authorized_keys"
 chmod 0600 "$authorized_keys"
 
 [[ ! -L /etc/sudoers.d/vps-mcp-deploy ]] || { echo "Deployment sudoers file is a symlink; refusing to continue." >&2; exit 1; }
 cat > "$sudoers_tmp" <<'SUDOERS'
 # GitHub Actions may invoke only the fixed deployment entry point.
-vps-mcp-deploy ALL=(root) NOPASSWD: /usr/bin/node /usr/local/libexec/vps-mcp/deploy-production.mjs ""
+vps-mcp-deploy ALL=(root) NOPASSWD: /usr/bin/node /usr/local/libexec/vps-mcp/deploy-production.mjs
 SUDOERS
 visudo -cf "$sudoers_tmp"
 install -o root -g root -m 0440 "$sudoers_tmp" /etc/sudoers.d/vps-mcp-deploy
