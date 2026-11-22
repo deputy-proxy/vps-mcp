@@ -8,6 +8,7 @@ Prerequisites:
 - Repository/worktree management and the chosen workspace ownership model from #31/#32.
 - The vps-sandbox non-login account, subordinate UID/GID ranges, rootless Podman storage, lingering user manager and D-Bus bus.
 - A reviewed systemd service policy.
+- The host acl package (setfacl) for per-worktree access grants.
 
 Review these files before installation:
 
@@ -15,6 +16,12 @@ Review these files before installation:
 - systemd/vps-sandbox-runtime.service
 - scripts/vps-sandbox-runtime.mjs
 - scripts/install-vps-sandbox-runtime.sh
+
+Install the ACL prerequisite if it is not already present:
+
+    sudo apt-get update && sudo apt-get install -y acl
+
+The runtime service runs with the vps-sandbox account primary group. The socket remains owned by vps-sandbox:vps-mcp; do not override the runtime process primary group to vps-mcp, because that changes the rootless Podman GID mapping. The MCP workspace manager grants vps-sandbox execute-only ACLs on parent directories and read/write inherited ACLs only on the exact registered worktree when a runtime workload is created.
 
 Install from the checked-out repository as root:
 
