@@ -101,7 +101,7 @@ function main() {
     add('bounded-tmpfs', true, 'dedicated writable /tmp tmpfs is available');
 
     const executionTools = run(['exec', name, 'sh', '-c',
-      'for tool in setsid env head mkfifo awk sed grep tr sleep date; do command -v "$tool" >/dev/null 2>&1 || exit 127; done; ulimit -f 4097; fifo=/tmp/execution-watchdog-$$; mkfifo "$fifo"; (exec 3<>"$fifo"; read -r -t 2 value <&3) & reader=$!; sleep 0.1; printf ready > "$fifo"; wait "$reader"; rm -f "$fifo"; echo execution-ready']);
+      'for tool in setsid env head mkfifo awk sed grep tr sleep date ps; do command -v "$tool" >/dev/null 2>&1 || exit 127; done; ulimit -f 4097; fifo=/tmp/execution-watchdog-$$; mkfifo "$fifo"; (exec 3<>"$fifo"; read -r -t 2 value <&3) & reader=$!; sleep 0.1; printf ready > "$fifo"; wait "$reader"; rm -f "$fifo"; echo execution-ready']);
     add('execution-supervisor-primitives', executionTools === 'execution-ready', 'approved image provides setsid, bounded file-size limits, FIFO and timed-read primitives');
 
     const executionLogHostFile = join(executionLogs, 'acceptance.log');
