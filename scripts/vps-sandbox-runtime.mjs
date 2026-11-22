@@ -23,7 +23,12 @@ const ACTIVE_STATES = new Set(['creating', 'created', 'starting', 'running', 'st
 
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function safeId(value) { assert(typeof value === 'string' && UUID.test(value), 'Invalid workload ID'); return value.toLowerCase(); }
-function safeImage(value) { assert(typeof value === 'string' && IMAGE_DIGEST.test(value), 'Image must be pinned by sha256 digest'); return value; }
+export function safeImage(value) {
+  assert(typeof value === 'string' && IMAGE_DIGEST.test(value), 'Image must be pinned by sha256 digest');
+  const approved = (process.env.VPS_SANDBOX_ALLOWED_IMAGES ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  assert(approved.includes(value), 'Image digest is not present in the administrator-approved runtime image allowlist');
+  return value;
+}
 function safeRepositoryId(value) { assert(typeof value === 'string' && REPOSITORY_ID.test(value), 'Invalid repository ID'); return value; }
 function safeArgv(value) {
   assert(Array.isArray(value) && value.length > 0 && value.length <= 64, 'Command must be a non-empty argument array');
@@ -38,6 +43,12 @@ function safeResources(value = {}) {
   assert(Number.isInteger(memoryMiB) && memoryMiB >= 128 && memoryMiB <= 4096, 'memoryMiB must be between 128 and 4096');
   assert(Number.isInteger(pids) && pids >= 32 && pids <= 512, 'pids must be between 32 and 512');
   return { cpuMilli, memoryMiB, pids };
+}
+export function expectedTaskWorkspacePath(root, repositoryId, worktreeId) {
+  safeRepositoryId(repositoryId);
+  safeId(worktreeId);
+  assert(root === '/srv/vps-mcp-workspaces' || root === '/var/lib/vps-mcp/task-workspaces/worktrees', 'Workspace root is not approved');
+  return path.join(root, repositoryId, worktreeId);
 }
 export function parseRuntimeRequest(raw) {
   assert(Buffer.byteLength(raw, 'utf8') <= MAX_REQUEST_BYTES, 'Request is too large');
@@ -138,19 +149,22 @@ function isWithin(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
-async function resolveWorkspaceMount(workspacePath, access) {
+async function resolveWorkspaceMount(workspacePath, access, repositoryId, worktreeId) {
   assert(typeof workspacePath === 'string' && path.isAbsolute(workspacePath), 'Workspace path must be absolute');
   assert(access === 'read-only' || access === 'read-write', 'Workspace access must be read-only or read-write');
   assert(!workspacePath.includes(','), 'Workspace path cannot contain commas');
+  assert(typeof repositoryId === 'string' && typeof worktreeId === 'string', 'Task workspace mounts require repository and worktree identities');
   const configuredRoots = (process.env.VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS ?? '').split(',').map((item) => item.trim()).filter(Boolean);
   assert(configuredRoots.length > 0, 'No workspace mount roots are configured for the runtime identity');
+  const approvedRoots = configuredRoots.filter((root) => root === '/srv/vps-mcp-workspaces' || root === '/var/lib/vps-mcp/task-workspaces/worktrees');
+  assert(approvedRoots.length === configuredRoots.length, 'Workspace roots must be explicitly approved worktree directories');
+  const expectedPaths = approvedRoots.map((root) => expectedTaskWorkspacePath(root, repositoryId, worktreeId));
+  assert(expectedPaths.includes(path.resolve(workspacePath)), 'Workspace path does not match the registered repository/worktree identity');
+  const stat = await fs.lstat(workspacePath);
+  assert(!stat.isSymbolicLink() && stat.isDirectory(), 'Workspace mount target must be a real managed directory');
   const target = await fs.realpath(workspacePath);
-  const stats = await fs.stat(target);
-  assert(stats.isDirectory(), 'Workspace mount target must be a directory');
-  const roots = await Promise.all(configuredRoots.map((root) => fs.realpath(root)));
-  const approvedRoots = roots.filter((root) => root === '/srv/vps-mcp-workspaces' || root === '/var/lib/vps-mcp/task-workspaces');
-  assert(approvedRoots.length === roots.length, 'Workspace roots must be explicitly approved task-workspace directories');
-  assert(roots.some((root) => isWithin(root, target)), 'Workspace mount path is outside the configured workspace roots');
+  const roots = await Promise.all(approvedRoots.map((root) => fs.realpath(root)));
+  assert(roots.some((root) => isWithin(root, target)), 'Workspace mount path is outside the configured worktree roots');
   return { path: target, access, destination: '/workspace' };
 }
 async function createWorkload(request) {
@@ -161,7 +175,13 @@ async function createWorkload(request) {
   const worktreeId = request.worktreeId === undefined ? undefined : safeId(request.worktreeId);
   const image = safeImage(request.image);
   const resources = safeResources(request.resources);
-  const workspaceMount = request.workspacePath === undefined ? null : await resolveWorkspaceMount(request.workspacePath, request.workspaceAccess ?? 'read-only');
+  if (workloadType === 'task') {
+    assert(request.worktreeId, 'Task workloads require a managed worktree ID');
+    assert(request.workspacePath, 'Task workloads require their assigned workspace path');
+  } else {
+    assert(request.workspacePath === undefined && request.workspaceAccess === undefined, 'Project-service mounts are provisioned by the project environment manager');
+  }
+  const workspaceMount = request.workspacePath === undefined ? null : await resolveWorkspaceMount(request.workspacePath, request.workspaceAccess ?? 'read-only', repositoryId, worktreeId);
   assert(request.network === undefined || request.network === 'none', 'Only network=none is supported by this runtime adapter');
   assert(request.readOnlyRootfs === undefined || request.readOnlyRootfs === true, 'Container root filesystem must be read-only');
   const fingerprint = commandFingerprint(request.command);
