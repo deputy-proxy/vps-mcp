@@ -50,7 +50,12 @@ export function createProductionDeployer({
   healthAttempts = 15,
   healthIntervalMs = 2_000,
 } = {}) {
-  const git = (args, options = {}) => run("/usr/bin/git", ["-c", "credential.helper=", "-C", repository, ...args], options);
+  const git = (args, options = {}) => run("/usr/bin/git", [
+    "-c", "credential.helper=",
+    "-c", `safe.directory=${path.resolve(repository)}`,
+    "-C", repository,
+    ...args,
+  ], options);
   const npm = (args) => run("/usr/sbin/runuser", [
     "-u", "vps-mcp", "--", "/usr/bin/env", "-i",
     ...Object.entries(SAFE_DEPLOYMENT_ENV).map(([key, value]) => `${key}=${value}`),
