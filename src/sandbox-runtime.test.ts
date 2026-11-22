@@ -1,6 +1,15 @@
 import net from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSandboxRuntimeAdapter, formatSandboxRuntimeError, requestSandboxRuntime, validateSandboxRuntimeRequest } from './sandbox-runtime.js';
+
+vi.mock('./task-workspaces.js', () => ({
+  prepareTaskWorkspaceForRuntime: vi.fn(async (id: string) => ({
+    id,
+    repositoryId: 'deputy-proxy-vps-mcp-01d9433d21',
+    worktreeId: id,
+    workspacePath: '/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp-01d9433d21/' + id,
+  })),
+}));
 
 const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
 const image = `docker.io/library/node@sha256:${'a'.repeat(64)}`;
@@ -129,5 +138,84 @@ describe('sandbox runtime socket client', () => {
     server = net.createServer((socket) => { sockets.push(socket); socket.end(JSON.stringify({ error: 'runtime unavailable' }) + '\n'); });
     await new Promise<void>((resolve) => server!.listen(socketPath, resolve));
     await expect(requestSandboxRuntime({ operation: 'container.list' }, socketPath)).rejects.toThrow('runtime unavailable');
+  });
+});
+
+
+describe('task sandbox lifecycle adapter', () => {
+  const worktreeId = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+  const taskSandboxId = '234e5321-b4d7-4d4f-be92-ce56a984adaa';
+  const projectSandboxId = '334e5321-b4d7-4d4f-be92-ce56a984adaa';
+  const repositoryId = 'deputy-proxy-vps-mcp-01d9433d21';
+  const approvedImage = 'docker.io/library/busybox@sha256:' + 'b'.repeat(64);
+  let server: net.Server | undefined;
+  let socketPath = '';
+  const sockets: net.Socket[] = [];
+  const operations: Array<Record<string, unknown>> = [];
+
+  afterEach(() => {
+    for (const socket of sockets.splice(0)) socket.destroy();
+    server?.close();
+    server = undefined;
+    operations.length = 0;
+  });
+
+  it('creates, lists and controls task workloads without exposing project-service workloads', async () => {
+    socketPath = '/tmp/vps-runtime-lifecycle-' + process.pid + '-' + Date.now() + '.sock';
+    server = net.createServer((socket) => {
+      sockets.push(socket);
+      let input = '';
+      socket.on('data', (chunk) => {
+        input += chunk.toString();
+        if (!input.includes('\n')) return;
+        const request = JSON.parse(input.trim()) as Record<string, unknown>;
+        operations.push(request);
+        const id = String(request.workloadId ?? taskSandboxId);
+        const record = {
+          id,
+          workloadType: id === projectSandboxId ? 'project-service' : 'task',
+          repositoryId,
+          image: approvedImage,
+          imageDigest: 'sha256:' + 'b'.repeat(64),
+          runtimeId: 'a'.repeat(64),
+          workspaceMount: { path: '/var/lib/vps-mcp/task-workspaces/worktrees/' + repositoryId + '/' + worktreeId, access: 'read-write', destination: '/workspace' },
+          resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+          network: 'none',
+          status: 'created',
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+        };
+        let result: unknown;
+        switch (request.operation) {
+          case 'image.inspect': result = { image: approvedImage, imageId: 'sha256:' + 'b'.repeat(64) }; break;
+          case 'container.create': result = { ...record, id: request.workloadId }; break;
+          case 'container.inspect': result = { workload: { ...record, id } }; break;
+          case 'container.list': result = { workloads: [{ ...record, id: taskSandboxId }, { ...record, id: projectSandboxId, workloadType: 'project-service' }] }; break;
+          case 'container.logs': result = { workloadId: id, logs: 'sandbox ready' }; break;
+          default: result = { operation: request.operation, workloadId: id, ok: true };
+        }
+        socket.end(JSON.stringify({ result }) + '\n');
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(socketPath, resolve));
+
+    const adapter = createSandboxRuntimeAdapter(socketPath);
+    const created = await adapter.createTaskSandbox({ repositoryId, worktreeId, image: approvedImage });
+    expect(created).toMatchObject({ workloadType: 'task', repositoryId, image: approvedImage, status: 'created' });
+    expect(operations.map((item) => item.operation)).toEqual(['image.inspect', 'container.create']);
+    expect(operations[1]).toMatchObject({
+      workloadType: 'task', repositoryId, worktreeId, network: 'none', readOnlyRootfs: true,
+      workspacePath: '/var/lib/vps-mcp/task-workspaces/worktrees/' + repositoryId + '/' + worktreeId,
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+    });
+    expect(operations[1]).not.toHaveProperty('imageTag');
+
+    await adapter.startTaskSandbox(taskSandboxId);
+    await expect(adapter.inspectTaskSandbox(taskSandboxId)).resolves.toMatchObject({ workload: { workloadType: 'task' } });
+    await expect(adapter.listTaskSandboxes()).resolves.toMatchObject({ workloads: [{ id: taskSandboxId, workloadType: 'task' }] });
+    await expect(adapter.readTaskSandboxLogs(taskSandboxId)).resolves.toEqual({ workloadId: taskSandboxId, logs: 'sandbox ready' });
+    await adapter.stopTaskSandbox(taskSandboxId);
+    await adapter.removeTaskSandbox(taskSandboxId);
+    await expect(adapter.startTaskSandbox(projectSandboxId)).rejects.toThrow('SANDBOX_TYPE_MISMATCH');
   });
 });
