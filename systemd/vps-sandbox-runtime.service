@@ -1,0 +1,37 @@
+[Unit]
+Description=Dedicated rootless VPS MCP workload runtime
+Requires=vps-sandbox-runtime.socket
+After=vps-sandbox-runtime.socket
+
+[Service]
+Type=simple
+User=vps-sandbox
+Group=vps-mcp
+Environment=USER=vps-sandbox
+Environment=HOME=/var/lib/vps-sandbox
+EnvironmentFile=/etc/vps-sandbox/runtime.env
+ExecStart=/usr/bin/node /usr/local/libexec/vps-mcp/vps-sandbox-runtime.mjs
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=15
+NoNewPrivileges=no
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+Delegate=cpu memory pids
+DelegateSubgroup=init.scope
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=no
+RestrictSUIDSGID=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+DeviceAllow=/dev/fuse rwm
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+ReadWritePaths=/var/lib/vps-sandbox /run/user
+ReadWritePaths=-/srv/vps-mcp-workspaces -/var/lib/vps-mcp/task-workspaces
