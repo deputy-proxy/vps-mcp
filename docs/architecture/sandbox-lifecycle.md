@@ -19,7 +19,7 @@ The internal adapter supports:
 - Container create, start, inspect, list, stop, remove, exec and logs.
 - Bounded CPU, memory and PID settings.
 - A read-only container root filesystem, all capabilities dropped, no-new-privileges, private network namespace with network=none, and bounded tmpfs at /tmp.
-- Optional bind mount at /workspace, only when its real path is beneath a root explicitly configured in VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS. The only accepted root paths are /srv/vps-mcp-workspaces and /var/lib/vps-mcp/task-workspaces. No mount root is configured by default.
+- Optional bind mount at /workspace, only when its real path is beneath a root explicitly configured in VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS. The only accepted root paths are /srv/vps-mcp-workspaces and /var/lib/vps-mcp/task-workspaces/worktrees. Task mounts must resolve exactly to <root>/<repository-id>/<worktree-uuid>; the workspace registry identity is part of path validation. No mount root or image digest is approved by default.
 - Exec using an argv array, never a host shell command. Command arguments are executed only inside the selected container.
 
 Images must be immutable digest references, for example registry.example/app@sha256:<64-hex-digest>. Mutable tags are rejected. Image pull is an explicit operation; create uses --pull=never so deployment cannot silently fetch a changed image.
