@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { prepareTaskWorkspaceForRuntime } from './task-workspaces.js';
 
 export type WorkloadType = 'task' | 'project-service';
 export type RuntimeResources = { cpuMilli?: number; memoryMiB?: number; pids?: number };
@@ -43,6 +44,8 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     if (!REPOSITORY_ID.test(request.repositoryId)) throw new Error('Invalid repository ID');
     if (!IMAGE_DIGEST.test(request.image)) throw new Error('Image must be pinned by sha256 digest');
     if (request.worktreeId && !UUID.test(request.worktreeId)) throw new Error('Invalid worktree ID');
+    if (request.workloadType === 'task' && (!request.worktreeId || !request.workspacePath)) throw new Error('Task workloads require an authorized managed worktree');
+    if (request.workloadType === 'project-service' && (request.workspacePath !== undefined || request.workspaceAccess !== undefined)) throw new Error('Project-service mounts are managed separately');
     if (request.command) validateArgv(request.command);
     if (request.workspacePath !== undefined && (!request.workspacePath.startsWith('/') || request.workspacePath.includes('\0'))) throw new Error('Workspace path must be an absolute path');
     if (request.workspaceAccess !== undefined && request.workspaceAccess !== 'read-only' && request.workspaceAccess !== 'read-write') throw new Error('Invalid workspace access mode');
@@ -136,7 +139,7 @@ export type RuntimeWorkloadRecord = {
 export interface SandboxRuntimeAdapter {
   inspectImage(image: string): Promise<{ image: string; imageId: string }>;
   pullImage(image: string): Promise<{ image: string; pulled: true; output: string }>;
-  createWorkload(input: Extract<SandboxRuntimeRequest, { operation: 'container.create' }>): Promise<RuntimeWorkloadRecord>;
+  createWorkload(input: Omit<Extract<SandboxRuntimeRequest, { operation: 'container.create' }>, 'workspacePath'>): Promise<RuntimeWorkloadRecord>;
   startWorkload(id: string, expectedType: WorkloadType): Promise<unknown>;
   inspectWorkload(id: string): Promise<unknown>;
   listWorkloads(): Promise<{ workloads: RuntimeWorkloadRecord[] }>;
@@ -149,7 +152,19 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
   return {
     inspectImage: (image) => requestSandboxRuntime({ operation: 'image.inspect', image }, socketPath),
     pullImage: (image) => requestSandboxRuntime({ operation: 'image.pull', image }, socketPath),
-    createWorkload: (input) => requestSandboxRuntime(input, socketPath),
+    createWorkload: async (input) => {
+      if (input.workloadType === 'task') {
+        if (!input.worktreeId) throw new Error('Task workloads require a managed worktree ID');
+        const workspace = await prepareTaskWorkspaceForRuntime(input.worktreeId);
+        if (workspace.repositoryId !== input.repositoryId) throw new Error('Worktree does not belong to the requested repository');
+        return requestSandboxRuntime({
+          ...input,
+          workspacePath: workspace.workspacePath,
+          workspaceAccess: input.workspaceAccess ?? 'read-write',
+        }, socketPath);
+      }
+      return requestSandboxRuntime(input, socketPath);
+    },
     startWorkload: (workloadId, expectedWorkloadType) => requestSandboxRuntime({ operation: 'container.start', workloadId, expectedWorkloadType }, socketPath),
     inspectWorkload: (workloadId) => requestSandboxRuntime({ operation: 'container.inspect', workloadId }, socketPath),
     listWorkloads: () => requestSandboxRuntime({ operation: 'container.list' }, socketPath),
