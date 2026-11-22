@@ -24,7 +24,7 @@ export function validatePullRequest(event) {
   if (typeof head !== "string" || typeof base !== "string") return { valid: false, reason: "Pull request event is missing head/base branch metadata." };
   if (head === "main" || (head === "development" && base !== "main")) return { valid: false, reason: "Protected long-lived branches cannot be pull-request heads for task changes, except development for a governed release to main." };
   if (base === "development" && head.startsWith("reconcile/")) {
-    return sectionHasContent(body, /^##\\s+main reconciliation\\s*$/i)
+    return sectionHasContent(body, /^##\s+main reconciliation\s*$/i)
       ? { valid: true, kind: "reconciliation" }
       : { valid: false, reason: "A main-to-development reconciliation PR must include a non-empty 'Main reconciliation' section." };
   }
@@ -50,7 +50,7 @@ function branchList(value) {
 
 function hasBranchGuard(expression, branch) {
   const value = String(expression ?? "");
-  return new RegExp(`(?:github\\.ref\\s*==\\s*['\"]refs/heads/${branch}['\"]|github\\.ref_name\\s*==\\s*['\"]${branch}['\"])`).test(value);
+  return new RegExp(`(?:github\\.ref\s*==\s*['\"]refs/heads/${branch}['\"]|github\\.ref_name\s*==\s*['\"]${branch}['\"])`).test(value);
 }
 
 function hasPushEventGuard(expression) {
