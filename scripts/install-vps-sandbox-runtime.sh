@@ -26,6 +26,7 @@ systemd-analyze verify "${REPO_DIR}/systemd/vps-sandbox-runtime.socket" "${REPO_
 install -d -o root -g root -m 0755 "${LIBEXEC}" "${ENV_DIR}"
 install -o root -g root -m 0755 "${SCRIPT_DIR}/vps-sandbox-runtime.mjs" "${LIBEXEC}/vps-sandbox-runtime.mjs"
 install -o root -g root -m 0644 "${SCRIPT_DIR}/executions.mjs" "${LIBEXEC}/executions.mjs"
+install -o root -g root -m 0644 "${SCRIPT_DIR}/resource-governance.mjs" "${LIBEXEC}/resource-governance.mjs"
 
 if [[ ! -e "${RUNTIME_ENV}" ]]; then
   umask 027
@@ -34,6 +35,24 @@ XDG_RUNTIME_DIR=/run/user/${UID_VALUE}
 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${UID_VALUE}/bus
 VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS=
 VPS_SANDBOX_ALLOWED_IMAGES=
+# Resource governance defaults. Blank CPU/memory values use conservative host-derived limits.
+VPS_SANDBOX_GLOBAL_CPU_MILLI=
+VPS_SANDBOX_GLOBAL_MEMORY_MIB=
+VPS_SANDBOX_GLOBAL_PIDS=2048
+VPS_SANDBOX_GLOBAL_DISK_MIB=153600
+VPS_SANDBOX_MAX_ACTIVE_TASKS=8
+VPS_SANDBOX_REPOSITORY_CPU_MILLI=
+VPS_SANDBOX_REPOSITORY_MEMORY_MIB=
+VPS_SANDBOX_REPOSITORY_PIDS=
+VPS_SANDBOX_REPOSITORY_DISK_MIB=102400
+VPS_SANDBOX_DISK_WARNING_BYTES=16106127360
+VPS_SANDBOX_DISK_RESERVE_BYTES=5368709120
+VPS_SANDBOX_TASK_RETENTION_MS=604800000
+VPS_SANDBOX_LOCK_TIMEOUT_MS=180000
+VPS_SANDBOX_STALE_LOCK_MS=60000
+VPS_SANDBOX_TEMP_FILE_RETENTION_MS=600000
+# Cleanup is opt-in. Review retention and enable manually after rollout acceptance.
+VPS_SANDBOX_CLEANUP_ENABLED=false
 ENV
   chown root:vps-sandbox "${RUNTIME_ENV}"
   chmod 0640 "${RUNTIME_ENV}"
