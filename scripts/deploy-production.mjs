@@ -17,7 +17,6 @@ export const SAFE_DEPLOYMENT_ENV = Object.freeze({
   GIT_TERMINAL_PROMPT: "0",
   NPM_CONFIG_UPDATE_NOTIFIER: "false",
   NPM_CONFIG_USERCONFIG: "/dev/null",
-  NPM_CONFIG_GLOBALCONFIG: "/dev/null",
 });
 
 export function isCommitSha(value) {
