@@ -121,13 +121,14 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(43);
+    expect(tools.size).toBe(44);
 
     for (const name of [
       "system.health",
       "system.info",
-      "terminal.status",
-      "terminal.logs",
+      "sandbox.execution.list",
+      "sandbox.execution.status",
+      "sandbox.execution.logs",
       "filesystem.list",
       "filesystem.read",
       "sandbox.filesystem.list",
@@ -147,8 +148,7 @@ describe("Streamable HTTP endpoint", () => {
 
     for (const name of [
       "terminal.execute",
-      "terminal.start",
-      "terminal.cancel",
+      "sandbox.execution.start",
       "filesystem.write",
       "sandbox.exec",
       "sandbox.filesystem.write",
@@ -165,9 +165,12 @@ describe("Streamable HTTP endpoint", () => {
         openWorldHint: name.startsWith("sandbox.") ? false : true,
       });
     }
-    for (const name of ["sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull"]) {
+    for (const name of ["sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull", "sandbox.execution.start", "sandbox.execution.list", "sandbox.execution.status", "sandbox.execution.logs", "sandbox.execution.cancel"]) {
       expect(tools.get(name)?.inputSchema).toBeDefined();
     }
+    expect(tools.get("sandbox.execution.cancel")?.annotations).toMatchObject({
+      readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false,
+    });
     expect(tools.get("sandbox.image.pull")?.annotations).toMatchObject({
       readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false,
     });

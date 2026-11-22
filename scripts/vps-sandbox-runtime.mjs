@@ -2,13 +2,17 @@
 import { execFile } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { EXECUTION_POLICY, safeExecutionId, executionCommandMetadata, buildExecutionStartArgs, buildExecutionIdentityCheckScript, buildExecutionCancelScript, createExecutionRecord, executionRetentionActions, assertExecutionLogQuota, executionLogReadWindow } from './executions.mjs';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const SOCKET = '/run/vps-sandbox-runtime.sock';
 const DATA_DIR = '/var/lib/vps-sandbox/workloads';
+const EXECUTION_RECORDS_DIR = '/var/lib/vps-sandbox/executions';
+const EXECUTION_LOG_ROOT = '/var/lib/vps-sandbox/execution-logs';
 const PODMAN = '/usr/bin/podman';
 const CGROUP_PARENT = '/system.slice/vps-sandbox-runtime.service';
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -20,10 +24,11 @@ const MAX_SANDBOX_FILE_BYTES = 2 * 1024 * 1024;
 let activeSandboxOperations = 0;
 const activeSandboxWorkloads = new Map();
 const mutatingWorkloads = new Set();
+const activeExecutionStarts = new Set();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_DIGEST = /^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/i;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
-const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write']);
+const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.status', 'sandbox.execution.logs', 'sandbox.execution.cancel', 'sandbox.execution.list']);
 let operationQueue = Promise.resolve();
 const ACTIVE_STATES = new Set(['creating', 'created', 'starting', 'running', 'stopping', 'stopped', 'removing', 'error']);
 
@@ -77,6 +82,11 @@ export function parseRuntimeRequest(raw) {
     'sandbox.fs.list': ['operation', 'sandboxId', 'path'],
     'sandbox.fs.read': ['operation', 'sandboxId', 'path'],
     'sandbox.fs.write': ['operation', 'sandboxId', 'path', 'content'],
+    'sandbox.execution.start': ['operation', 'sandboxId', 'command', 'cwd', 'timeoutMs'],
+    'sandbox.execution.status': ['operation', 'sandboxId', 'executionId'],
+    'sandbox.execution.logs': ['operation', 'sandboxId', 'executionId', 'offset', 'maxBytes'],
+    'sandbox.execution.cancel': ['operation', 'sandboxId', 'executionId'],
+    'sandbox.execution.list': ['operation', 'sandboxId'],
   }[request.operation];
   assert(Object.keys(request).every((key) => allowed.includes(key)), 'Request contains unsupported properties');
   if (request.operation.startsWith('sandbox.')) {
@@ -88,9 +98,19 @@ export function parseRuntimeRequest(raw) {
       if (request.cwd !== undefined) validateWorkspaceRelativePath(request.cwd, true);
       const allowedEnv = new Set(['LANG', 'LC_ALL', 'TZ', 'CI', 'NODE_ENV', 'TERM']);
       assert(request.env === undefined || (request.env && typeof request.env === 'object' && !Array.isArray(request.env) && Object.entries(request.env).every(([key, value]) => allowedEnv.has(key) && typeof value === 'string' && value.length <= 256 && !value.includes('\0'))), 'Environment contains unsupported or invalid variables');
-    } else {
+    } else if (request.operation.startsWith('sandbox.fs.')) {
       validateWorkspaceRelativePath(request.path, request.operation === 'sandbox.fs.list');
       if (request.operation === 'sandbox.fs.write') assert(typeof request.content === 'string' && Buffer.byteLength(request.content, 'utf8') <= 1024 * 1024, 'File content exceeds the 1 MiB write limit');
+    } else if (request.operation === 'sandbox.execution.start') {
+      safeArgv(request.command);
+      if (request.cwd !== undefined) validateWorkspaceRelativePath(request.cwd, true);
+      if (request.timeoutMs !== undefined) assert(Number.isInteger(request.timeoutMs) && request.timeoutMs >= 1000 && request.timeoutMs <= EXECUTION_POLICY.maxTimeoutMs, 'timeoutMs is outside the allowed range');
+    } else if (request.operation === 'sandbox.execution.status' || request.operation === 'sandbox.execution.logs' || request.operation === 'sandbox.execution.cancel') {
+      safeExecutionId(request.executionId);
+      if (request.operation === 'sandbox.execution.logs') {
+        if (request.offset !== undefined) assert(Number.isSafeInteger(request.offset) && request.offset >= 0, 'offset must be a non-negative safe integer');
+        if (request.maxBytes !== undefined) assert(Number.isInteger(request.maxBytes) && request.maxBytes >= 1024 && request.maxBytes <= 262144, 'maxBytes must be between 1024 and 262144');
+      }
     }
   }
   return request;
@@ -103,6 +123,84 @@ function validateWorkspaceRelativePath(value, allowEmpty = false) {
 }
 async function ensureDataDir() { await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 }); }
 function recordPath(id) { return path.join(DATA_DIR, safeId(id), 'record.json'); }
+function executionLogDirectory(sandboxId) { return path.join(EXECUTION_LOG_ROOT, safeId(sandboxId)); }
+function executionRecordDirectory(sandboxId, executionId) { return path.join(EXECUTION_RECORDS_DIR, safeId(sandboxId), safeExecutionId(executionId)); }
+function executionRecordPath(sandboxId, executionId) { return path.join(executionRecordDirectory(sandboxId, executionId), 'record.json'); }
+async function ensureExecutionLogDirectory(sandboxId) {
+  const directory = executionLogDirectory(sandboxId);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await fs.chmod(directory, 0o700);
+  const stat = await fs.lstat(directory);
+  assert(stat.isDirectory() && !stat.isSymbolicLink(), 'Execution log directory must be a real directory');
+  assert(await fs.realpath(directory) === directory, 'Execution log directory must be canonical');
+  return { path: directory, destination: '/run/vps-mcp-executions' };
+}
+async function writeExecutionRecord(record) {
+  const directory = executionRecordDirectory(record.sandboxId, record.id);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = path.join(directory, '.record-' + randomUUID() + '.tmp');
+  await fs.writeFile(temporary, JSON.stringify(record, null, 2), { mode: 0o600, flag: 'wx' });
+  await fs.rename(temporary, executionRecordPath(record.sandboxId, record.id));
+}
+async function readExecutionRecord(sandboxId, executionId) {
+  const record = JSON.parse(await fs.readFile(executionRecordPath(sandboxId, executionId), 'utf8'));
+  assert(record.id === safeExecutionId(executionId) && record.sandboxId === safeId(sandboxId), 'Execution record identity mismatch');
+  return record;
+}
+async function listExecutionRecords(sandboxId) {
+  const directory = path.join(EXECUTION_RECORDS_DIR, safeId(sandboxId));
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
+  const records = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !UUID.test(entry.name)) continue;
+    try { records.push(await readExecutionRecord(sandboxId, entry.name)); } catch { /* retain corrupt records for operator review */ }
+  }
+  return records.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+async function sumRegularFileBytes(directory) {
+  let total = 0;
+  let visited = 0;
+  const pending = [directory];
+  while (pending.length) {
+    const current = pending.pop();
+    const entries = await fs.readdir(current, { withFileTypes: true }).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
+    for (const entry of entries) {
+      visited += 1;
+      assert(visited <= 100_000, 'SANDBOX_EXECUTION_LOG_QUOTA: execution log directory contains too many entries');
+      const file = path.join(current, entry.name);
+      if (entry.isDirectory()) pending.push(file);
+      else if (entry.isFile()) {
+        const stat = await fs.lstat(file);
+        if (stat.isFile() && !stat.isSymbolicLink()) total += stat.size;
+      }
+    }
+  }
+  return total;
+}
+
+async function pruneExecutionRetention(sandboxId) {
+  const now = Date.now();
+  for (const record of await listExecutionRecords(sandboxId)) {
+    const retention = executionRetentionActions(record, now);
+    if (!retention.expireLogs && !retention.deleteRecord) continue;
+    const logPath = path.join(executionLogDirectory(sandboxId), record.logFile);
+    if (retention.expireLogs && !record.logsExpired) {
+      await fs.rm(logPath, { force: true });
+      await fs.rm(path.join(executionLogDirectory(sandboxId), record.id + '.fifo'), { force: true });
+      await fs.rm(path.join(executionLogDirectory(sandboxId), record.id + '.cancel'), { force: true });
+      record.logsExpired = true;
+      record.updatedAt = new Date().toISOString();
+      await writeExecutionRecord(record);
+    }
+    if (retention.deleteRecord) {
+      const paths = executionLogPaths(sandboxId, record.id);
+      for (const file of Object.values(paths)) await fs.rm(file, { force: true });
+      await fs.rm(path.join(executionLogDirectory(sandboxId), record.id + '.fifo'), { force: true });
+      await fs.rm(path.join(executionLogDirectory(sandboxId), record.id + '.cancel'), { force: true });
+      await fs.rm(executionRecordDirectory(sandboxId, record.id), { recursive: true, force: true });
+    }
+  }
+}
 async function writeRecord(record) {
   const destination = recordPath(record.id);
   const directory = path.dirname(destination);
@@ -144,7 +242,9 @@ async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RES
 export function assertWorkloadTypeMatch(record, expectedWorkloadType) {
   assert(expectedWorkloadType === record.workloadType, 'Workload type mismatch; refusing cross-lifecycle operation');
 }
-export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, command }) {
+export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, executionMount, command }) {
+  assert(workloadType !== 'task' || (executionMount?.destination === '/run/vps-mcp-executions' && path.isAbsolute(executionMount.path)), 'Task workloads require a dedicated execution log mount');
+  assert(workloadType !== 'project-service' || executionMount === undefined || executionMount === null, 'Project-service workloads must not receive task execution mounts');
   return [
     'create', '--pull=never', '--cgroup-parent', CGROUP_PARENT, '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
@@ -153,6 +253,7 @@ export function buildContainerCreateArgs({ id, workloadType, repositoryId, workt
     '--memory', `${resources.memoryMiB}m`, '--cpus', String(resources.cpuMilli / 1000),
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',
     ...(workspaceMount ? ['--mount', `type=bind,src=${workspaceMount.path},dst=/workspace,${workspaceMount.access === 'read-only' ? 'ro' : 'rw'}`] : []),
+    ...(executionMount ? ['--mount', `type=bind,src=${executionMount.path},dst=/run/vps-mcp-executions,rw`] : []),
     image,
     ...(command === undefined ? [] : safeArgv(command)),
   ];
@@ -211,6 +312,7 @@ async function createWorkload(request) {
     assert(request.workspacePath === undefined && request.workspaceAccess === undefined, 'Project-service mounts are provisioned by the project environment manager');
   }
   const workspaceMount = request.workspacePath === undefined ? null : await resolveWorkspaceMount(request.workspacePath, request.workspaceAccess ?? 'read-only', repositoryId, worktreeId);
+  const executionMount = workloadType === 'task' ? await ensureExecutionLogDirectory(id) : null;
   assert(request.network === undefined || request.network === 'none', 'Only network=none is supported by this runtime adapter');
   assert(request.readOnlyRootfs === undefined || request.readOnlyRootfs === true, 'Container root filesystem must be read-only');
   const fingerprint = commandFingerprint(request.command);
@@ -222,6 +324,7 @@ async function createWorkload(request) {
       existing.image === image &&
       existing.worktreeId === worktreeId &&
       JSON.stringify(existing.workspaceMount ?? null) === JSON.stringify(workspaceMount) &&
+      JSON.stringify(existing.executionMount ?? null) === JSON.stringify(executionMount) &&
       JSON.stringify(existing.resources) === JSON.stringify(resources) &&
       existing.commandFingerprint === fingerprint,
       'Workload ID is already registered with different immutable attributes',
@@ -232,13 +335,13 @@ async function createWorkload(request) {
   const record = {
     id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}),
     image, imageDigest: image.slice(image.lastIndexOf('@') + 1),
-    runtimeId: null, workspaceMount, resources, network: 'none', commandFingerprint: fingerprint,
+    runtimeId: null, workspaceMount, executionMount, resources, network: 'none', commandFingerprint: fingerprint,
     status: 'creating', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
   await writeRecord(record);
   try {
     const args = buildContainerCreateArgs({
-      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, command: request.command,
+      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, executionMount, command: request.command,
     });
     const result = await runPodman(args, 120_000);
     const runtimeId = result.stdout.trim().split(/\s+/)[0];
@@ -271,6 +374,7 @@ async function mutate(request, action) {
     return { workload: running, output: '' };
   }
   if (request.operation === 'container.stop' && current !== 'running') {
+    if (recovered.workloadType === 'task' && current !== 'missing') await markActiveExecutionsInterrupted(recovered.id, 'sandbox_stopped');
     const status = current === 'missing' ? 'unknown' : current === 'created' ? 'created' : 'stopped';
     const stopped = { ...recovered, status, updatedAt: new Date().toISOString() };
     await writeRecord(stopped);
@@ -278,8 +382,10 @@ async function mutate(request, action) {
   }
   assert(current !== 'missing', 'Managed runtime container no longer exists; inspect and reconcile before mutation');
   const intentStatus = request.operation === 'container.start' ? 'starting' : 'stopping';
+  if (request.operation === 'container.stop' && recovered.workloadType === 'task') await cancelActiveSandboxExecutions(recovered.id, 'sandbox_stopped');
   await writeRecord({ ...recovered, status: intentStatus, updatedAt: new Date().toISOString() });
   const result = await action(recovered);
+  if (request.operation === 'container.stop' && recovered.workloadType === 'task') await markActiveExecutionsInterrupted(recovered.id, 'sandbox_stopped');
   const status = request.operation === 'container.start' ? 'running'
     : request.operation === 'container.stop' ? 'stopped'
     : request.operation === 'container.remove' ? 'removed' : record.status;
@@ -443,7 +549,13 @@ export function buildSandboxFilesystemArgs({ runtimeId, operation, path: relativ
 
 async function sandboxFilesystem(request) {
   const { record, runtimeId } = await taskSandboxRecord(request.sandboxId);
-  if (request.operation === 'sandbox.fs.write') assertTaskWorkspaceWritable(record);
+  if (request.operation === 'sandbox.fs.write') {
+    assertTaskWorkspaceWritable(record);
+    const active = await listExecutionRecords(request.sandboxId);
+    for (const item of active) if (['starting', 'running', 'cancelling'].includes(item.status)) await refreshExecutionStatus(request.sandboxId, item.id);
+    const reconciled = await listExecutionRecords(request.sandboxId);
+    assert(!reconciled.some((item) => ['starting', 'running', 'cancelling', 'unknown'].includes(item.status)), 'SANDBOX_EXECUTION_BUSY: cancel or wait for the background command before writing workspace files');
+  }
   if (request.operation === 'sandbox.fs.write') {
     const result = await runPodmanWithInput(buildSandboxFilesystemArgs({ runtimeId, operation: request.operation, path: request.path }), request.content, 30_000, 128 * 1024);
     return { sandboxId: record.id, path: request.path, sizeBytes: Buffer.byteLength(request.content, 'utf8'), written: true, output: result.stdout.trim() };
@@ -480,6 +592,10 @@ export function buildSandboxExecArgs({ runtimeId, cwd, command, env = {} }) {
 
 async function sandboxExecute(request) {
   const { record, runtimeId } = await taskSandboxRecord(request.sandboxId);
+  const activeExecutions = await listExecutionRecords(request.sandboxId);
+  for (const item of activeExecutions) if (['starting', 'running', 'cancelling'].includes(item.status)) await refreshExecutionStatus(request.sandboxId, item.id);
+  const reconciledExecutions = await listExecutionRecords(request.sandboxId);
+  assert(!reconciledExecutions.some((item) => ['starting', 'running', 'cancelling', 'unknown'].includes(item.status)), 'SANDBOX_EXECUTION_BUSY: use execution status/logs/cancel while a background command is active');
   assert(runtimeId, 'Task sandbox runtime container is missing');
   const cwdRelative = request.cwd ?? '';
   const maxOutputBytes = request.maxOutputBytes ?? 262_144;
@@ -501,8 +617,339 @@ async function sandboxExecute(request) {
   }
 }
 
+
+function executionLogPaths(sandboxId, executionId) {
+  const root = executionLogDirectory(sandboxId);
+  const id = safeExecutionId(executionId);
+  return { log: path.join(root, id + '.log'), identity: path.join(root, id + '.identity'), status: path.join(root, id + '.status'), reason: path.join(root, id + '.reason') };
+}
+async function readRegularText(file, maximumBytes = 4096) {
+  let handle;
+  try {
+    handle = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maximumBytes) return null;
+    return await handle.readFile('utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ELOOP') return null;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function executionIdentityFromMount(sandboxId, executionId) {
+  const raw = await readRegularText(executionLogPaths(sandboxId, executionId).identity);
+  if (!raw) return null;
+  const parts = raw.trim().split(' ');
+  if (parts.length !== 3 || parts.some((part) => !/^[0-9]+$/.test(part))) return null;
+  return { containerPid: Number(parts[0]), processGroupId: Number(parts[1]), processStartTime: parts[2] };
+}
+async function executionStatusFile(sandboxId, executionId) {
+  const raw = await readRegularText(executionLogPaths(sandboxId, executionId).status, 64);
+  if (raw === null) return null;
+  const value = raw.trim();
+  if (!/^-?[0-9]+$/.test(value)) return null;
+  return Number(value);
+}
+async function refreshExecutionLogStats(record) {
+  const file = executionLogPaths(record.sandboxId, record.id).log;
+  let handle;
+  try {
+    handle = await fs.open(file, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const stat = await handle.stat();
+    if (!stat.isFile()) { record.logBytes = 0; record.logsUnavailable = true; return record; }
+    if (stat.size > EXECUTION_POLICY.maxLogBytes) {
+      await handle.truncate(EXECUTION_POLICY.maxLogBytes);
+      record.logBytes = EXECUTION_POLICY.maxLogBytes;
+      record.logTruncated = true;
+    } else {
+      record.logBytes = stat.size;
+      record.logTruncated = record.logTruncated === true;
+    }
+    record.logsUnavailable = false;
+  } catch (error) {
+    if (error.code === 'ENOENT') record.logBytes = 0;
+    else if (error.code === 'ELOOP' || error.code === 'EISDIR') {
+      record.logBytes = 0;
+      record.logsUnavailable = true;
+    } else throw error;
+  } finally {
+    await handle?.close();
+  }
+  return record;
+}
+
+async function verifyExecutionIdentity(runtimeId, executionId, identity) {
+  if (!identity || !Number.isSafeInteger(identity.containerPid) || identity.containerPid <= 1 ||
+      identity.processGroupId !== identity.containerPid || !/^[0-9]+$/.test(String(identity.processStartTime))) return false;
+  try {
+    await runPodman(['exec', runtimeId, 'sh', '-c', buildExecutionIdentityCheckScript(), '--', executionId,
+      String(identity.containerPid), String(identity.processGroupId), String(identity.processStartTime)], 10_000, 16 * 1024);
+    return true;
+  } catch { return false; }
+}
+async function refreshExecutionStatus(sandboxId, executionId) {
+  const record = await readExecutionRecord(sandboxId, executionId);
+  const terminalStatuses = ['completed', 'cancelled', 'timed_out', 'interrupted', 'failed'];
+  if (terminalStatuses.includes(record.status)) {
+    await refreshExecutionLogStats(record);
+    return record;
+  }
+
+  const paths = executionLogPaths(sandboxId, executionId);
+  const exitCode = await executionStatusFile(sandboxId, executionId);
+  const reason = (await readRegularText(paths.reason, 128))?.trim() ?? null;
+  const workload = await readRecord(sandboxId);
+  assertWorkloadTypeMatch(workload, 'task');
+  const runtimeId = await resolveRuntimeId(workload);
+  const runtimeState = runtimeId
+    ? await runPodman(['inspect', '--format', '{{.State.Status}}', runtimeId]).then((value) => value.stdout.trim()).catch(() => 'missing')
+    : 'missing';
+
+  let identity = record.runtimeIdentity?.containerPid
+    ? record.runtimeIdentity
+    : record.status === 'starting' && Date.now() - Date.parse(record.createdAt) < 10_000
+      ? await executionIdentityFromMount(sandboxId, executionId)
+      : null;
+  const processAlive = runtimeState === 'running' && identity
+    ? await verifyExecutionIdentity(runtimeId, executionId, identity)
+    : false;
+
+  if (processAlive) {
+    record.status = reason ? 'cancelling' : 'running';
+    record.runtimeIdentity = { ...record.runtimeIdentity, ...identity, runtimeId };
+    record.startedAt ??= record.createdAt;
+  } else if (runtimeState !== 'running') {
+    record.status = 'interrupted';
+    record.cancelReason = runtimeState === 'missing' || workload.status === 'removed' ? 'sandbox_removed_or_missing' : 'sandbox_stopped';
+    record.finishedAt ??= new Date().toISOString();
+  } else if (identity && exitCode !== null) {
+    record.status = reason === 'timeout' ? 'timed_out' : reason ? 'cancelled' : 'completed';
+    record.exitCode = exitCode;
+    record.cancelReason = reason === 'timeout' ? 'timeout' : reason;
+    record.finishedAt ??= new Date().toISOString();
+  } else if (identity && reason) {
+    record.status = reason === 'timeout' ? 'timed_out' : 'cancelled';
+    record.cancelReason = reason;
+    record.finishedAt ??= new Date().toISOString();
+  } else if (record.status === 'starting' && Date.now() - Date.parse(record.createdAt) < 10_000) {
+    record.status = 'starting';
+  } else {
+    record.status = 'unknown';
+    record.cancelReason = 'execution_identity_unavailable';
+  }
+
+  if (terminalStatuses.includes(record.status)) {
+    record.logsExpireAt = new Date(Date.parse(record.finishedAt) + EXECUTION_POLICY.logRetentionMs).toISOString();
+    record.recordExpireAt = new Date(Date.parse(record.finishedAt) + EXECUTION_POLICY.recordRetentionMs).toISOString();
+  }
+  record.updatedAt = new Date().toISOString();
+  await refreshExecutionLogStats(record);
+  await writeExecutionRecord(record);
+  return record;
+}
+
+async function startSandboxExecution(request) {
+  const { record: workload, runtimeId } = await taskSandboxRecord(request.sandboxId);
+  assert(workload.executionMount?.destination === '/run/vps-mcp-executions' && workload.executionMount.path === executionLogDirectory(workload.id), 'SANDBOX_EXECUTION_UNAVAILABLE: sandbox was not created with durable execution storage');
+  const executionMountStat = await fs.lstat(workload.executionMount.path);
+  assert(executionMountStat.isDirectory() && !executionMountStat.isSymbolicLink() && await fs.realpath(workload.executionMount.path) === workload.executionMount.path, 'SANDBOX_EXECUTION_UNAVAILABLE: execution log mount is not canonical');
+  assert(!activeExecutionStarts.has('__global__') && !activeExecutionStarts.has(request.sandboxId), 'SANDBOX_EXECUTION_BUSY: another execution is being started');
+  activeExecutionStarts.add('__global__');
+  activeExecutionStarts.add(request.sandboxId);
+  try {
+    await pruneExecutionRetention(request.sandboxId);
+    const records = await listExecutionRecords(request.sandboxId);
+    for (const item of records) if (['starting', 'running', 'cancelling', 'unknown'].includes(item.status)) await refreshExecutionStatus(request.sandboxId, item.id);
+    const activeForSandbox = (await listExecutionRecords(request.sandboxId)).filter((item) => ['starting', 'running', 'cancelling', 'unknown'].includes(item.status)).length;
+    assert(activeForSandbox < EXECUTION_POLICY.maxActivePerSandbox, 'SANDBOX_EXECUTION_QUOTA: maximum active executions for this sandbox reached');
+    const allSandboxEntries = await fs.readdir(EXECUTION_RECORDS_DIR, { withFileTypes: true }).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
+    for (const entry of allSandboxEntries) if (entry.isDirectory() && UUID.test(entry.name)) await pruneExecutionRetention(entry.name);
+    let activeGlobal = 0;
+    for (const entry of allSandboxEntries) {
+      if (!entry.isDirectory() || !UUID.test(entry.name)) continue;
+      for (const item of await listExecutionRecords(entry.name)) {
+        if (['starting', 'running', 'cancelling', 'unknown'].includes(item.status)) {
+          await refreshExecutionStatus(entry.name, item.id);
+          const refreshed = await readExecutionRecord(entry.name, item.id);
+          if (['starting', 'running', 'cancelling', 'unknown'].includes(refreshed.status)) activeGlobal += 1;
+        }
+      }
+    }
+    assert(activeGlobal < EXECUTION_POLICY.maxActiveGlobal, 'SANDBOX_EXECUTION_QUOTA: global active execution limit reached');
+    const usage = await sumRegularFileBytes(EXECUTION_LOG_ROOT);
+    const sandboxUsage = await sumRegularFileBytes(executionLogDirectory(request.sandboxId));
+    assertExecutionLogQuota({ globalBytes: usage, sandboxBytes: sandboxUsage });
+    await runPodman(['exec', runtimeId, 'sh', '-c', 'for tool in setsid env head mkfifo awk sed grep tr sleep date; do command -v $tool >/dev/null 2>&1 || exit 127; done; ulimit -f 4097 >/dev/null 2>&1 || exit 127; test -d /run/vps-mcp-executions && test -w /run/vps-mcp-executions && test -r /proc/self/stat'], 10_000, 16 * 1024);
+    const command = safeArgv(request.command);
+    const cwd = request.cwd ?? '';
+    validateWorkspaceRelativePath(cwd, true);
+    const timeoutMs = request.timeoutMs ?? EXECUTION_POLICY.defaultTimeoutMs;
+    assert(Number.isInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= EXECUTION_POLICY.maxTimeoutMs, 'timeoutMs is outside the allowed range');
+    const execution = createExecutionRecord({ sandboxId: workload.id, runtimeId, command, cwd, timeoutMs });
+    await writeExecutionRecord(execution);
+    try {
+      await runPodman(buildExecutionStartArgs({ runtimeId, executionId: execution.id, cwd, timeoutMs, maxLogBytes: EXECUTION_POLICY.maxLogBytes, command }), 30_000, 32 * 1024);
+    } catch (error) {
+      execution.status = 'failed';
+      execution.cancelReason = 'runtime_start_failed';
+      execution.finishedAt = new Date().toISOString();
+      execution.updatedAt = execution.finishedAt;
+      await writeExecutionRecord(execution);
+      throw error;
+    }
+    const deadline = Date.now() + 3000;
+    let identity = null;
+    while (Date.now() < deadline) {
+      identity = await executionIdentityFromMount(workload.id, execution.id);
+      if (identity) break;
+      if (await executionStatusFile(workload.id, execution.id) !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (identity) {
+      execution.runtimeIdentity = { runtimeId, ...identity, marker: execution.id };
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+    } else {
+      execution.status = 'unknown';
+      execution.cancelReason = 'runtime_identity_not_recorded';
+    }
+    execution.updatedAt = new Date().toISOString();
+    await refreshExecutionLogStats(execution);
+    await writeExecutionRecord(execution);
+    const refreshed = await refreshExecutionStatus(workload.id, execution.id);
+    return { sandboxId: workload.id, executionId: execution.id, status: refreshed.status, command: execution.command, cwd,
+      exitCode: refreshed.exitCode, timeoutAt: execution.timeoutAt, logLimitBytes: EXECUTION_POLICY.maxLogBytes, createdAt: execution.createdAt };
+  } finally {
+    activeExecutionStarts.delete(request.sandboxId);
+    activeExecutionStarts.delete('__global__');
+  }
+}
+function executionSummary(record) {
+  return {
+    executionId: record.id, sandboxId: record.sandboxId, status: record.status, command: record.command, cwd: record.cwd,
+    exitCode: record.exitCode, timeoutAt: record.timeoutAt, cancelReason: record.cancelReason, logBytes: record.logBytes,
+    logTruncated: record.logTruncated, logsExpired: record.logsExpired === true, logsUnavailable: record.logsUnavailable === true, logsExpireAt: record.logsExpireAt, createdAt: record.createdAt,
+    startedAt: record.startedAt, finishedAt: record.finishedAt,
+  };
+}
+async function listSandboxExecutions(sandboxId) {
+  const workload = await readRecord(sandboxId);
+  assertWorkloadTypeMatch(workload, 'task');
+  await pruneExecutionRetention(sandboxId);
+  const records = await listExecutionRecords(sandboxId);
+  const result = [];
+  for (const item of records.slice(-100)) result.push(await refreshExecutionStatus(sandboxId, item.id));
+  return { sandboxId, executions: result.map(executionSummary) };
+}
+async function getSandboxExecutionStatus(sandboxId, executionId) {
+  const workload = await readRecord(sandboxId);
+  assertWorkloadTypeMatch(workload, 'task');
+  return executionSummary(await refreshExecutionStatus(sandboxId, executionId));
+}
+async function getSandboxExecutionLogs(sandboxId, executionId, offset, maxBytes) {
+  const workload = await readRecord(sandboxId);
+  assertWorkloadTypeMatch(workload, 'task');
+  await pruneExecutionRetention(sandboxId);
+  const record = await refreshExecutionStatus(sandboxId, executionId);
+  assert(!record.logsExpired, 'SANDBOX_EXECUTION_LOG_EXPIRED: execution logs passed their retention period');
+  assert(!record.logsUnavailable, 'SANDBOX_EXECUTION_LOG_UNAVAILABLE: log path is not a regular file');
+  const file = executionLogPaths(sandboxId, executionId).log;
+  let handle;
+  try {
+    handle = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const stat = await handle.stat();
+    assert(stat.isFile() && stat.size <= EXECUTION_POLICY.maxLogBytes, 'Execution log is not a bounded regular file');
+    const maximum = maxBytes ?? 65_536;
+    const window = executionLogReadWindow(stat.size, offset, maximum);
+    const { offset: start, length } = window;
+    const buffer = Buffer.alloc(length);
+    const result = length ? await handle.read(buffer, 0, length, start) : { bytesRead: 0 };
+    const nextOffset = start + result.bytesRead;
+    return { ...executionSummary(record), logs: redactSensitiveText(buffer.subarray(0, result.bytesRead).toString('utf8')), offset: start,
+      nextOffset, sizeBytes: stat.size, hasMore: nextOffset < stat.size };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { ...executionSummary(record), logs: '', offset: offset ?? 0, nextOffset: offset ?? 0, sizeBytes: 0, hasMore: false };
+    if (error.code === 'ELOOP') throw new Error('SANDBOX_EXECUTION_LOG_UNAVAILABLE: log path is not a regular file');
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function cancelSandboxExecution(sandboxId, executionId, reason = 'cancelled') {
+  const workload = await readRecord(sandboxId);
+  assertWorkloadTypeMatch(workload, 'task');
+  let record = await refreshExecutionStatus(sandboxId, executionId);
+  if (!['starting', 'running', 'cancelling'].includes(record.status)) return { ...executionSummary(record), cancelled: false };
+  const runtimeId = await resolveRuntimeId(workload);
+  if (!runtimeId || workload.status === 'removed') {
+    record.status = 'interrupted';
+    record.cancelReason = 'sandbox_removed_or_missing';
+    record.finishedAt = new Date().toISOString();
+    record.updatedAt = record.finishedAt;
+    await writeExecutionRecord(record);
+    return { ...executionSummary(record), cancelled: false };
+  }
+  const identity = record.runtimeIdentity;
+  if (!identity?.containerPid || !identity?.processGroupId || !identity?.processStartTime) {
+    record.status = 'unknown';
+    record.cancelReason = 'execution_identity_unavailable';
+    record.updatedAt = new Date().toISOString();
+    await writeExecutionRecord(record);
+    return { ...executionSummary(record), cancelled: false };
+  }
+  try {
+    await runPodman(['exec', runtimeId, 'sh', '-c', buildExecutionCancelScript(), '--', executionId, reason,
+      String(identity.containerPid), String(identity.processGroupId), String(identity.processStartTime)], 10_000, 16 * 1024);
+  } catch (error) {
+    if (!Number.isInteger(error?.code)) throw error;
+  }
+  const deadline = Date.now() + 3000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    record = await refreshExecutionStatus(sandboxId, executionId);
+  } while (Date.now() < deadline && ['starting', 'running', 'cancelling'].includes(record.status));
+  if (['starting', 'running', 'cancelling'].includes(record.status)) {
+    record.status = 'unknown';
+    record.cancelReason = 'cancellation_not_confirmed';
+    record.updatedAt = new Date().toISOString();
+    await writeExecutionRecord(record);
+  }
+  return { ...executionSummary(record), cancelled: ['cancelled', 'timed_out', 'interrupted'].includes(record.status) };
+}
+async function cancelActiveSandboxExecutions(sandboxId, reason) {
+  const records = await listExecutionRecords(sandboxId);
+  for (const record of records) {
+    if (['starting', 'running', 'cancelling'].includes(record.status)) {
+      await cancelSandboxExecution(sandboxId, record.id, reason);
+    }
+  }
+}
+async function markActiveExecutionsInterrupted(sandboxId, reason) {
+  for (const record of await listExecutionRecords(sandboxId)) {
+    if (!['starting', 'running', 'cancelling', 'unknown'].includes(record.status)) continue;
+    record.status = 'interrupted';
+    record.cancelReason = reason;
+    record.finishedAt = new Date().toISOString();
+    record.logsExpireAt = new Date(Date.parse(record.finishedAt) + EXECUTION_POLICY.logRetentionMs).toISOString();
+    record.recordExpireAt = new Date(Date.parse(record.finishedAt) + EXECUTION_POLICY.recordRetentionMs).toISOString();
+    record.updatedAt = record.finishedAt;
+    await fs.rm(path.join(executionLogDirectory(sandboxId), record.id + '.fifo'), { force: true });
+    await fs.rm(path.join(executionLogDirectory(sandboxId), record.id + '.cancel'), { force: true });
+    await refreshExecutionLogStats(record);
+    await writeExecutionRecord(record);
+  }
+}
+
 async function execute(request) {
   await ensureDataDir();
+  if (request.operation === 'sandbox.execution.start') return startSandboxExecution(request);
+  if (request.operation === 'sandbox.execution.list') return listSandboxExecutions(request.sandboxId);
+  if (request.operation === 'sandbox.execution.status') return getSandboxExecutionStatus(request.sandboxId, request.executionId);
+  if (request.operation === 'sandbox.execution.logs') return getSandboxExecutionLogs(request.sandboxId, request.executionId, request.offset, request.maxBytes);
+  if (request.operation === 'sandbox.execution.cancel') return cancelSandboxExecution(request.sandboxId, request.executionId);
   if (request.operation === 'sandbox.exec') return sandboxExecute(request);
   if (request.operation.startsWith('sandbox.fs.')) return sandboxFilesystem(request);
   if (request.operation === 'image.inspect' || request.operation === 'image.pull') return imageOperation(request);
@@ -567,18 +1014,22 @@ async function execute(request) {
     assertWorkloadTypeMatch(record, request.expectedWorkloadType);
     const runtimeId = await resolveRuntimeId(record);
     if (!runtimeId) {
+      if (record.workloadType === 'task') await markActiveExecutionsInterrupted(record.id, 'sandbox_removed');
       const removed = { ...record, status: 'removed', updatedAt: new Date().toISOString() };
       await writeRecord(removed);
       return { workload: removed, removed: true };
     }
+    if (record.workloadType === 'task') await cancelActiveSandboxExecutions(record.id, 'sandbox_removed');
     await writeRecord({ ...record, runtimeId, status: 'removing', updatedAt: new Date().toISOString() });
     const exists = await runPodman(['inspect', '--format', '{{.Id}}', runtimeId]).then(() => true).catch(() => false);
     if (!exists) {
+      if (record.workloadType === 'task') await markActiveExecutionsInterrupted(record.id, 'sandbox_removed');
       const missing = { ...record, status: 'removed', runtimeId: null, updatedAt: new Date().toISOString() };
       await writeRecord(missing);
       return { workload: missing, removed: true };
     }
     const result = await runPodman(['rm', '--force', runtimeId], 30_000);
+    if (record.workloadType === 'task') await markActiveExecutionsInterrupted(record.id, 'sandbox_removed');
     const updated = { ...record, status: 'removed', updatedAt: new Date().toISOString(), runtimeId: null };
     await writeRecord(updated);
     return { workload: updated, output: result.stdout.trim() };
@@ -626,23 +1077,29 @@ function handleConnection(socket) {
     if (newline !== input.length - 1) { respond(socket, { error: 'Only one request is allowed per connection' }); return; }
     try {
       const request = parseRuntimeRequest(input.slice(0, newline));
-      if (request.operation.startsWith('sandbox.')) {
-        if (mutatingWorkloads.has(request.sandboxId)) {
-          respond(socket, { error: 'SANDBOX_BUSY: lifecycle mutation is in progress' });
+      const sandboxId = request.sandboxId ?? (request.expectedWorkloadType === 'task' ? request.workloadId : null);
+      const sandboxOperation = request.operation.startsWith('sandbox.') || sandboxId !== null;
+      if (sandboxOperation) {
+        const sandboxMutation = ['sandbox.exec', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.cancel'].includes(request.operation) ||
+          (request.expectedWorkloadType === 'task' && ['container.start', 'container.stop', 'container.remove'].includes(request.operation));
+        if (mutatingWorkloads.has(sandboxId) || (sandboxMutation && isSandboxBusy(activeSandboxWorkloads.get(sandboxId) ?? 0))) {
+          respond(socket, { error: 'SANDBOX_BUSY: another task operation or lifecycle mutation is in progress' });
           return;
         }
         if (!hasSandboxCapacity(activeSandboxOperations)) {
           respond(socket, { error: 'SANDBOX_CAPACITY_EXCEEDED: maximum concurrent sandbox operations reached' });
           return;
         }
+        if (sandboxMutation) mutatingWorkloads.add(sandboxId);
         activeSandboxOperations += 1;
-        activeSandboxWorkloads.set(request.sandboxId, (activeSandboxWorkloads.get(request.sandboxId) ?? 0) + 1);
+        activeSandboxWorkloads.set(sandboxId, (activeSandboxWorkloads.get(sandboxId) ?? 0) + 1);
         try { respond(socket, { result: await execute(request) }); }
         finally {
           activeSandboxOperations -= 1;
-          const remaining = (activeSandboxWorkloads.get(request.sandboxId) ?? 1) - 1;
-          if (remaining > 0) activeSandboxWorkloads.set(request.sandboxId, remaining);
-          else activeSandboxWorkloads.delete(request.sandboxId);
+          const remaining = (activeSandboxWorkloads.get(sandboxId) ?? 1) - 1;
+          if (remaining > 0) activeSandboxWorkloads.set(sandboxId, remaining);
+          else activeSandboxWorkloads.delete(sandboxId);
+          if (sandboxMutation) mutatingWorkloads.delete(sandboxId);
         }
       } else {
         const lifecycleMutation = ['container.start', 'container.stop', 'container.remove'].includes(request.operation);
