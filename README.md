@@ -201,8 +201,8 @@ Generate a token with `openssl rand -hex 32`.
 - External OAuth provider selection and tenant-specific configuration remain deployment decisions.
 - Only signed JWT access tokens are supported; opaque-token introspection is not implemented.
 - Active background process supervision is not yet managed by a dedicated process supervisor.
-- Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. General sandbox lifecycle operations remain a later design decision.
-- Persistent repository registration, bare-clone caching and durable isolated task workspaces are implemented. Container/sandbox lifecycle, persistent application environment provisioning, backup/restore, management UI and Railway Sandbox parity remain separate milestones.
+- Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. The separate rootless workload runtime agent is implemented in code but remains gated on reviewed host installation and live lifecycle acceptance.
+- Persistent repository registration, bare-clone caching, durable isolated task workspaces and the typed rootless runtime adapter are implemented. Persistent application environment provisioning, backup/restore, management UI and Railway Sandbox parity remain separate milestones.
 
 ## Repository management
 
