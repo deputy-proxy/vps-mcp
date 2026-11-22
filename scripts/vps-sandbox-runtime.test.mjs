@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, parseRuntimeRequest } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, safeImage } from './vps-sandbox-runtime.mjs';
 
 describe('rootless workload runtime request validation', () => {
   it.each([
@@ -18,6 +18,23 @@ describe('rootless workload runtime request validation', () => {
     },
   ])('accepts the approved request shape %#', (request) => {
     expect(parseRuntimeRequest(JSON.stringify(request))).toEqual(request);
+  });
+
+  it('derives task workspace mounts from the registered repository/worktree identity', () => {
+    expect(expectedTaskWorkspacePath('/var/lib/vps-mcp/task-workspaces/worktrees', 'deputy-proxy-vps-mcp', '134e5321-b4d7-4d4f-be92-ce56a984adaa'))
+      .toBe('/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/134e5321-b4d7-4d4f-be92-ce56a984adaa');
+    expect(() => expectedTaskWorkspacePath('/var/lib/vps-mcp/task-workspaces', 'repo', '134e5321-b4d7-4d4f-be92-ce56a984adaa')).toThrow('not approved');
+    expect(() => expectedTaskWorkspacePath('/srv/vps-mcp-workspaces', '../etc', '134e5321-b4d7-4d4f-be92-ce56a984adaa')).toThrow('Invalid repository ID');
+  });
+
+  it('requires administrator approval for exact immutable image digests', () => {
+    const previous = process.env.VPS_SANDBOX_ALLOWED_IMAGES;
+    const approvedImage = 'docker.io/library/node@sha256:' + 'a'.repeat(64);
+    process.env.VPS_SANDBOX_ALLOWED_IMAGES = approvedImage;
+    expect(safeImage(approvedImage)).toBe(approvedImage);
+    expect(() => safeImage('docker.io/library/alpine@sha256:' + 'b'.repeat(64))).toThrow('allowlist');
+    if (previous === undefined) delete process.env.VPS_SANDBOX_ALLOWED_IMAGES;
+    else process.env.VPS_SANDBOX_ALLOWED_IMAGES = previous;
   });
 
   it('rejects unknown operations and extra request properties', () => {
