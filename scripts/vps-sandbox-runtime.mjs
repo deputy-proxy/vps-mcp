@@ -519,6 +519,8 @@ async function reserveProjectResources(request) {
   const resources = safeResources({ ...request.resources, diskMiB: request.resources.diskMiB ?? 10240 });
   const diskMiB = resources.diskMiB;
   const records = await readWorkloadRecords();
+  await assertManagedContainerAccounting(records);
+  await assertProjectContainersAccounted(request.repositoryId, records);
   const projectWorkloads = records.filter((item) => item.workloadType === 'project-service' && item.repositoryId === request.repositoryId && item.status !== 'removed');
   assert(!projectWorkloads.some((item) => ['creating', 'created', 'starting', 'running', 'stopping', 'removing', 'error', 'unknown'].includes(item.status)), 'Project resource reservation is already consumed by an active project-service workload');
   for (const workload of projectWorkloads) {
@@ -581,6 +583,39 @@ async function listManagedContainers() {
       createdAt: typeof (item.CreatedAt ?? item.Created) === 'number' ? new Date(Number(item.CreatedAt ?? item.Created) * 1000).toISOString() : String(item.CreatedAt ?? item.Created ?? ''),
     };
   }).filter((item) => /^[a-f0-9]{12,64}$/.test(item.containerId));
+}
+
+async function assertManagedContainerAccounting(records) {
+  const containers = await listManagedContainers();
+  const recordById = new Map(records.map((record) => [record.id, record]));
+  const counts = new Map();
+  const terminal = new Set(['missing', 'created', 'configured', 'exited', 'stopped']);
+  for (const container of containers) {
+    const id = container.workloadId;
+    if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    if (id && counts.get(id) > 1) throw new Error('SANDBOX_CAPACITY_UNKNOWN: multiple managed containers claim the same workload ID');
+    const record = id ? recordById.get(id) : null;
+    if (!record) {
+      if (!terminal.has(container.state)) throw new Error('SANDBOX_CAPACITY_UNKNOWN: an untracked managed container is running or has an unknown state');
+      continue;
+    }
+    assert(record.workloadType === container.workloadType && record.repositoryId === container.repositoryId && (record.worktreeId ?? null) === (container.worktreeId ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: managed container labels do not match the workload registry');
+    const runtimeId = await resolveRuntimeId(record);
+    assert(runtimeId, 'SANDBOX_CAPACITY_UNKNOWN: a managed container could not be reconciled to its workload record');
+    if (['removed', 'stopped'].includes(record.status) && !terminal.has(container.state)) throw new Error('SANDBOX_CAPACITY_UNKNOWN: container runtime state conflicts with its stopped or removed workload record');
+  }
+}
+
+async function assertProjectContainersAccounted(repositoryId, records) {
+  const containers = await listManagedContainers();
+  for (const container of containers.filter((item) => item.workloadType === 'project-service' && item.repositoryId === repositoryId)) {
+    const record = records.find((item) => item.id === container.workloadId);
+    assert(record, 'SANDBOX_CAPACITY_UNKNOWN: an orphan project-service container exists for this repository');
+    assert(record.workloadType === 'project-service' && record.repositoryId === container.repositoryId && (record.worktreeId ?? null) === (container.worktreeId ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: project-service container labels do not match the registry');
+    assert(record.status !== 'removed', 'SANDBOX_CAPACITY_UNKNOWN: a project-service container remains after its workload record was removed');
+    const runtimeId = await resolveRuntimeId(record);
+    assert(runtimeId, 'SANDBOX_CAPACITY_UNKNOWN: a project-service container could not be reconciled to its workload record');
+  }
 }
 
 async function staleTemporaryFilePlan() {
@@ -1026,6 +1061,8 @@ async function createWorkload(request) {
 
 
   const currentRecords = (await readWorkloadRecords()).filter((item) => item.id !== id);
+  await assertManagedContainerAccounting(currentRecords);
+  if (workloadType === 'project-service') await assertProjectContainersAccounted(repositoryId, currentRecords);
   const reservations = await readReservations();
   const disk = await diskStatus();
   const capacity = evaluateResourceRequest({ records: currentRecords, reservations, requested: { workloadType, repositoryId, worktreeId, resources }, budget: resourceBudget(), freeDiskBytes: disk.freeBytes });
