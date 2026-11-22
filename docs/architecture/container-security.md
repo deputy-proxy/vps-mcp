@@ -29,18 +29,18 @@ The agent constructs every Podman argument itself. Caller-supplied flags, raw co
 
 ## Workspace mounts
 
-The agent resolves the requested path and every configured root with realpath, requires a directory, and verifies the resolved target remains beneath an explicitly approved root. The default configuration contains no allowed roots, so mount requests fail closed.
+The agent resolves the requested path and every configured root with realpath, requires a directory, and verifies the resolved target remains beneath an explicitly approved root. The default configuration contains no allowed roots or image digests, so mount, inspect, pull and create requests fail closed.
 
 Only these exact root directories may be configured:
 
 - /srv/vps-mcp-workspaces
-- /var/lib/vps-mcp/task-workspaces
+- /var/lib/vps-mcp/task-workspaces/worktrees
 
 The administrator must provision the chosen directory and prove ownership/access boundaries before adding it to the runtime environment file. A path under a permitted root is not automatically safe: workspace creation and ownership must still be controlled by the repository/worktree manager.
 
 ## Image policy
 
-Images must be pinned by SHA-256 digest. The agent has no registry credentials in its request protocol and accepts no environment variables or credential mounts. Pulls are explicit; container create never performs an implicit pull.
+Images must be pinned by SHA-256 digest and exactly match the administrator-managed VPS_SANDBOX_ALLOWED_IMAGES list. The default list is empty. The agent has no registry credentials in its request protocol and accepts no environment variables or credential mounts. Pulls are explicit; container create never performs an implicit pull. Add or change an image digest only after security review and smoke testing; language/toolchain profile mappings are owned by #42.
 
 ## Workload identity and lifecycle
 
