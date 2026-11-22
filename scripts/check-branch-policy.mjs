@@ -23,6 +23,11 @@ export function validatePullRequest(event) {
   const body = event?.pull_request?.body ?? "";
   if (typeof head !== "string" || typeof base !== "string") return { valid: false, reason: "Pull request event is missing head/base branch metadata." };
   if (head === "main" || (head === "development" && base !== "main")) return { valid: false, reason: "Protected long-lived branches cannot be pull-request heads for task changes, except development for a governed release to main." };
+  if (base === "development" && head.startsWith("reconcile/")) {
+    return sectionHasContent(body, /^##\\s+main reconciliation\\s*$/i)
+      ? { valid: true, kind: "reconciliation" }
+      : { valid: false, reason: "A main-to-development reconciliation PR must include a non-empty 'Main reconciliation' section." };
+  }
   if (base === "development") return { valid: true, kind: "feature" };
   if (base !== "main") return { valid: false, reason: "Pull requests must target development, except governed releases and documented hotfixes targeting main." };
   if (head === "development") {
