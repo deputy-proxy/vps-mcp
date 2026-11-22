@@ -66,6 +66,8 @@ describe('rootless workload lifecycle isolation', () => {
       resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
       workspaceMount: null,
     });
+    expect(args).toContain('--cgroup-parent');
+    expect(args).toContain('/system.slice/vps-sandbox-runtime.service');
     expect(args).toContain('--network=none');
     expect(args).toContain('--read-only');
     expect(args).toContain('--cap-drop=ALL');
