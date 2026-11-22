@@ -188,43 +188,58 @@ export function createMcpServer(): McpServer {
       workspaceAccess: z.enum(["read-only", "read-write"]).default("read-write"),
       command: z.array(z.string().min(1).max(4096)).min(1).max(64).optional(),
     },
-  }, async ({ repositoryId, worktreeId, image, resources, workspaceAccess, command }) => guarded(() => safelySandbox(() => sandboxRuntime.createTaskSandbox({
-    repositoryId, worktreeId, image, workspaceAccess,
-    ...(resources ? { resources: {
-      cpuMilli: resources.cpuMilli ?? 500,
-      memoryMiB: resources.memoryMiB ?? 512,
-      pids: resources.pids ?? 64,
-    } } : {}),
-    ...(command ? { command } : {}),
-  }))));
+  }, async ({ repositoryId, worktreeId, image, resources, workspaceAccess, command }) => guarded(() => safelySandbox(async () => {
+    const workload = await sandboxRuntime.createTaskSandbox({
+      repositoryId, worktreeId, image, workspaceAccess,
+      ...(resources ? { resources: {
+        cpuMilli: resources.cpuMilli ?? 500,
+        memoryMiB: resources.memoryMiB ?? 512,
+        pids: resources.pids ?? 64,
+      } } : {}),
+      ...(command ? { command } : {}),
+    });
+    return { sandboxId: workload.id, workload };
+  })));
 
   server.registerTool("sandbox.start", {
     title: "Start task sandbox",
     description: "Start a task workload by its sandbox ID. Project-service workloads are rejected.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: { sandboxId: z.string().uuid() },
-  }, async ({ sandboxId }) => guarded(() => safelySandbox(() => sandboxRuntime.startTaskSandbox(sandboxId))));
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    result: await sandboxRuntime.startTaskSandbox(sandboxId),
+  }))));
 
   server.registerTool("sandbox.inspect", {
     title: "Inspect task sandbox",
     description: "Inspect a task sandbox and reconcile its durable record with the rootless container runtime. Project-service workloads are not exposed.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { sandboxId: z.string().uuid() },
-  }, async ({ sandboxId }) => guarded(() => safelySandbox(() => sandboxRuntime.inspectTaskSandbox(sandboxId))));
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    result: await sandboxRuntime.inspectTaskSandbox(sandboxId),
+  }))));
 
   server.registerTool("sandbox.list", {
     title: "List task sandboxes",
     description: "List task workloads only. Persistent project-service workloads are excluded.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {},
-  }, async () => guarded(() => safelySandbox(() => sandboxRuntime.listTaskSandboxes())));
+  }, async () => guarded(() => safelySandbox(async () => {
+    const { workloads } = await sandboxRuntime.listTaskSandboxes();
+    return { workloads: workloads.map((workload) => ({ sandboxId: workload.id, ...workload })) };
+  })));
 
   server.registerTool("sandbox.stop", {
     title: "Stop task sandbox",
     description: "Stop a task workload by its sandbox ID. Project-service workloads are rejected.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: { sandboxId: z.string().uuid() },
-  }, async ({ sandboxId }) => guarded(() => safelySandbox(() => sandboxRuntime.stopTaskSandbox(sandboxId))));
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    result: await sandboxRuntime.stopTaskSandbox(sandboxId),
+  }))));
 
   server.registerTool("sandbox.remove", {
     title: "Remove task sandbox",
@@ -233,7 +248,7 @@ export function createMcpServer(): McpServer {
     inputSchema: { sandboxId: z.string().uuid(), confirm: z.boolean() },
   }, async ({ sandboxId, confirm }) => guarded(() => safelySandbox(async () => {
     if (!confirm) throw new Error("Sandbox removal requires confirm=true");
-    return sandboxRuntime.removeTaskSandbox(sandboxId);
+    return { sandboxId, result: await sandboxRuntime.removeTaskSandbox(sandboxId) };
   })));
 
   server.registerTool("sandbox.logs", {
@@ -241,7 +256,10 @@ export function createMcpServer(): McpServer {
     description: "Read bounded runtime logs for a task sandbox. Project-service workload logs are not exposed.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { sandboxId: z.string().uuid() },
-  }, async ({ sandboxId }) => guarded(() => safelySandbox(() => sandboxRuntime.readTaskSandboxLogs(sandboxId))));
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    ...(await sandboxRuntime.readTaskSandboxLogs(sandboxId)),
+  }))));
 
   server.registerTool("sandbox.exec", {
     title: "Execute in task sandbox",
