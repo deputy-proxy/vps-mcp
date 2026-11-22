@@ -88,6 +88,9 @@ describe("production deployment runner", () => {
     const npmCalls = run.mock.calls.filter(([command, args]) => command.endsWith("runuser") && args.includes("/usr/bin/npm"));
     expect(npmCalls.some(([, args]) => args[0] === "-u" && args[1] === "vps-mcp" && args[args.indexOf("/usr/bin/npm") + 1] === "ci")).toBe(true);
     expect(npmCalls.some(([, args]) => args[args.indexOf("/usr/bin/npm") + 1] === "run")).toBe(true);
+    const gitCalls = run.mock.calls.filter(([command]) => command.endsWith("git"));
+    expect(gitCalls.length).toBeGreaterThan(0);
+    expect(gitCalls.every(([, args]) => args.includes(`safe.directory=${path.resolve(repository)}`))).toBe(true);
     expect(run.mock.calls.filter(([command]) => command.endsWith("chown")).length).toBe(2);
     expect(run.mock.calls.some(([command, args]) => command.endsWith("systemctl") && args[0] === "is-active")).toBe(true);
   });
@@ -178,7 +181,11 @@ describe("production deployment runner", () => {
     expect(git(production, ["rev-parse", "HEAD"])).toBe(newSha);
     expect(git(production, ["show", "HEAD:version.txt"])).toBe("two");
     expect(gitInvocations.length).toBeGreaterThan(0);
-    expect(gitInvocations.every((args) => args[0] === "-c" && args[1] === "credential.helper=")).toBe(true);
+    expect(gitInvocations.every((args) =>
+      args[0] === "-c" &&
+      args[1] === "credential.helper=" &&
+      args.includes(`safe.directory=${production}`),
+    )).toBe(true);
   });
 
   it("refuses symlinked build directories before fetching or changing the checkout", async () => {
