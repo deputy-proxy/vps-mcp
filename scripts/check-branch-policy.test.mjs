@@ -86,6 +86,30 @@ describe("branch governance workflow validation", () => {
     expect(validatePullRequest({ pull_request: { head: { ref: "feat/41" }, base: { ref: "main" } } }).valid).toBe(false);
   });
 
+  it("requires an explicit reconciliation plan for main history returning to development", () => {
+    expect(validatePullRequest({
+      pull_request: {
+        head: { ref: "reconcile/main-into-development" },
+        base: { ref: "development" },
+        body: "## Main reconciliation\n\nBring the production merge history back into development.",
+      },
+    })).toMatchObject({ valid: true, kind: "reconciliation" });
+    expect(validatePullRequest({
+      pull_request: {
+        head: { ref: "reconcile/main-into-development" },
+        base: { ref: "development" },
+        body: "No reconciliation notes.",
+      },
+    }).valid).toBe(false);
+    expect(validatePullRequest({
+      pull_request: {
+        head: { ref: "reconcile/main-into-development" },
+        base: { ref: "main" },
+        body: "## Main reconciliation\n\nWrong direction.",
+      },
+    }).valid).toBe(false);
+  });
+
   it("requires release notes for development-to-main promotion", () => {
     expect(validatePullRequest({ pull_request: { head: { ref: "development" }, base: { ref: "main" }, body: "## Release summary\n\nPromotes tested changes." } })).toMatchObject({ valid: true, kind: "release" });
     expect(validatePullRequest({ pull_request: { head: { ref: "development" }, base: { ref: "main" }, body: "## Release summary\n\n## Tests\nPassed." } }).valid).toBe(false);
