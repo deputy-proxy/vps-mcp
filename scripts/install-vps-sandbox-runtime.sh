@@ -30,6 +30,7 @@ if [[ ! -e "${RUNTIME_ENV}" ]]; then
 XDG_RUNTIME_DIR=/run/user/${UID_VALUE}
 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${UID_VALUE}/bus
 VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS=
+VPS_SANDBOX_ALLOWED_IMAGES=
 ENV
   chown root:vps-sandbox "${RUNTIME_ENV}"
   chmod 0640 "${RUNTIME_ENV}"
