@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 
 export type WorkloadType = 'task' | 'project-service';
 export type RuntimeResources = { cpuMilli?: number; memoryMiB?: number; pids?: number };
@@ -196,7 +197,18 @@ export interface SandboxRuntimeAdapter {
   listTaskSandboxFiles(input: { sandboxId: string; path?: string }): Promise<{ sandboxId: string; path: string; entries: Array<{ name: string; type: 'file' | 'directory'; sizeBytes: number }> }>;
   readTaskSandboxFile(input: { sandboxId: string; path: string }): Promise<{ sandboxId: string; path: string; content: string; sizeBytes: number }>;
   writeTaskSandboxFile(input: { sandboxId: string; path: string; content: string }): Promise<{ sandboxId: string; path: string; sizeBytes: number; written: boolean }>;
+  createTaskSandbox(input: { repositoryId: string; worktreeId: string; image: string; resources?: RuntimeResources; workspaceAccess?: 'read-only' | 'read-write'; command?: string[] }): Promise<RuntimeWorkloadRecord>;
+  startTaskSandbox(workloadId: string): Promise<unknown>;
+  inspectTaskSandbox(workloadId: string): Promise<unknown>;
+  listTaskSandboxes(): Promise<{ workloads: RuntimeWorkloadRecord[] }>;
+  stopTaskSandbox(workloadId: string): Promise<unknown>;
+  removeTaskSandbox(workloadId: string): Promise<unknown>;
+  readTaskSandboxLogs(workloadId: string): Promise<{ workloadId: string; logs: string }>;
 }
+function assertTaskWorkload(workload: RuntimeWorkloadRecord): void {
+  if (!workload || workload.workloadType !== 'task') throw new Error('SANDBOX_TYPE_MISMATCH: operation is available only for task workloads');
+}
+
 export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRuntimeAdapter {
   return {
     inspectImage: (image) => requestSandboxRuntime({ operation: 'image.inspect', image }, socketPath),
@@ -227,5 +239,54 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
     listTaskSandboxFiles: (input) => requestSandboxRuntime({ operation: 'sandbox.fs.list', sandboxId: input.sandboxId, path: input.path ?? '' }, socketPath),
     readTaskSandboxFile: (input) => requestSandboxRuntime({ operation: 'sandbox.fs.read', ...input }, socketPath),
     writeTaskSandboxFile: (input) => requestSandboxRuntime({ operation: 'sandbox.fs.write', ...input }, socketPath),
+    createTaskSandbox: async (input) => {
+      await requestSandboxRuntime({ operation: 'image.inspect', image: input.image }, socketPath);
+      const { prepareTaskWorkspaceForRuntime } = await import('./task-workspaces.js');
+      const workspace = await prepareTaskWorkspaceForRuntime(input.worktreeId);
+      if (workspace.repositoryId !== input.repositoryId) throw new Error('Worktree does not belong to the requested repository');
+      return requestSandboxRuntime({
+        operation: 'container.create',
+        workloadId: randomUUID(),
+        workloadType: 'task',
+        repositoryId: input.repositoryId,
+        worktreeId: input.worktreeId,
+        image: input.image,
+        resources: input.resources ?? { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+        network: 'none',
+        readOnlyRootfs: true,
+        workspacePath: workspace.workspacePath,
+        workspaceAccess: input.workspaceAccess ?? 'read-write',
+        command: input.command ?? ['sleep', '86400'],
+      }, socketPath);
+    },
+    startTaskSandbox: async (workloadId) => {
+      const inspected = await requestSandboxRuntime<{ workload: RuntimeWorkloadRecord }>({ operation: 'container.inspect', workloadId }, socketPath);
+      assertTaskWorkload(inspected.workload);
+      return requestSandboxRuntime({ operation: 'container.start', workloadId, expectedWorkloadType: 'task' }, socketPath);
+    },
+    inspectTaskSandbox: async (workloadId) => {
+      const inspected = await requestSandboxRuntime<{ workload: RuntimeWorkloadRecord }>({ operation: 'container.inspect', workloadId }, socketPath);
+      assertTaskWorkload(inspected.workload);
+      return inspected;
+    },
+    listTaskSandboxes: async () => {
+      const result = await requestSandboxRuntime<{ workloads: RuntimeWorkloadRecord[] }>({ operation: 'container.list' }, socketPath);
+      return { workloads: result.workloads.filter((workload) => workload.workloadType === 'task' && workload.status !== 'removed') };
+    },
+    stopTaskSandbox: async (workloadId) => {
+      const inspected = await requestSandboxRuntime<{ workload: RuntimeWorkloadRecord }>({ operation: 'container.inspect', workloadId }, socketPath);
+      assertTaskWorkload(inspected.workload);
+      return requestSandboxRuntime({ operation: 'container.stop', workloadId, expectedWorkloadType: 'task' }, socketPath);
+    },
+    removeTaskSandbox: async (workloadId) => {
+      const inspected = await requestSandboxRuntime<{ workload: RuntimeWorkloadRecord }>({ operation: 'container.inspect', workloadId }, socketPath);
+      assertTaskWorkload(inspected.workload);
+      return requestSandboxRuntime({ operation: 'container.remove', workloadId, expectedWorkloadType: 'task' }, socketPath);
+    },
+    readTaskSandboxLogs: async (workloadId) => {
+      const inspected = await requestSandboxRuntime<{ workload: RuntimeWorkloadRecord }>({ operation: 'container.inspect', workloadId }, socketPath);
+      assertTaskWorkload(inspected.workload);
+      return requestSandboxRuntime({ operation: 'container.logs', workloadId }, socketPath);
+    },
   };
 }

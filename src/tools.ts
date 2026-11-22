@@ -46,6 +46,13 @@ async function guarded<T extends ToolResult>(operation: () => Promise<T>): Promi
 
 export function createMcpServer(): McpServer {
   const sandboxRuntime = createSandboxRuntimeAdapter();
+  const ensureTaskWorkspaceHasNoSandbox = async (worktreeId: string): Promise<void> => {
+    const { workloads } = await sandboxRuntime.listWorkloads();
+    const attached = workloads.find((workload) =>
+      workload.workloadType === "task" && workload.worktreeId === worktreeId && workload.status !== "removed"
+    );
+    if (attached) throw new Error("Task workspace is attached to sandbox '" + attached.id + "' (" + attached.status + "); stop and remove the sandbox before removing its worktree");
+  };
   const server = new McpServer(
     { name: "vps-mcp", version: VERSION },
     { instructions: "Authenticated VPS administration and development execution. Filesystem tool paths and command working directories are restricted to configured allowed roots. Shell commands otherwise have the operating-system permissions of the unprivileged service account." },
@@ -150,6 +157,109 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { path: z.string().min(1), content: z.string().max(2 * 1024 * 1024) },
   }, async ({ path, content }) => guarded(() => safely(() => writeFile(path, content))));
+
+  server.registerTool("sandbox.image.inspect", {
+    title: "Inspect approved sandbox image",
+    description: "Inspect an administrator-allowlisted, SHA-256 digest-pinned image. Images not present in the runtime allowlist are rejected.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { image: z.string().min(1).max(255) },
+  }, async ({ image }) => guarded(() => safelySandbox(() => sandboxRuntime.inspectImage(image))));
+
+  server.registerTool("sandbox.image.pull", {
+    title: "Pull approved sandbox image",
+    description: "Pull an administrator-allowlisted, SHA-256 digest-pinned image. No mutable tags or unapproved images are accepted.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: { image: z.string().min(1).max(255) },
+  }, async ({ image }) => guarded(() => safelySandbox(() => sandboxRuntime.pullImage(image))));
+
+  server.registerTool("sandbox.create", {
+    title: "Create task sandbox",
+    description: "Create a rootless task container for an existing registered task workspace. The runtime verifies the exact workspace identity and grants access only to that worktree. The image must be digest-pinned and administrator-allowlisted. Network is disabled, the root filesystem is read-only, capabilities are dropped, and bounded resources are enforced. Returns a distinct sandboxId; it is not the task-workspace ID.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      repositoryId: z.string().min(1).max(200),
+      worktreeId: z.string().uuid(),
+      image: z.string().min(1).max(255),
+      resources: z.object({
+        cpuMilli: z.number().int().min(100).max(2000).optional(),
+        memoryMiB: z.number().int().min(128).max(4096).optional(),
+        pids: z.number().int().min(32).max(512).optional(),
+      }).optional(),
+      workspaceAccess: z.enum(["read-only", "read-write"]).default("read-write"),
+      command: z.array(z.string().min(1).max(4096)).min(1).max(64).optional(),
+    },
+  }, async ({ repositoryId, worktreeId, image, resources, workspaceAccess, command }) => guarded(() => safelySandbox(async () => {
+    const workload = await sandboxRuntime.createTaskSandbox({
+      repositoryId, worktreeId, image, workspaceAccess,
+      ...(resources ? { resources: {
+        cpuMilli: resources.cpuMilli ?? 500,
+        memoryMiB: resources.memoryMiB ?? 512,
+        pids: resources.pids ?? 64,
+      } } : {}),
+      ...(command ? { command } : {}),
+    });
+    return { sandboxId: workload.id, workload };
+  })));
+
+  server.registerTool("sandbox.start", {
+    title: "Start task sandbox",
+    description: "Start a task workload by its sandbox ID. Project-service workloads are rejected.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid() },
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    result: await sandboxRuntime.startTaskSandbox(sandboxId),
+  }))));
+
+  server.registerTool("sandbox.inspect", {
+    title: "Inspect task sandbox",
+    description: "Inspect a task sandbox and reconcile its durable record with the rootless container runtime. Project-service workloads are not exposed.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid() },
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    result: await sandboxRuntime.inspectTaskSandbox(sandboxId),
+  }))));
+
+  server.registerTool("sandbox.list", {
+    title: "List task sandboxes",
+    description: "List task workloads only. Persistent project-service workloads are excluded.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {},
+  }, async () => guarded(() => safelySandbox(async () => {
+    const { workloads } = await sandboxRuntime.listTaskSandboxes();
+    return { workloads: workloads.map((workload) => ({ sandboxId: workload.id, ...workload })) };
+  })));
+
+  server.registerTool("sandbox.stop", {
+    title: "Stop task sandbox",
+    description: "Stop a task workload by its sandbox ID. Project-service workloads are rejected.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid() },
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    result: await sandboxRuntime.stopTaskSandbox(sandboxId),
+  }))));
+
+  server.registerTool("sandbox.remove", {
+    title: "Remove task sandbox",
+    description: "Force-remove only a task workload. Requires confirm=true. The associated task workspace and its files are preserved.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid(), confirm: z.boolean() },
+  }, async ({ sandboxId, confirm }) => guarded(() => safelySandbox(async () => {
+    if (!confirm) throw new Error("Sandbox removal requires confirm=true");
+    return { sandboxId, result: await sandboxRuntime.removeTaskSandbox(sandboxId) };
+  })));
+
+  server.registerTool("sandbox.logs", {
+    title: "Read task sandbox logs",
+    description: "Read bounded runtime logs for a task sandbox. Project-service workload logs are not exposed.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid() },
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(async () => ({
+    sandboxId,
+    ...(await sandboxRuntime.readTaskSandboxLogs(sandboxId)),
+  }))));
 
   server.registerTool("sandbox.exec", {
     title: "Execute in task sandbox",
@@ -311,14 +421,20 @@ export function createMcpServer(): McpServer {
     description: "Remove a task worktree only with confirm=true. Dirty, staged or untracked work is preserved unless discardChanges=true is also explicitly confirmed.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: { id: z.string().uuid(), confirm: z.boolean(), discardChanges: z.boolean().optional() },
-  }, async ({ id, confirm, discardChanges }) => guarded(() => safely(() => removeTaskWorkspace({ id, confirm, ...(discardChanges !== undefined ? { discardChanges } : {}) }))));
+  }, async ({ id, confirm, discardChanges }) => guarded(() => safely(async () => {
+    await ensureTaskWorkspaceHasNoSandbox(id);
+    return removeTaskWorkspace({ id, confirm, ...(discardChanges !== undefined ? { discardChanges } : {}) });
+  })));
 
   server.registerTool("task-workspace.prune", {
     title: "Prune expired task workspaces",
     description: "Preview or remove only expired, retained, clean task worktrees. Dry-run is the default; actual pruning requires confirm=true.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: { olderThanDays: z.number().int().min(1).max(3650), dryRun: z.boolean().default(true), confirm: z.boolean().optional() },
-  }, async ({ olderThanDays, dryRun, confirm }) => guarded(() => safely(() => pruneTaskWorkspaces({ olderThanDays, dryRun, ...(confirm !== undefined ? { confirm } : {}) }))));
+  }, async ({ olderThanDays, dryRun, confirm }) => guarded(() => safely(() => pruneTaskWorkspaces(
+    { olderThanDays, dryRun, ...(confirm !== undefined ? { confirm } : {}) },
+    ensureTaskWorkspaceHasNoSandbox,
+  ))));
 
   server.registerTool("repository.fetch", {
     title: "Fetch repository cache",

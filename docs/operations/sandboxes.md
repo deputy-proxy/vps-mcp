@@ -80,3 +80,18 @@ To stop accepting runtime requests:
 This does not stop or delete existing containers or workload records. Inspect and stop only the intended workloads through the approved runtime interface. Do not delete /var/lib/vps-sandbox/workloads or rootless Podman storage during rollback; those contain recovery metadata and possible user work.
 
 To remove the service units, first disable the socket and confirm no runtime operation is active. Back up /etc/vps-sandbox/runtime.env and workload metadata. Remove only the installed unit and agent files after confirming no dependent issue (#34/#42) is using them.
+
+## MCP task sandbox lifecycle
+
+Task workspaces and runtime sandboxes have separate identifiers and lifecycles:
+
+1. Call `task-workspace.create` with the registered repository ID and a stable task ID. The returned `id` is the **worktree ID**, not a sandbox ID.
+2. Call `sandbox.image.inspect` with the exact SHA-256 image reference. The runtime accepts only digests in `VPS_SANDBOX_ALLOWED_IMAGES`.
+3. If the image is not present, call `sandbox.image.pull` with that same approved digest.
+4. Call `sandbox.create` with the repository ID, returned worktree ID and approved image digest. The runtime verifies the registered worktree and grants access only to that directory. The returned workload `id` is the **sandbox ID** used by all `sandbox.exec` and `sandbox.filesystem.*` tools.
+5. Call `sandbox.start` with the sandbox ID before executing commands or using filesystem tools.
+6. Use `sandbox.inspect`, `sandbox.list` and `sandbox.logs` to inspect task workloads. Project-service workloads are excluded from these tools.
+7. Call `sandbox.stop` and then `sandbox.remove` with `confirm=true` when the task container is no longer needed. Removing a sandbox does not remove its task worktree or its files.
+8. Remove the task worktree separately with `task-workspace.remove` after confirming its changes are retained or intentionally discarded.
+
+The MCP API does not accept Podman flags, host paths, raw container IDs, arbitrary environment variables or mutable image tags. Network isolation, read-only root filesystem, dropped capabilities, no-new-privileges and resource bounds are enforced by the runtime agent. The runtime agent independently enforces the administrator-managed image and workspace-root allowlists.

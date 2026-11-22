@@ -79,3 +79,11 @@ The code, socket/service units and root-only installer are provided by this issu
 7. Record sanitized live evidence before closing #33.
 
 Until those checks pass, the public MCP runtime adapter fails closed if its socket is unavailable.
+
+## Public MCP task lifecycle
+
+The public MCP surface exposes task-only lifecycle tools: `sandbox.image.inspect`, `sandbox.image.pull`, `sandbox.create`, `sandbox.start`, `sandbox.inspect`, `sandbox.list`, `sandbox.stop`, `sandbox.remove` and `sandbox.logs`. These tools never expose project-service workloads. The create operation takes a registered repository ID, a task-worktree ID and a digest-pinned image; the runtime agent remains the authority for checking the image allowlist, workspace-root allowlist and exact worktree mount identity.
+
+The task-worktree ID and sandbox workload ID are distinct UUIDs. `sandbox.create` generates the workload ID and returns it for subsequent sandbox operations. It grants the runtime identity access to the exact worktree through the existing task-workspace preparation routine. The container is created with network disabled, a read-only root filesystem, all capabilities dropped, no-new-privileges and bounded CPU, memory and PID resources. It is created stopped; callers must explicitly invoke `sandbox.start`.
+
+Lifecycle operations inspect the durable workload record and enforce `workloadType=task`. Stop and remove requests pass the expected task type to the runtime agent, which independently rejects cross-type lifecycle operations. `sandbox.remove` requires explicit confirmation and removes only the container; task-worktree cleanup remains a separate operation.
