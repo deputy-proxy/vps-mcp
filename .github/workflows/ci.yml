@@ -27,6 +27,10 @@ jobs:
       - run: node --check scripts/vps-sandboxctl-broker.mjs
       - run: node --check scripts/rootless-runtime-acceptance.mjs
       - run: bash -n scripts/deploy-gateway.sh
+      - run: bash -n scripts/deploy-development-gateway.sh
+      - run: bash -n scripts/provision-development-runtime.sh
+      - run: bash -n scripts/provision-development-deploy-access.sh
+      - run: node --check scripts/deploy-development.mjs
       - run: bash -n scripts/provision-production-deploy-access.sh
       - run: bash -n scripts/provision-rootless-podman.sh
       - run: bash -n scripts/install-vps-sandboxctl.sh
@@ -80,3 +84,50 @@ jobs:
             -o ConnectTimeout=10 \
             "vps-mcp-deploy@${VPS_PRODUCTION_HOST}" \
             "deploy ${DEPLOY_SHA}"
+
+  deploy-development:
+    name: Deploy development
+    needs: quality
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: development
+    concurrency:
+      group: vps-mcp-development-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Validate deployment configuration
+        env:
+          VPS_DEVELOPMENT_HOST: ${{ vars.VPS_DEVELOPMENT_HOST }}
+          VPS_DEVELOPMENT_PORT: ${{ vars.VPS_DEVELOPMENT_PORT || '22' }}
+          VPS_DEVELOPMENT_DEPLOY_KEY: ${{ secrets.VPS_DEVELOPMENT_DEPLOY_KEY }}
+          VPS_DEVELOPMENT_KNOWN_HOSTS: ${{ secrets.VPS_DEVELOPMENT_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${VPS_DEVELOPMENT_HOST:?Set VPS_DEVELOPMENT_HOST in the development environment}"
+          : "${VPS_DEVELOPMENT_DEPLOY_KEY:?Set VPS_DEVELOPMENT_DEPLOY_KEY in the development environment}"
+          : "${VPS_DEVELOPMENT_KNOWN_HOSTS:?Set VPS_DEVELOPMENT_KNOWN_HOSTS in the development environment}"
+          [[ "$VPS_DEVELOPMENT_PORT" =~ ^[0-9]+$ ]]
+          (( VPS_DEVELOPMENT_PORT >= 1 && VPS_DEVELOPMENT_PORT <= 65535 ))
+          printf '%s\n' "$VPS_DEVELOPMENT_KNOWN_HOSTS" > "$RUNNER_TEMP/vps-known-hosts"
+          printf '%s\n' "$VPS_DEVELOPMENT_DEPLOY_KEY" > "$RUNNER_TEMP/vps-deploy-key"
+          chmod 600 "$RUNNER_TEMP/vps-known-hosts" "$RUNNER_TEMP/vps-deploy-key"
+          ssh-keygen -y -f "$RUNNER_TEMP/vps-deploy-key" > /dev/null
+      - name: Deploy the exact development commit
+        env:
+          VPS_DEVELOPMENT_HOST: ${{ vars.VPS_DEVELOPMENT_HOST }}
+          VPS_DEVELOPMENT_PORT: ${{ vars.VPS_DEVELOPMENT_PORT || '22' }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          ssh \
+            -p "$VPS_DEVELOPMENT_PORT" \
+            -i "$RUNNER_TEMP/vps-deploy-key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/vps-known-hosts" \
+            -o ConnectTimeout=10 \
+            "vps-mcp-development-deploy@${VPS_DEVELOPMENT_HOST}" \
+            "deploy-development ${DEPLOY_SHA}"
