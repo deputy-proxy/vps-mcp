@@ -82,7 +82,7 @@ describe("production deployment runner", () => {
   });
 
   it("deploys only the exact current main commit after clean, fast-forward checks", async () => {
-    const { deployer, state, run } = fixture();
+    const { deployer, state, run, repository } = fixture();
     await expect(deployer.deploy(releaseSha)).resolves.toMatchObject({ status: "deployed", commit: releaseSha, previousCommit: previousSha });
     expect(state.currentSha).toBe(releaseSha);
     const npmCalls = run.mock.calls.filter(([command, args]) => command.endsWith("runuser") && args.includes("/usr/bin/npm"));
