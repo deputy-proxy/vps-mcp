@@ -21,10 +21,13 @@ export type SandboxRuntimeRequest =
   | { operation: 'container.inspect' | 'container.logs'; workloadId: string }
   | { operation: 'container.start' | 'container.stop' | 'container.remove'; workloadId: string; expectedWorkloadType: WorkloadType }
   | { operation: 'container.list' }
-  | { operation: 'container.exec'; workloadId: string; command: string[]; timeoutMs?: number };
+  | { operation: 'container.exec'; workloadId: string; command: string[]; timeoutMs?: number }
+  | { operation: 'sandbox.exec'; sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }
+  | { operation: 'sandbox.fs.list' | 'sandbox.fs.read'; sandboxId: string; path: string }
+  | { operation: 'sandbox.fs.write'; sandboxId: string; path: string; content: string };
 
 const SOCKET_PATH = process.env.VPS_SANDBOX_RUNTIME_SOCKET ?? '/run/vps-sandbox-runtime.sock';
-const MAX_RESPONSE_BYTES = 1_048_576;
+const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const TIMEOUT_MS = 150_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_DIGEST = /^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/i;
@@ -36,6 +39,23 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     return;
   }
   if (request.operation === 'container.list') return;
+  if ('sandboxId' in request) {
+    if (!UUID.test(request.sandboxId)) throw new Error('Invalid sandbox ID');
+    if (request.operation === 'sandbox.exec') {
+      validateArgv(request.command);
+      if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1000 || request.timeoutMs > 120_000)) throw new Error('timeoutMs must be between 1000 and 120000');
+      if (request.maxOutputBytes !== undefined && (!Number.isInteger(request.maxOutputBytes) || request.maxOutputBytes < 1024 || request.maxOutputBytes > 1_048_576)) throw new Error('maxOutputBytes must be between 1024 and 1048576');
+      if (request.env !== undefined) {
+        const allowed = new Set(['LANG', 'LC_ALL', 'TZ', 'CI', 'NODE_ENV', 'TERM']);
+        if (!request.env || typeof request.env !== 'object' || Array.isArray(request.env) || Object.entries(request.env).some(([key, value]) => !allowed.has(key) || typeof value !== 'string' || value.length > 256 || value.includes('\0'))) throw new Error('Environment contains unsupported or invalid variables');
+      }
+      if (request.cwd !== undefined) validateWorkspaceRelativePath(request.cwd, true);
+    } else {
+      validateWorkspaceRelativePath(request.path, request.operation === 'sandbox.fs.list');
+      if (request.operation === 'sandbox.fs.write' && (typeof request.content !== 'string' || Buffer.byteLength(request.content, 'utf8') > 1024 * 1024)) throw new Error('File content exceeds the 1 MiB write limit');
+    }
+    return;
+  }
   if (!('workloadId' in request)) throw new Error('Workload ID is required');
   if (!UUID.test(request.workloadId)) throw new Error('Invalid workload ID');
   if (request.operation === 'container.create') {
@@ -62,6 +82,32 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
       throw new Error('timeoutMs must be between 1000 and 120000');
     }
   }
+}
+
+export function formatSandboxRuntimeError(error: unknown): { ok: false; error: { code: string; message: string } } {
+  const rawMessage = error instanceof Error ? error.message : 'Unknown sandbox runtime error';
+  const message = rawMessage
+    .replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]')
+    .replace(/xox[baprs]-[A-Za-z0-9-]{10,}/g, '[REDACTED_SLACK_TOKEN]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]{16,}/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_TOKEN]')
+    .replace(/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]');
+  const explicit = message.match(/\b(SANDBOX_[A-Z_]+)\b/)?.[1];
+  const code = explicit ?? (/read-only/i.test(message) ? 'SANDBOX_READ_ONLY'
+    : /exceeds the .* limit|too large/i.test(message) ? 'SANDBOX_FILE_LIMIT_EXCEEDED'
+      : /valid UTF-8|encoding/i.test(message) ? 'SANDBOX_INVALID_ENCODING'
+        : /workspace|symbolic link|unsafe component|path escapes/i.test(message) ? 'SANDBOX_PATH_REJECTED'
+          : /only for task workloads|workload type/i.test(message) ? 'SANDBOX_TYPE_MISMATCH'
+            : /not running|runtime container is missing|no managed workspace/i.test(message) ? 'SANDBOX_UNAVAILABLE'
+              : 'SANDBOX_OPERATION_FAILED');
+  return { ok: false, error: { code, message } };
+}
+
+function validateWorkspaceRelativePath(value: string, allowEmpty = false): void {
+  if (typeof value !== 'string' || value.length > 4096 || value.includes('\0') || value.startsWith('/') || value.includes('\\')) throw new Error('Path must be workspace-relative');
+  if (!value && allowEmpty) return;
+  const parts = value.split('/');
+  if (!value || parts.some((part) => !part || part === '.' || part === '..')) throw new Error('Path contains an unsafe component');
 }
 
 function validateArgv(argv: string[]): void {
@@ -146,6 +192,10 @@ export interface SandboxRuntimeAdapter {
   removeWorkload(id: string, expectedType: WorkloadType): Promise<unknown>;
   executeInWorkload(id: string, command: string[], timeoutMs?: number): Promise<{ workloadId: string; exitCode: number; stdout: string; stderr: string }>;
   readWorkloadLogs(id: string): Promise<{ workloadId: string; logs: string }>;
+  executeTaskSandbox(input: { sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }): Promise<{ sandboxId: string; cwd: string; exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; truncated: boolean }>;
+  listTaskSandboxFiles(input: { sandboxId: string; path?: string }): Promise<{ sandboxId: string; path: string; entries: Array<{ name: string; type: 'file' | 'directory'; sizeBytes: number }> }>;
+  readTaskSandboxFile(input: { sandboxId: string; path: string }): Promise<{ sandboxId: string; path: string; content: string; sizeBytes: number }>;
+  writeTaskSandboxFile(input: { sandboxId: string; path: string; content: string }): Promise<{ sandboxId: string; path: string; sizeBytes: number; written: boolean }>;
 }
 export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRuntimeAdapter {
   return {
@@ -173,5 +223,9 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
     removeWorkload: (workloadId, expectedWorkloadType) => requestSandboxRuntime({ operation: 'container.remove', workloadId, expectedWorkloadType }, socketPath),
     executeInWorkload: (workloadId, command, timeoutMs) => requestSandboxRuntime({ operation: 'container.exec', workloadId, command, ...(timeoutMs ? { timeoutMs } : {}) }, socketPath),
     readWorkloadLogs: (workloadId) => requestSandboxRuntime({ operation: 'container.logs', workloadId }, socketPath),
+    executeTaskSandbox: (input) => requestSandboxRuntime({ operation: 'sandbox.exec', ...input }, socketPath),
+    listTaskSandboxFiles: (input) => requestSandboxRuntime({ operation: 'sandbox.fs.list', sandboxId: input.sandboxId, path: input.path ?? '' }, socketPath),
+    readTaskSandboxFile: (input) => requestSandboxRuntime({ operation: 'sandbox.fs.read', ...input }, socketPath),
+    writeTaskSandboxFile: (input) => requestSandboxRuntime({ operation: 'sandbox.fs.write', ...input }, socketPath),
   };
 }

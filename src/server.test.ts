@@ -118,10 +118,10 @@ describe("Streamable HTTP endpoint", () => {
     const dataLine = payload.split("\n").find((line) => line.startsWith("data: "));
     expect(dataLine).toBeDefined();
     const message = JSON.parse(dataLine!.slice(6)) as {
-      result: { tools: Array<{ name: string; annotations?: Record<string, unknown> }> };
+      result: { tools: Array<{ name: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(30);
+    expect(tools.size).toBe(34);
 
     for (const name of [
       "system.health",
@@ -130,6 +130,8 @@ describe("Streamable HTTP endpoint", () => {
       "terminal.logs",
       "filesystem.list",
       "filesystem.read",
+      "sandbox.filesystem.list",
+      "sandbox.filesystem.read",
     ]) {
       expect(tools.get(name)?.annotations).toMatchObject({
         readOnlyHint: true,
@@ -144,15 +146,19 @@ describe("Streamable HTTP endpoint", () => {
       "terminal.start",
       "terminal.cancel",
       "filesystem.write",
+      "sandbox.exec",
+      "sandbox.filesystem.write",
       "repository.branch-policy.apply",
     ]) {
       expect(tools.get(name)?.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: false,
-        openWorldHint: true,
+        openWorldHint: name.startsWith("sandbox.") ? false : true,
       });
     }
+    expect(tools.get("sandbox.exec")?.inputSchema).toBeDefined();
+    expect(tools.get("sandbox.filesystem.read")?.inputSchema).toBeDefined();
     expect(tools.get("repository.task-branch.validate")?.annotations).toMatchObject({
       readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false,
     });
