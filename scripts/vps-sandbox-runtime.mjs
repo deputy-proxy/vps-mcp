@@ -11,6 +11,14 @@ import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanu
 
 const execFileAsync = promisify(execFile);
 const SOCKET = '/run/vps-sandbox-runtime.sock';
+const QUOTA_SOCKET = '/run/vps-sandbox-quota.sock';
+const EGRESS_PROXY_HOST = 'http://127.0.0.1:3128';
+const EGRESS_PROXY_CONTAINER = 'http://10.0.2.2:3128';
+function restrictedTaskEgressEnabled() {
+  return process.env.VPS_SANDBOX_EGRESS_ENABLED === 'true' &&
+    process.env.VPS_SANDBOX_EGRESS_PROXY_URL === EGRESS_PROXY_HOST &&
+    process.env.VPS_SANDBOX_EGRESS_CONTAINER_PROXY_URL === EGRESS_PROXY_CONTAINER;
+}
 const DATA_DIR = '/var/lib/vps-sandbox/workloads';
 const EXECUTION_RECORDS_DIR = '/var/lib/vps-sandbox/executions';
 const EXECUTION_LOG_ROOT = '/var/lib/vps-sandbox/execution-logs';
@@ -158,6 +166,36 @@ function validateWorkspaceRelativePath(value, allowEmpty = false) {
   const parts = value.split('/');
   assert(value && parts.every((part) => part && part !== '.' && part !== '..'), 'Path contains an unsafe component');
 }
+async function applyWorkspaceDiskQuota(repositoryId, worktreeId, diskMiB) {
+  const request = JSON.stringify({ operation: 'apply', repositoryId, worktreeId, diskMiB }) + String.fromCharCode(10);
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection(QUOTA_SOCKET);
+    let response = '';
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) reject(error); else resolve(value);
+    };
+    socket.setTimeout(60000);
+    socket.on('connect', () => socket.write(request));
+    socket.on('data', (chunk) => {
+      response += chunk.toString('utf8');
+      if (Buffer.byteLength(response) > 8192) finish(new Error('Quota broker response exceeded the allowed size.'));
+    });
+    socket.on('end', () => {
+      try {
+        const result = JSON.parse(response.trim());
+        if (result.error) finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: ' + result.error));
+        else if (result.ok !== true || result.enforcement !== 'ext4-project-quota' || result.repositoryId !== repositoryId || result.worktreeId !== worktreeId || result.diskMiB !== diskMiB) finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker returned an invalid result'));
+        else finish(undefined, result);
+      } catch { finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker returned invalid JSON')); }
+    });
+    socket.on('timeout', () => finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker timed out')));
+    socket.on('error', (error) => finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: ' + (error.code === 'ENOENT' || error.code === 'ECONNREFUSED' ? 'quota broker is not installed or active' : error.code === 'EACCES' ? 'runtime identity cannot access the quota broker socket' : error.message))));
+  });
+}
 async function ensureDataDir() { await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 }); }
 function recordPath(id) { return path.join(DATA_DIR, safeId(id), 'record.json'); }
 function executionLogDirectory(sandboxId) { return path.join(EXECUTION_LOG_ROOT, safeId(sandboxId)); }
@@ -276,10 +314,12 @@ async function readWorkloadRecords() {
       assert(['task', 'project-service'].includes(record.workloadType), 'Workload record has an invalid workload type');
       safeRepositoryId(record.repositoryId);
       assert(KNOWN_WORKLOAD_STATES.has(record.status), 'Workload record has an invalid lifecycle state');
-      assert(record.network === 'none', 'Workload record has an unsupported network boundary');
+      assert(record.network === 'none' || (record.workloadType === 'task' && record.network === 'slirp4netns:allow_host_loopback=true'), 'Workload record has an unsupported network boundary');
       assert(record.runtimeId === null || record.runtimeId === undefined || /^[a-f0-9]{12,64}$/i.test(record.runtimeId), 'Workload record runtime ID is invalid');
-      const expectedNetworkPolicy = record.workloadType === 'task' ? 'task-no-egress' : 'project-private-no-egress';
-      assert(record.networkPolicy === undefined || record.networkPolicy === expectedNetworkPolicy, 'Workload record has an invalid network policy');
+      const validNetworkPolicy = record.workloadType === 'task'
+        ? (record.network === 'none' ? ['task-no-egress', undefined] : ['task-restricted-egress'])
+        : ['project-private-no-egress', undefined];
+      assert(validNetworkPolicy.includes(record.networkPolicy), 'Workload record has an invalid network policy');
       if (record.worktreeId !== undefined) safeId(record.worktreeId);
       if (record.workloadType === 'task') {
         assert(record.worktreeId && record.workspaceMount?.destination === '/workspace', 'Task workload is missing its managed workspace mount');
@@ -938,6 +978,7 @@ async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RES
       HOME: '/var/lib/vps-sandbox',
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '',
       DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ?? '',
+      ...(restrictedTaskEgressEnabled() ? { HTTP_PROXY: EGRESS_PROXY_HOST, HTTPS_PROXY: EGRESS_PROXY_HOST, http_proxy: EGRESS_PROXY_HOST, https_proxy: EGRESS_PROXY_HOST, NO_PROXY: 'localhost,127.0.0.1,::1', no_proxy: 'localhost,127.0.0.1,::1' } : {}),
     },
   });
   return { stdout: stdout ?? '', stderr: stderr ?? '' };
@@ -945,13 +986,14 @@ async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RES
 export function assertWorkloadTypeMatch(record, expectedWorkloadType) {
   assert(expectedWorkloadType === record.workloadType, 'Workload type mismatch; refusing cross-lifecycle operation');
 }
-export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, executionMount, command }) {
+export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, executionMount, command, network = 'none', proxyUrl }) {
   assert(workloadType !== 'task' || (executionMount?.destination === '/run/vps-mcp-executions' && path.isAbsolute(executionMount.path)), 'Task workloads require a dedicated execution log mount');
+  assert(network === 'none' || (workloadType === 'task' && network === 'slirp4netns:allow_host_loopback=true' && proxyUrl === EGRESS_PROXY_CONTAINER), 'Unsupported workload network policy');
   assert(workloadType !== 'project-service' || executionMount === undefined || executionMount === null, 'Project-service workloads must not receive task execution mounts');
   return [
     'create', '--pull=never', '--cgroup-parent', CGROUP_PARENT, '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
-    '--network=none', '--read-only', '--cap-drop=ALL',
+    '--network=' + network, '--read-only', '--cap-drop=ALL',
     '--userns=keep-id', '--user', `${process.getuid()}:${process.getgid()}`,
     '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json', '--pids-limit', String(resources.pids),
     '--memory', `${resources.memoryMiB}m`, '--cpus', String(resources.cpuMilli / 1000),
@@ -1018,6 +1060,9 @@ async function createWorkload(request) {
   }
   const workspaceMount = request.workspacePath === undefined ? null : await resolveWorkspaceMount(request.workspacePath, request.workspaceAccess ?? 'read-only', repositoryId, worktreeId);
   const executionMount = workloadType === 'task' ? await ensureExecutionLogDirectory(id) : null;
+  const egressEnabled = workloadType === 'task' && restrictedTaskEgressEnabled();
+  const network = egressEnabled ? 'slirp4netns:allow_host_loopback=true' : 'none';
+  const networkPolicy = workloadType === 'task' ? (egressEnabled ? 'task-restricted-egress' : 'task-no-egress') : 'project-private-no-egress';
   assert(request.network === undefined || request.network === 'none', 'Only network=none is supported by this runtime adapter');
   assert(request.readOnlyRootfs === undefined || request.readOnlyRootfs === true, 'Container root filesystem must be read-only');
   const fingerprint = commandFingerprint(request.command);
@@ -1035,10 +1080,9 @@ async function createWorkload(request) {
       existing.commandFingerprint === fingerprint,
       'Workload ID is already registered with different immutable attributes',
     );
-    assert(existing.network === undefined || existing.network === 'none', 'Existing workload has an unsupported network configuration');
-    const networkPolicy = workloadType === 'task' ? 'task-no-egress' : 'project-private-no-egress';
+    assert(existing.network === network, 'Existing workload network mode is immutable; recreate the task sandbox to change its egress profile');
     assert(existing.networkPolicy === undefined || existing.networkPolicy === networkPolicy, 'Existing workload network policy does not match the requested workload type');
-    const normalized = { ...existing, resources, network: 'none', networkPolicy };
+    const normalized = { ...existing, resources, network, networkPolicy };
     const replayRuntimeId = existing.status === 'removed' ? null : await resolveRuntimeId(normalized);
     const runtimeState = replayRuntimeId ? await inspectContainerState(replayRuntimeId) : 'missing';
     const replay = createWorkloadReplayDecision(existing, runtimeState);
@@ -1067,18 +1111,20 @@ async function createWorkload(request) {
   const disk = await diskStatus();
   const capacity = evaluateResourceRequest({ records: currentRecords, reservations, requested: { workloadType, repositoryId, worktreeId, resources }, budget: resourceBudget(), freeDiskBytes: disk.freeBytes });
   assert(capacity.allowed, capacity.reasons.join('; '));
+  if (workloadType === 'task') await applyWorkspaceDiskQuota(repositoryId, worktreeId, resources.diskMiB);
 
   const record = retryRecord ?? {
     id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}),
     image, imageDigest: image.slice(image.lastIndexOf('@') + 1),
-    runtimeId: null, workspaceMount, executionMount, resources, network: 'none', networkPolicy: workloadType === 'task' ? 'task-no-egress' : 'project-private-no-egress', commandFingerprint: fingerprint,
+    runtimeId: null, workspaceMount, executionMount, resources, network, networkPolicy, commandFingerprint: fingerprint,
     status: 'creating', createdAt: new Date().toISOString(), expiresAt: workloadType === 'task' ? new Date(Date.now() + resourceBudget().taskRetentionMs).toISOString() : null, updatedAt: new Date().toISOString(),
   };
   await writeRecord(record);
   try {
     const args = buildContainerCreateArgs({
-      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, executionMount, command: request.command,
+      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, executionMount, command: request.command, network, proxyUrl: egressEnabled ? EGRESS_PROXY_CONTAINER : undefined,
     });
+    if (egressEnabled) args.push('--env', 'HTTP_PROXY=' + EGRESS_PROXY_CONTAINER, '--env', 'HTTPS_PROXY=' + EGRESS_PROXY_CONTAINER, '--env', 'http_proxy=' + EGRESS_PROXY_CONTAINER, '--env', 'https_proxy=' + EGRESS_PROXY_CONTAINER, '--env', 'NO_PROXY=localhost,127.0.0.1,::1', '--env', 'no_proxy=localhost,127.0.0.1,::1');
     const result = await runPodman(args, 120_000);
     const runtimeId = result.stdout.trim().split(/\s+/)[0];
     assert(/^[a-f0-9]{12,64}$/i.test(runtimeId ?? ''), 'Podman returned an invalid container ID');

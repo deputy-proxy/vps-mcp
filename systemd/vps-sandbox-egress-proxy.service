@@ -1,0 +1,29 @@
+[Unit]
+Description=Allowlisted HTTP egress proxy for rootless task sandboxes
+Requires=vps-sandbox-egress-firewall.service
+After=network-online.target vps-sandbox-egress-firewall.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=vps-egress
+Group=vps-egress
+ExecStart=/usr/sbin/squid -N -f /etc/vps-sandbox/egress/squid.conf
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+PrivateDevices=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RuntimeDirectory=vps-sandbox-egress
+RuntimeDirectoryMode=0750
+ReadWritePaths=/var/log/vps-sandbox-egress /run/vps-sandbox-egress
+UMask=0077
+[Install]
+WantedBy=multi-user.target

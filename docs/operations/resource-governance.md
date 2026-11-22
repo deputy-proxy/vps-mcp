@@ -73,3 +73,25 @@ Task sandboxes use `network=none`. Project-service workloads also remain fail-cl
 ## Emergency pause
 
 Use `sandbox.maintenance.pause` with `paused=true` to block new workload creation/start, workspace writes and command execution. Stop/remove remain available so operators can contain an incident. The pause does not kill work already admitted before the pause transition. It also suspends automatic cleanup housekeeping, while disk-pressure and workspace-quota enforcement remain active. The pause state is durable across runtime-agent restarts. Set `paused=false` after the incident is resolved.
+
+## Strict task workspace quotas
+
+Task creation now requires a hard ext4 project quota to be applied to its exact managed worktree before Podman creates the container. The root-owned quota broker accepts only a repository ID, worktree UUID and bounded disk budget; it does not accept arbitrary paths or shell commands. The helper assigns a deterministic project ID, enables project inheritance on every existing directory in the worktree and applies the hard block limit with setquota. The five-minute watchdog remains as a secondary containment check.
+
+Provisioning is deliberately separate from runtime installation:
+
+1. Confirm the task-worktree filesystem is ext4 and has the ext4 project feature.
+2. During a reviewed maintenance window, enable the prjquota mount option on the filesystem. The provisioning script refuses to remount or mutate a live root filesystem automatically.
+3. Run sudo bash scripts/provision-vps-sandbox-quotas.sh.
+4. Run sudo bash scripts/install-vps-sandbox-runtime.sh to install and activate the restricted quota socket broker.
+5. Verify a disposable task worktree reports an enforced project quota before enabling ordinary task creation.
+
+If project quotas are not active, task creation fails closed with SANDBOX_DISK_QUOTA_UNAVAILABLE; it does not silently fall back to periodic-only enforcement.
+
+## Restricted task egress
+
+Task sandboxes can use a restricted HTTP CONNECT proxy for dependency registries. The installer provisions Squid under a dedicated vps-egress identity and an nftables output policy that permits the rootless vps-sandbox identity to open host sockets only to the loopback proxy. The proxy allows only the administrator-maintained exact-hostname allowlist, denies private, loopback, link-local and metadata destinations after DNS resolution, and permits only TCP 80/443 upstream. The firewall separately prevents the proxy identity from connecting to local/private destinations or arbitrary ports. Project-service containers remain on network=none.
+
+Install only after reviewing the allowed domains with sudo bash scripts/install-vps-sandbox-egress.sh.
+
+The installer enables the firewall before the proxy, adds a systemd dependency from the runtime agent to both services, then enables the restricted task profile. If the proxy or firewall is unavailable, the runtime agent does not start with the egress profile. Existing task network modes are immutable; recreate task sandboxes to adopt the new profile. Add exact hostnames as anchored regular expressions to /etc/vps-sandbox/egress/allowed-domains.txt after security review. Wildcard suffix entries are intentionally not supported.

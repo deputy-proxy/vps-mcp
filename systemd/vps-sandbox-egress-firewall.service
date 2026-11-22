@@ -1,0 +1,10 @@
+[Unit]
+Description=Fail-closed egress firewall for VPS sandbox identities
+Before=vps-sandbox-egress-proxy.service vps-sandbox-runtime.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet vps_sandbox_egress
+ExecStart=/usr/sbin/nft -f /etc/vps-sandbox/egress/egress.nft
+[Install]
+WantedBy=multi-user.target
