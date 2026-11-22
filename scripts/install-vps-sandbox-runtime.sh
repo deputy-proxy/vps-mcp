@@ -19,6 +19,8 @@ getent group vps-mcp >/dev/null || { echo "Missing vps-mcp group." >&2; exit 2; 
 [[ -d "/run/user/${UID_VALUE}" ]] || { echo "Missing /run/user/${UID_VALUE}; enable lingering and the vps-sandbox user manager first." >&2; exit 2; }
 [[ -S "/run/user/${UID_VALUE}/bus" ]] || { echo "Missing vps-sandbox user D-Bus socket." >&2; exit 2; }
 command -v systemd-analyze >/dev/null || { echo "systemd-analyze is required." >&2; exit 2; }
+command -v setfacl >/dev/null || { echo "The acl package (setfacl) is required for per-worktree runtime access." >&2; exit 2; }
+command -v find >/dev/null || { echo "find is required for inherited worktree ACLs." >&2; exit 2; }
 
 systemd-analyze verify "${REPO_DIR}/systemd/vps-sandbox-runtime.socket" "${REPO_DIR}/systemd/vps-sandbox-runtime.service"
 install -d -o root -g root -m 0755 "${LIBEXEC}" "${ENV_DIR}"
