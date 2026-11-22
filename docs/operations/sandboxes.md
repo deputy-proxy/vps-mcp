@@ -49,13 +49,16 @@ Do not use a production repository or real user data for the first runtime tests
 2. Create a task workload with network disabled, read-only rootfs, all capabilities dropped and explicit CPU/memory/PID limits.
 3. Start it and inspect its runtime state.
 4. Execute a harmless argv command and read bounded logs.
-5. Verify a read-only workspace mount rejects writes and an explicitly writable workspace mount remains confined to the approved root.
-6. Verify the container cannot read host secrets, another user's home, host root or the Podman socket.
-7. Verify effective cgroup values from inside the container, not just Podman inspect configuration.
-8. Stop and remove the task workload. Verify no container process or mount remains.
-9. Repeat with a project-service workload and prove a task-typed stop/remove request is rejected.
-10. Restart the MCP process and runtime agent; list workloads and verify records reconcile to actual Podman state.
-11. During a maintenance window, reboot the VPS and repeat reconciliation. Do not reboot automatically from an MCP operation.
+5. Through `sandbox.exec`, verify the supplied sandbox ID selects the only execution container, cwd is confined to `/workspace`, argv values are not shell-expanded, timeouts and output limits are enforced, and host environment variables are not inherited.
+6. Through `sandbox.filesystem.list/read/write`, verify regular-file handling, atomic writes, UTF-8 and file-size limits, symlink escape rejection, special-file rejection, and workspace-relative path validation. Confirm writes fail on read-only mounts.
+7. Verify project-service workload IDs are rejected by all `sandbox.*` tools, lifecycle changes return `SANDBOX_BUSY` while operations are active, and more than four concurrent sandbox operations return `SANDBOX_CAPACITY_EXCEEDED`.
+8. Verify command output and structured tool errors redact supported credential patterns. Confirm runtime-unavailable errors never fall back to host execution.
+9. Verify the container cannot read host secrets, another user's home, host root or the Podman socket.
+10. Verify effective cgroup values from inside the container, not just Podman inspect configuration.
+11. Stop and remove the task workload. Verify no container process or mount remains.
+12. Repeat with a project-service workload and prove a task-typed stop/remove request is rejected.
+13. Restart the MCP process and runtime agent; list workloads and verify records reconcile to actual Podman state.
+14. During a maintenance window, reboot the VPS and repeat reconciliation. Do not reboot automatically from an MCP operation.
 
 The service must never delete unknown containers or records during reconciliation. Record failures and investigate before retrying.
 

@@ -1,11 +1,22 @@
 import net from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSandboxRuntimeAdapter, requestSandboxRuntime, validateSandboxRuntimeRequest } from './sandbox-runtime.js';
+import { createSandboxRuntimeAdapter, formatSandboxRuntimeError, requestSandboxRuntime, validateSandboxRuntimeRequest } from './sandbox-runtime.js';
 
 const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
 const image = `docker.io/library/node@sha256:${'a'.repeat(64)}`;
 
 describe('sandbox runtime request contract', () => {
+  it('returns structured sandbox errors and redacts credential-like output', () => {
+    expect(formatSandboxRuntimeError(new Error('SANDBOX_CAPACITY_EXCEEDED: busy'))).toEqual({
+      ok: false,
+      error: { code: 'SANDBOX_CAPACITY_EXCEEDED', message: 'SANDBOX_CAPACITY_EXCEEDED: busy' },
+    });
+    expect(formatSandboxRuntimeError(new Error('Symbolic links are not permitted for ghp_' + 'a'.repeat(30)))).toMatchObject({
+      ok: false,
+      error: { code: 'SANDBOX_PATH_REJECTED', message: 'Symbolic links are not permitted for [REDACTED_TOKEN]' },
+    });
+  });
+
   it('accepts only digest-pinned images and bounded workload metadata', () => {
     expect(() => validateSandboxRuntimeRequest({ operation: 'image.inspect', image })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({
@@ -31,6 +42,19 @@ describe('sandbox runtime request contract', () => {
     expect(() => validateSandboxRuntimeRequest({
       operation: 'container.exec', workloadId: id, command: ['sh', '-c', 'id; rm -rf /'],
     })).not.toThrow();
+  });
+
+  it('requires a sandbox ID and validates task-only operation arguments', () => {
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, command: ['node', '-v'] })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.list', sandboxId: id, path: '' })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.read', sandboxId: id, path: 'src/index.ts' })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.write', sandboxId: id, path: 'notes.txt', content: 'hello' })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: '../../host', command: ['id'] })).toThrow('sandbox ID');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, command: ['id'], cwd: '../' })).toThrow('unsafe component');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.read', sandboxId: id, path: '/etc/passwd' })).toThrow('workspace-relative');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.write', sandboxId: id, path: '../outside', content: 'x' })).toThrow('unsafe component');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, command: ['id'], env: { PATH: '/tmp' } })).toThrow('Environment');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, command: ['id'], timeoutMs: 999 })).toThrow('timeoutMs');
   });
 
   it('rejects network access and writable root filesystems', () => {

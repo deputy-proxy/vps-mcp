@@ -10,6 +10,7 @@ import { listDirectory, readFile, writeFile } from "./filesystem.js";
 import { isRuntimeOperation, runRuntimeOperation } from "./runtime.js";
 import { applyRepositoryBranchPolicy, fetchRepository, inspectRepository, listRepositories, registerRepository, removeRepository, updateRepository, validateRepository } from "./repositories.js";
 import { validateTaskBranchCreation } from "./branch-policy.js";
+import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbox-runtime.js";
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 
 type ToolResult = {
@@ -27,6 +28,14 @@ function failure(error: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }], isError: true };
 }
 
+function sandboxFailure(error: unknown): ToolResult {
+  return { content: [{ type: 'text', text: JSON.stringify(formatSandboxRuntimeError(error), null, 2) }], isError: true };
+}
+
+async function safelySandbox<T>(operation: () => Promise<T>): Promise<ToolResult> {
+  try { return result(await operation()); } catch (error) { return sandboxFailure(error); }
+}
+
 async function safely<T>(operation: () => Promise<T>) {
   try { return result(await operation()); } catch (error) { return failure(error); }
 }
@@ -36,6 +45,7 @@ async function guarded<T extends ToolResult>(operation: () => Promise<T>): Promi
 }
 
 export function createMcpServer(): McpServer {
+  const sandboxRuntime = createSandboxRuntimeAdapter();
   const server = new McpServer(
     { name: "vps-mcp", version: VERSION },
     { instructions: "Authenticated VPS administration and development execution. Filesystem tool paths and command working directories are restricted to configured allowed roots. Shell commands otherwise have the operating-system permissions of the unprivileged service account." },
@@ -140,6 +150,41 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { path: z.string().min(1), content: z.string().max(2 * 1024 * 1024) },
   }, async ({ path, content }) => guarded(() => safely(() => writeFile(path, content))));
+
+  server.registerTool("sandbox.exec", {
+    title: "Execute in task sandbox",
+    description: "Execute an argument-array command inside the selected running task sandbox. Requires its sandbox ID; never falls back to host execution. cwd is workspace-relative, environment overrides are allowlisted, and timeout/output/concurrency are bounded.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      sandboxId: z.string().uuid(),
+      command: z.array(z.string().min(1).max(4096)).min(1).max(64),
+      cwd: z.string().max(4096).optional(),
+      timeoutMs: z.number().int().min(1000).max(120_000).optional(),
+      maxOutputBytes: z.number().int().min(1024).max(1_048_576).optional(),
+      env: z.record(z.string(), z.string().max(256)).optional(),
+    },
+  }, async ({ sandboxId, command, cwd, timeoutMs, maxOutputBytes, env }) => guarded(() => safelySandbox(() => sandboxRuntime.executeTaskSandbox({ sandboxId, command, ...(cwd !== undefined ? { cwd } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(maxOutputBytes !== undefined ? { maxOutputBytes } : {}), ...(env !== undefined ? { env } : {}) }))));
+
+  server.registerTool("sandbox.filesystem.list", {
+    title: "List task sandbox files",
+    description: "List regular files and directories inside the selected task sandbox workspace. Symlinks and special files are omitted; paths are workspace-relative.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid(), path: z.string().max(4096).default("") },
+  }, async ({ sandboxId, path }) => guarded(() => safelySandbox(() => sandboxRuntime.listTaskSandboxFiles({ sandboxId, path }))));
+
+  server.registerTool("sandbox.filesystem.read", {
+    title: "Read task sandbox file",
+    description: "Read a UTF-8 regular file up to 2 MiB from the selected task sandbox workspace. Symlinks and paths outside the workspace are rejected.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid(), path: z.string().min(1).max(4096) },
+  }, async ({ sandboxId, path }) => guarded(() => safelySandbox(() => sandboxRuntime.readTaskSandboxFile({ sandboxId, path }))));
+
+  server.registerTool("sandbox.filesystem.write", {
+    title: "Write task sandbox file",
+    description: "Atomically create or replace a UTF-8 file up to 1 MiB inside the selected task sandbox workspace. Parent directories must already exist; symlinks and paths outside the workspace are rejected.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid(), path: z.string().min(1).max(4096), content: z.string().max(1024 * 1024) },
+  }, async ({ sandboxId, path, content }) => guarded(() => safelySandbox(() => sandboxRuntime.writeTaskSandboxFile({ sandboxId, path, content }))));
 
   server.registerTool("repository.register", {
     title: "Register repository",

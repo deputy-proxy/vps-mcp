@@ -11,14 +11,19 @@ const SOCKET = '/run/vps-sandbox-runtime.sock';
 const DATA_DIR = '/var/lib/vps-sandbox/workloads';
 const PODMAN = '/usr/bin/podman';
 const CGROUP_PARENT = '/system.slice/vps-sandbox-runtime.service';
-const MAX_REQUEST_BYTES = 32 * 1024;
-const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
+const MAX_SANDBOX_CONCURRENCY = 4;
+const MAX_SANDBOX_FILE_BYTES = 2 * 1024 * 1024;
+let activeSandboxOperations = 0;
+const activeSandboxWorkloads = new Map();
+const mutatingWorkloads = new Set();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_DIGEST = /^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/i;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
-const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs']);
+const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write']);
 let operationQueue = Promise.resolve();
 const ACTIVE_STATES = new Set(['creating', 'created', 'starting', 'running', 'stopping', 'stopped', 'removing', 'error']);
 
@@ -68,9 +73,33 @@ export function parseRuntimeRequest(raw) {
     'container.remove': ['operation', 'workloadId', 'expectedWorkloadType'],
     'container.exec': ['operation', 'workloadId', 'command', 'timeoutMs'],
     'container.logs': ['operation', 'workloadId'],
+    'sandbox.exec': ['operation', 'sandboxId', 'command', 'cwd', 'timeoutMs', 'maxOutputBytes', 'env'],
+    'sandbox.fs.list': ['operation', 'sandboxId', 'path'],
+    'sandbox.fs.read': ['operation', 'sandboxId', 'path'],
+    'sandbox.fs.write': ['operation', 'sandboxId', 'path', 'content'],
   }[request.operation];
   assert(Object.keys(request).every((key) => allowed.includes(key)), 'Request contains unsupported properties');
+  if (request.operation.startsWith('sandbox.')) {
+    safeId(request.sandboxId);
+    if (request.operation === 'sandbox.exec') {
+      safeArgv(request.command);
+      if (request.timeoutMs !== undefined) assert(Number.isInteger(request.timeoutMs) && request.timeoutMs >= 1000 && request.timeoutMs <= MAX_TIMEOUT_MS, 'timeoutMs must be between 1000 and 120000');
+      if (request.maxOutputBytes !== undefined) assert(Number.isInteger(request.maxOutputBytes) && request.maxOutputBytes >= 1024 && request.maxOutputBytes <= 1_048_576, 'maxOutputBytes must be between 1024 and 1048576');
+      if (request.cwd !== undefined) validateWorkspaceRelativePath(request.cwd, true);
+      const allowedEnv = new Set(['LANG', 'LC_ALL', 'TZ', 'CI', 'NODE_ENV', 'TERM']);
+      assert(request.env === undefined || (request.env && typeof request.env === 'object' && !Array.isArray(request.env) && Object.entries(request.env).every(([key, value]) => allowedEnv.has(key) && typeof value === 'string' && value.length <= 256 && !value.includes('\0'))), 'Environment contains unsupported or invalid variables');
+    } else {
+      validateWorkspaceRelativePath(request.path, request.operation === 'sandbox.fs.list');
+      if (request.operation === 'sandbox.fs.write') assert(typeof request.content === 'string' && Buffer.byteLength(request.content, 'utf8') <= 1024 * 1024, 'File content exceeds the 1 MiB write limit');
+    }
+  }
   return request;
+}
+function validateWorkspaceRelativePath(value, allowEmpty = false) {
+  assert(typeof value === 'string' && value.length <= 4096 && !value.includes('\0') && !value.startsWith('/') && !value.includes('\\'), 'Path must be workspace-relative and no longer than 4096 characters');
+  if (!value && allowEmpty) return;
+  const parts = value.split('/');
+  assert(value && parts.every((part) => part && part !== '.' && part !== '..'), 'Path contains an unsafe component');
 }
 async function ensureDataDir() { await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 }); }
 function recordPath(id) { return path.join(DATA_DIR, safeId(id), 'record.json'); }
@@ -258,8 +287,224 @@ async function mutate(request, action) {
   await writeRecord(updated);
   return { workload: updated, output: result.stdout.trim() };
 }
+export function assertTaskSandboxWorkload(record) {
+  assert(record?.workloadType === 'task', 'Sandbox tools are available only for task workloads');
+}
+
+async function taskSandboxRecord(sandboxId) {
+  const record = await readRecord(sandboxId);
+  assertTaskSandboxWorkload(record);
+  assert(record.status === 'running', 'Task sandbox is not running');
+  assert(record.runtimeId && record.workspaceMount?.destination === '/workspace', 'Task sandbox has no managed workspace mount');
+  assert(record.workspaceMount.access === 'read-only' || record.workspaceMount.access === 'read-write', 'Task sandbox workspace access mode is invalid');
+  assert(record.worktreeId && UUID.test(record.worktreeId), 'Task sandbox is missing its managed worktree identity');
+  const configuredRoots = (process.env.VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  const expected = configuredRoots.map((root) => expectedTaskWorkspacePath(root, record.repositoryId, record.worktreeId));
+  const workspace = record.workspaceMount.path;
+  assert(expected.includes(path.resolve(workspace)), 'Task sandbox workspace does not match its managed repository/worktree identity');
+  const runtimeId = await resolveRuntimeId(record);
+  assert(runtimeId, 'Task sandbox runtime container is missing');
+  const runtimeState = await runPodman(['inspect', '--format', '{{.State.Status}}', runtimeId]).then((value) => value.stdout.trim()).catch(() => 'missing');
+  assert(runtimeState === 'running', 'Task sandbox runtime container is not running');
+  const stat = await fs.lstat(workspace);
+  assert(stat.isDirectory() && !stat.isSymbolicLink(), 'Managed workspace is not a real directory');
+  const realWorkspace = await fs.realpath(workspace);
+  assert(realWorkspace === workspace, 'Managed workspace path is not canonical');
+  return { record, runtimeId };
+}
+
+function shellQuote(value) { return `'${String(value).replace(/'/g, "'\\''")}'`; }
+
+export function buildSandboxFilesystemScript(operation, workspaceRoot = '/workspace') {
+  const root = shellQuote(workspaceRoot);
+  if (operation === 'sandbox.fs.list') return String.raw`
+set -eu
+root=${root}
+relative=$1
+if [ -n "$relative" ]; then cd "$root/$relative"; else cd "$root"; fi
+resolved=$(pwd -P)
+case "$resolved" in "$root"|"$root"/*) ;; *) echo 'Path escapes the assigned workspace' >&2; exit 126;; esac
+for entry in ./* ./.[!.]* ./..?*; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  [ -L "$entry" ] && continue
+  if [ -d "$entry" ]; then kind=directory; size=0
+  elif [ -f "$entry" ]; then kind=file; size=$(wc -c < "$entry" | tr -d '[:space:]')
+  else continue
+  fi
+  name=$(printf '%s' "${'${entry#./}'}" | base64 | tr -d '\r\n')
+  printf '%s\t%s\t%s\n' "$kind" "$size" "$name"
+done
+`;
+  if (operation === 'sandbox.fs.read') return String.raw`
+set -eu
+root=${root}
+relative=$1
+parent=${'${relative%/*}'}
+name=${'${relative##*/}'}
+[ "$parent" != "$relative" ] || parent=.
+cd "$root/$parent"
+resolved=$(pwd -P)
+case "$resolved" in "$root"|"$root"/*) ;; *) echo 'Path escapes the assigned workspace' >&2; exit 126;; esac
+target="./$name"
+[ ! -L "$target" ] || { echo 'Symbolic links are not permitted' >&2; exit 126; }
+[ -f "$target" ] || { echo 'Only regular files can be read' >&2; exit 126; }
+exec 3< "$target"
+opened=$(readlink "/proc/$$/fd/3")
+case "$opened" in "$root"|"$root"/*) ;; *) echo 'Opened file escapes the assigned workspace' >&2; exit 126;; esac
+[ -f "/proc/$$/fd/3" ] || { echo 'Only regular files can be read' >&2; exit 126; }
+size=$(stat -c '%s' "/proc/$$/fd/3")
+[ "$size" -le 2097152 ] || { echo 'File exceeds the 2 MiB read limit' >&2; exit 126; }
+base64 <&3 | tr -d '\r\n'
+`;
+  if (operation === 'sandbox.fs.write') return String.raw`
+set -eu
+root=${root}
+relative=$1
+case "$relative" in ''|/*) echo 'Path must be workspace-relative' >&2; exit 126;; esac
+case "/$relative/" in */../*|*/./*) echo 'Path contains an unsafe component' >&2; exit 126;; esac
+parent=${'${relative%/*}'}
+name=${'${relative##*/}'}
+[ "$parent" != "$relative" ] || parent=.
+cd "$root/$parent"
+resolved=$(pwd -P)
+case "$resolved" in "$root"|"$root"/*) ;; *) echo 'Path escapes the assigned workspace' >&2; exit 126;; esac
+target="./$name"
+[ ! -L "$target" ] || { echo 'Symbolic links are not permitted' >&2; exit 126; }
+if [ -e "$target" ] && [ ! -f "$target" ]; then echo 'Only regular files can be replaced' >&2; exit 126; fi
+temporary=$(mktemp .vps-mcp.XXXXXX)
+trap 'rm -f "$temporary"' EXIT
+cat > "$temporary"
+mv -f "$temporary" "$target"
+trap - EXIT
+`;
+  throw new Error('Unsupported sandbox filesystem operation');
+}
+
+export function parseSandboxDirectoryListing(output) {
+  return output.split('\n').filter(Boolean).map((line) => {
+    const [type, size, encodedName] = line.split('\t');
+    assert((type === 'file' || type === 'directory') && /^\d+$/.test(size ?? '') && typeof encodedName === 'string', 'Runtime returned an invalid filesystem listing');
+    const nameBytes = Buffer.from(encodedName, 'base64');
+    assert(nameBytes.toString('base64') === encodedName, 'Runtime returned an invalid filename encoding');
+    let name;
+    try { name = new TextDecoder('utf-8', { fatal: true }).decode(nameBytes); }
+    catch { throw new Error('Runtime returned a filename that is not valid UTF-8'); }
+    return { name, type, sizeBytes: Number(size) };
+  });
+}
+
+export function decodeSandboxFile(encoded) {
+  assert(typeof encoded === 'string' && /^[A-Za-z0-9+/]*={0,2}$/.test(encoded), 'Runtime returned invalid file encoding');
+  const data = Buffer.from(encoded, 'base64');
+  assert(data.toString('base64') === encoded, 'Runtime returned invalid file encoding');
+  assert(data.length <= MAX_SANDBOX_FILE_BYTES, 'File exceeds the 2 MiB read limit');
+  let content;
+  try { content = new TextDecoder('utf-8', { fatal: true }).decode(data); }
+  catch { throw new Error('File is not valid UTF-8'); }
+  return { content, sizeBytes: data.length };
+}
+
+export function hasSandboxCapacity(activeCount) {
+  return Number.isInteger(activeCount) && activeCount >= 0 && activeCount < MAX_SANDBOX_CONCURRENCY;
+}
+
+export function isSandboxBusy(activeCount) { return Number.isInteger(activeCount) && activeCount > 0; }
+
+export function assertTaskWorkspaceWritable(record) {
+  assert(record?.workloadType === 'task' && record.workspaceMount?.access === 'read-write', 'Task sandbox workspace is read-only');
+}
+
+async function runPodmanWithInput(args, input, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RESPONSE_BYTES) {
+  return await new Promise((resolve, reject) => {
+    const child = execFile(PODMAN, ['--cgroup-manager=cgroupfs', ...args], {
+      encoding: 'utf8', timeout, maxBuffer,
+      env: {
+        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        HOME: '/var/lib/vps-sandbox',
+        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '',
+        DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ?? '',
+      },
+    }, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout ?? '';
+        error.stderr = stderr ?? '';
+        reject(error);
+      } else resolve({ stdout: stdout ?? '', stderr: stderr ?? '' });
+    });
+    child.stdin.end(input);
+  });
+}
+
+export function buildSandboxFilesystemArgs({ runtimeId, operation, path: relative }) {
+  const script = buildSandboxFilesystemScript(operation);
+  const interactive = operation === 'sandbox.fs.write';
+  return ['exec', ...(interactive ? ['-i'] : []), runtimeId, 'sh', '-c', script, '--', relative];
+}
+
+async function sandboxFilesystem(request) {
+  const { record, runtimeId } = await taskSandboxRecord(request.sandboxId);
+  if (request.operation === 'sandbox.fs.write') assertTaskWorkspaceWritable(record);
+  if (request.operation === 'sandbox.fs.write') {
+    const result = await runPodmanWithInput(buildSandboxFilesystemArgs({ runtimeId, operation: request.operation, path: request.path }), request.content, 30_000, 128 * 1024);
+    return { sandboxId: record.id, path: request.path, sizeBytes: Buffer.byteLength(request.content, 'utf8'), written: true, output: result.stdout.trim() };
+  }
+  const maxBuffer = request.operation === 'sandbox.fs.read' ? 3 * 1024 * 1024 : 1024 * 1024;
+  const result = await runPodman(buildSandboxFilesystemArgs({ runtimeId, operation: request.operation, path: request.path }), 30_000, maxBuffer);
+  if (request.operation === 'sandbox.fs.read') return { sandboxId: record.id, path: request.path, ...decodeSandboxFile(result.stdout.trim()) };
+  return { sandboxId: record.id, path: request.path, entries: parseSandboxDirectoryListing(result.stdout) };
+}
+
+function redactSensitiveText(value) {
+  return String(value)
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]{16,}/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_TOKEN]')
+    .replace(/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]');
+}
+
+export function boundedSandboxOutput(stdout, stderr, maximumBytes) {
+  const output = Buffer.from(redactSensitiveText(stdout), 'utf8');
+  const error = Buffer.from(redactSensitiveText(stderr), 'utf8');
+  const truncated = output.length + error.length > maximumBytes;
+  const boundedOutput = output.subarray(0, maximumBytes);
+  const remaining = Math.max(0, maximumBytes - boundedOutput.length);
+  const boundedError = error.subarray(0, remaining);
+  return { stdout: boundedOutput.toString('utf8'), stderr: boundedError.toString('utf8'), truncated };
+}
+
+export function buildSandboxExecArgs({ runtimeId, cwd, command, env = {} }) {
+  validateWorkspaceRelativePath(cwd, true);
+  const environment = Object.entries(env).flatMap(([key, value]) => ['--env', `${key}=${value}`]);
+  const script = 'set -eu; root=/workspace; relative=$1; if [ -n "$relative" ]; then cd "$root/$relative"; else cd "$root"; fi; resolved=$(pwd -P); case "$resolved" in "$root"|"$root"/*) ;; *) echo "cwd escapes the assigned workspace" >&2; exit 126;; esac; shift; exec "$@"';
+  return ['exec', '--workdir', '/workspace', ...environment, runtimeId, 'sh', '-c', script, '--', cwd, ...safeArgv(command)];
+}
+
+async function sandboxExecute(request) {
+  const { record, runtimeId } = await taskSandboxRecord(request.sandboxId);
+  assert(runtimeId, 'Task sandbox runtime container is missing');
+  const cwdRelative = request.cwd ?? '';
+  const maxOutputBytes = request.maxOutputBytes ?? 262_144;
+  const timeout = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  try {
+    const args = buildSandboxExecArgs({ runtimeId, cwd: cwdRelative, command: request.command, env: request.env ?? {} });
+    const result = await runPodman(args, timeout, maxOutputBytes + 1);
+    const output = boundedSandboxOutput(result.stdout, result.stderr, maxOutputBytes);
+    return { sandboxId: record.id, cwd: cwdRelative, exitCode: 0, ...output, timedOut: false };
+  } catch (error) {
+    const failure = error;
+    if (Number.isInteger(failure.code)) {
+      const output = boundedSandboxOutput(failure.stdout ?? '', failure.stderr ?? '', maxOutputBytes);
+      return { sandboxId: record.id, cwd: cwdRelative, exitCode: failure.code, ...output, timedOut: false };
+    }
+    if (failure.code === 'ETIMEDOUT' || failure.killed) return { sandboxId: record.id, cwd: cwdRelative, exitCode: null, ...boundedSandboxOutput(failure.stdout ?? '', failure.stderr ?? '', maxOutputBytes), timedOut: true };
+    if (failure.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return { sandboxId: record.id, cwd: cwdRelative, exitCode: null, ...boundedSandboxOutput(failure.stdout ?? '', failure.stderr ?? '', maxOutputBytes), timedOut: false, truncated: true };
+    throw error;
+  }
+}
+
 async function execute(request) {
   await ensureDataDir();
+  if (request.operation === 'sandbox.exec') return sandboxExecute(request);
+  if (request.operation.startsWith('sandbox.fs.')) return sandboxFilesystem(request);
   if (request.operation === 'image.inspect' || request.operation === 'image.pull') return imageOperation(request);
   if (request.operation === 'container.create') return createWorkload(request);
   if (request.operation === 'container.list') {
@@ -381,9 +626,39 @@ function handleConnection(socket) {
     if (newline !== input.length - 1) { respond(socket, { error: 'Only one request is allowed per connection' }); return; }
     try {
       const request = parseRuntimeRequest(input.slice(0, newline));
-      const operation = operationQueue.then(() => execute(request));
-      operationQueue = operation.then(() => undefined, () => undefined);
-      respond(socket, { result: await operation });
+      if (request.operation.startsWith('sandbox.')) {
+        if (mutatingWorkloads.has(request.sandboxId)) {
+          respond(socket, { error: 'SANDBOX_BUSY: lifecycle mutation is in progress' });
+          return;
+        }
+        if (!hasSandboxCapacity(activeSandboxOperations)) {
+          respond(socket, { error: 'SANDBOX_CAPACITY_EXCEEDED: maximum concurrent sandbox operations reached' });
+          return;
+        }
+        activeSandboxOperations += 1;
+        activeSandboxWorkloads.set(request.sandboxId, (activeSandboxWorkloads.get(request.sandboxId) ?? 0) + 1);
+        try { respond(socket, { result: await execute(request) }); }
+        finally {
+          activeSandboxOperations -= 1;
+          const remaining = (activeSandboxWorkloads.get(request.sandboxId) ?? 1) - 1;
+          if (remaining > 0) activeSandboxWorkloads.set(request.sandboxId, remaining);
+          else activeSandboxWorkloads.delete(request.sandboxId);
+        }
+      } else {
+        const lifecycleMutation = ['container.start', 'container.stop', 'container.remove'].includes(request.operation);
+        if (lifecycleMutation) {
+          const id = request.workloadId;
+          if (mutatingWorkloads.has(id) || isSandboxBusy(activeSandboxWorkloads.get(id) ?? 0)) {
+            respond(socket, { error: 'SANDBOX_BUSY: task sandbox operations are active or a lifecycle mutation is already in progress' });
+            return;
+          }
+          mutatingWorkloads.add(id);
+        }
+        const operation = operationQueue.then(() => execute(request));
+        operationQueue = operation.then(() => undefined, () => undefined);
+        try { respond(socket, { result: await operation }); }
+        finally { if (lifecycleMutation) mutatingWorkloads.delete(request.workloadId); }
+      }
     } catch (error) {
       respond(socket, { error: error instanceof Error ? error.message : 'Runtime operation failed' });
     }
