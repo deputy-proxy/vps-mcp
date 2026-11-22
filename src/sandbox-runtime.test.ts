@@ -10,7 +10,7 @@ describe('sandbox runtime request contract', () => {
     expect(() => validateSandboxRuntimeRequest({ operation: 'image.inspect', image })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({
       operation: 'container.create', workloadId: id, workloadType: 'task',
-      repositoryId: 'deputy-proxy-vps-mcp', image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+      repositoryId: 'deputy-proxy-vps-mcp', worktreeId: id, workspacePath: '/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/' + id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
       network: 'none', readOnlyRootfs: true, command: ['sleep', 'infinity'],
     })).not.toThrow();
   });
@@ -19,7 +19,7 @@ describe('sandbox runtime request contract', () => {
     expect(() => validateSandboxRuntimeRequest({ operation: 'image.pull', image: 'alpine:latest' })).toThrow('sha256');
     expect(() => validateSandboxRuntimeRequest({ operation: 'container.inspect', workloadId: '../../etc/passwd' })).toThrow('workload ID');
     expect(() => validateSandboxRuntimeRequest({
-      operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo',
+      operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo', worktreeId: id, workspacePath: '/var/lib/vps-mcp/task-workspaces/worktrees/repo/' + id,
       image, resources: { memoryMiB: 8192 },
     })).toThrow('memoryMiB');
     expect(() => validateSandboxRuntimeRequest({
@@ -29,11 +29,11 @@ describe('sandbox runtime request contract', () => {
 
   it('rejects network access and writable root filesystems', () => {
     expect(() => validateSandboxRuntimeRequest({
-      operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo',
+      operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo', worktreeId: id, workspacePath: '/var/lib/vps-mcp/task-workspaces/worktrees/repo/' + id,
       image, network: 'bridge' as 'none',
     })).toThrow('network=none');
     expect(() => validateSandboxRuntimeRequest({
-      operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo',
+      operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo', worktreeId: id, workspacePath: '/var/lib/vps-mcp/task-workspaces/worktrees/repo/' + id,
       image, readOnlyRootfs: false as true,
     })).toThrow(/read-only/i);
   });
