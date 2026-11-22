@@ -11,6 +11,10 @@ REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 LIBEXEC=/usr/local/libexec/vps-mcp
 SYSTEMD_DIR=/etc/systemd/system
 ENV_DIR=/etc/vps-sandbox
+QUOTA_SOCKET_SOURCE="$REPO_DIR/systemd/vps-sandbox-quota-broker.socket"
+QUOTA_SERVICE_SOURCE="$REPO_DIR/systemd/vps-sandbox-quota-broker.service"
+QUOTA_SOCKET="$SYSTEMD_DIR/vps-sandbox-quota-broker.socket"
+QUOTA_SERVICE="$SYSTEMD_DIR/vps-sandbox-quota-broker.service"
 UID_VALUE="$(id -u vps-sandbox)"
 RUNTIME_ENV="${ENV_DIR}/runtime.env"
 
@@ -22,11 +26,13 @@ command -v systemd-analyze >/dev/null || { echo "systemd-analyze is required." >
 command -v setfacl >/dev/null || { echo "The acl package (setfacl) is required for per-worktree runtime access." >&2; exit 2; }
 command -v find >/dev/null || { echo "find is required for inherited worktree ACLs." >&2; exit 2; }
 
-systemd-analyze verify "${REPO_DIR}/systemd/vps-sandbox-runtime.socket" "${REPO_DIR}/systemd/vps-sandbox-runtime.service"
+systemd-analyze verify "$REPO_DIR/systemd/vps-sandbox-runtime.socket" "$REPO_DIR/systemd/vps-sandbox-runtime.service" "$QUOTA_SOCKET_SOURCE" "$QUOTA_SERVICE_SOURCE"
 install -d -o root -g root -m 0755 "${LIBEXEC}" "${ENV_DIR}"
 install -o root -g root -m 0755 "${SCRIPT_DIR}/vps-sandbox-runtime.mjs" "${LIBEXEC}/vps-sandbox-runtime.mjs"
 install -o root -g root -m 0644 "${SCRIPT_DIR}/executions.mjs" "${LIBEXEC}/executions.mjs"
-install -o root -g root -m 0644 "${SCRIPT_DIR}/resource-governance.mjs" "${LIBEXEC}/resource-governance.mjs"
+install -o root -g root -m 0644 "$SCRIPT_DIR/resource-governance.mjs" "$LIBEXEC/resource-governance.mjs"
+install -o root -g root -m 0755 "$SCRIPT_DIR/vps-sandbox-quota-helper.mjs" "$LIBEXEC/vps-sandbox-quota-helper.mjs"
+install -o root -g root -m 0755 "$SCRIPT_DIR/vps-sandbox-quota-broker.mjs" "$LIBEXEC/vps-sandbox-quota-broker.mjs"
 
 if [[ ! -e "${RUNTIME_ENV}" ]]; then
   umask 027
@@ -60,11 +66,14 @@ else
   echo "Preserving existing ${RUNTIME_ENV}; inspect its D-Bus and workspace-root values manually."
 fi
 
-install -o root -g root -m 0644 "${REPO_DIR}/systemd/vps-sandbox-runtime.socket" "${SYSTEMD_DIR}/vps-sandbox-runtime.socket"
+install -o root -g root -m 0644 "$REPO_DIR/systemd/vps-sandbox-runtime.socket" "$SYSTEMD_DIR/vps-sandbox-runtime.socket"
+install -o root -g root -m 0644 "$QUOTA_SOCKET_SOURCE" "$QUOTA_SOCKET"
+install -o root -g root -m 0644 "$QUOTA_SERVICE_SOURCE" "$QUOTA_SERVICE"
 install -o root -g root -m 0644 "${REPO_DIR}/systemd/vps-sandbox-runtime.service" "${SYSTEMD_DIR}/vps-sandbox-runtime.service"
-systemctl stop vps-sandbox-runtime.socket vps-sandbox-runtime.service 2>/dev/null || true
+systemctl stop vps-sandbox-runtime.socket vps-sandbox-runtime.service vps-sandbox-quota-broker.socket vps-sandbox-quota-broker.service 2>/dev/null || true
 systemctl daemon-reload
-systemctl enable --now vps-sandbox-runtime.socket
+systemctl enable --now vps-sandbox-runtime.socket vps-sandbox-quota-broker.socket
+systemctl is-active --quiet vps-sandbox-quota-broker.socket
 systemctl is-active --quiet vps-sandbox-runtime.socket
 printf 'Installed rootless workload runtime agent.\n'
 printf 'Socket: /run/vps-sandbox-runtime.sock (vps-sandbox:vps-mcp 0660)\n'

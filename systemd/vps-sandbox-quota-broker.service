@@ -1,0 +1,27 @@
+[Unit]
+Description=Restricted root task workspace project-quota broker
+Requires=vps-sandbox-quota-broker.socket
+After=vps-sandbox-quota-broker.socket
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/node /usr/local/libexec/vps-mcp/vps-sandbox-quota-broker.mjs
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=15
+TimeoutStopSec=10
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_FOWNER CAP_DAC_OVERRIDE
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+PrivateTmp=yes
+PrivateDevices=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/etc/vps-sandbox /var/lib/vps-mcp/task-workspaces/worktrees -/srv/vps-mcp-workspaces
+UMask=0077
