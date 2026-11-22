@@ -111,3 +111,7 @@ Before enabling the workflow variable:
 ## Scope boundary
 
 This workflow deploys only the `vps-mcp` production checkout at `/opt/vps-mcp`. It does not deploy other managed repositories. A development deployment workflow is not configured here because its target checkout and runtime must be explicitly registered and verified before automation; do not infer a development target from a hostname or overwrite an existing checkout.
+
+## Smoke-test releases
+
+A documentation-only commit merged to `main` is sufficient to exercise the push-triggered production deployment path. It still performs the complete deployment sequence, including checkout validation, dependency installation, build, service restart and health verification. It is not a dry run; use it only when an actual production deployment test is intended.
