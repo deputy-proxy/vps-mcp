@@ -4,7 +4,7 @@ An OAuth-protected remote Model Context Protocol (MCP) server for bootstrapping 
 
 ## Rootless task sandbox runtime
 
-Task sandbox command, filesystem and durable background execution tools require a managed task sandbox ID. They execute only inside the selected rootless container and never fall back to host execution. The production runtime uses the dedicated vps-sandbox identity, digest-pinned image and workspace allowlists, network isolation, read-only root filesystem, dropped capabilities and bounded resources. See the [runtime architecture](docs/architecture/container-runtime.md), [task sandbox security boundary](docs/security/sandbox-filesystem.md), [execution lifecycle](docs/architecture/execution-lifecycle.md), and [execution operations](docs/operations/executions.md).
+Task sandbox command, filesystem and durable background execution tools require a managed task sandbox ID. They execute only inside the selected rootless container and never fall back to host execution. The production runtime uses the dedicated vps-sandbox identity, digest-pinned image and workspace allowlists, network isolation, read-only root filesystem, dropped capabilities and bounded resources. Resource governance, durable locks, cleanup and emergency controls are documented in [resource governance](docs/operations/resource-governance.md) and [cleanup/recovery](docs/operations/cleanup-and-recovery.md). See the [runtime architecture](docs/architecture/container-runtime.md), [task sandbox security boundary](docs/security/sandbox-filesystem.md), [execution lifecycle](docs/architecture/execution-lifecycle.md), and [execution operations](docs/operations/executions.md).
 
 The runtime agent and its execution module are installed under /usr/local/libexec/vps-mcp. The administrator installer is scripts/install-vps-sandbox-runtime.sh. It preserves the root-owned runtime environment and does not alter the public vps-mcp.service. The restricted vps-sandboxctl diagnostic helper remains separate; it is not a general privileged command interface.
 
@@ -28,15 +28,22 @@ The runtime agent and its execution module are installed under /usr/local/libexe
 | `sandbox.stop` | Cancel active task executions and stop the selected sandbox |
 | `sandbox.remove` | Cancel active task executions and remove the selected sandbox |
 | `sandbox.logs` | Read container logs for a selected task sandbox |
-| `sandbox.exec` | Execute a bounded synchronous argv command inside a selected running task sandbox |
+| `sandbox.exec` | Execute a bounded synchronous command with retry-safe operation IDs |
 | `sandbox.filesystem.list` | List files inside a selected task workspace |
 | `sandbox.filesystem.read` | Read a UTF-8 file from a selected task workspace (maximum 2 MiB) |
 | `sandbox.filesystem.write` | Atomically write a UTF-8 file inside a selected task workspace (maximum 1 MiB) |
-| `sandbox.execution.start` | Start a durable background command in a selected task sandbox |
+| `sandbox.execution.start` | Start a durable background command with retry-safe execution IDs |
 | `sandbox.execution.list` | List recent executions belonging to one task sandbox |
 | `sandbox.execution.status` | Reconcile one execution against its container-local process identity |
 | `sandbox.execution.logs` | Read bounded persistent logs with tail/offset support |
 | `sandbox.execution.cancel` | Gracefully cancel one execution, then escalate after two seconds |
+| `resource.capacity` | Inspect global/per-repository CPU, memory, PID and disk budgets |
+| `resource.reserve` | Reserve capacity for a persistent project environment |
+| `resource.release` | Release a deprovisioned project resource reservation |
+| `sandbox.cleanup.preview` | Preview expired/orphan task containers, stale locks and temporary files |
+| `sandbox.cleanup.run` | Confirm safe task-container cleanup and stale runtime-file housekeeping |
+| `sandbox.maintenance.pause` | Emergency pause/resume for new work and automatic cleanup |
+| `sandbox.audit.list` | Read recent redacted private runtime audit events |
 | `repository.register` | Register a canonical GitHub repository and inspect required branches |
 | `repository.list` | List the persistent managed repository registry |
 | `repository.inspect` | Inspect remote, cache, worktrees, environments and health |

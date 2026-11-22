@@ -15,12 +15,14 @@
 Every created container receives:
 
 - Rootless Podman; no rootful engine or Docker group.
-- --network=none; no host network namespace.
+- Task workloads use the `task-no-egress` policy and `--network=none`; no host network namespace or outbound network access.
+- Project-service workloads use a distinct `project-private-no-egress` policy and also remain on `--network=none` until #42 provisions per-project private routing. No shared bridge or arbitrary caller-selected network is accepted.
 - Private PID/IPC namespaces (Podman defaults; host namespace joins are never accepted).
 - --read-only root filesystem.
 - --cap-drop=ALL.
 - --security-opt=no-new-privileges.
-- Default Podman seccomp profile.
+- Explicit administrator-managed Podman seccomp profile (`/usr/share/containers/seccomp.json`).
+- `--userns=keep-id` and the mapped `vps-sandbox` UID/GID; task processes do not run as container root.
 - Explicit PID, memory and CPU limits.
 - A 64 MiB /tmp tmpfs with noexec,nosuid,nodev.
 - No device passthrough, privileged mode, host path mounts by default, or runtime socket mounts.
@@ -64,3 +66,15 @@ The systemd runtime service uses ProtectControlGroups=no with explicit cgroup de
 - Workload type mismatch: reject.
 - Interrupted or missing runtime state: mark unknown and retain records for inspection.
 - No automatic cleanup of unexplained containers, dirty workspaces or project services.
+
+## Resource governance and disk safety
+
+The runtime agent enforces global and per-repository CPU, memory, PID and disk reservation budgets before admitting a workload. It reserves host headroom, rejects overcommit with `SANDBOX_CAPACITY_EXCEEDED`, and blocks new allocations when the configured disk safety margin would be crossed. Project environments must reserve their resources before provisioning; an active project-service workload consumes its reservation rather than being double-counted.
+
+Task workspaces have a configurable disk budget (`diskMiB`, default 2048 MiB). The rootless runtime agent measures regular files without following symlinks and stops a task container that exceeds its workspace budget. This is periodic watchdog enforcement, not a filesystem-level project quota: a workload can temporarily exceed the threshold between scans. Strict block-level quotas require a separately provisioned quota-capable filesystem and are not claimed by this implementation. Global disk warning/critical levels include the runtime data filesystem and Podman storage reporting. The capacity tool also reports repository caches, task worktrees and registered persistent project-environment paths, without reading file contents.
+
+## Locking, cleanup and audit
+
+Mutating lifecycle, workspace and resource operations acquire durable per-resource locks. Lock owners include PID and process-start identity; a lock is reclaimed only after the owner is proven dead or the owner record remains invalid beyond the stale-lock grace period. Locks are acquired in stable key order and have bounded waits.
+
+Automatic cleanup is disabled by default (`VPS_SANDBOX_CLEANUP_ENABLED=false`). When enabled, the reaper only removes expired, stopped task containers with terminal executions. It never removes project-service workloads, worktrees, retained work or execution history. Operators can preview cleanup, run it explicitly, and use an emergency pause to block new creation, starts, writes and command execution. Lifecycle, capacity, cleanup, pause and policy-denial events are stored in private, bounded JSONL audit files with credential-pattern redaction.

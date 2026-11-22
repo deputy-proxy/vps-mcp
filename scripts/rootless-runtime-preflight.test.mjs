@@ -5,7 +5,7 @@ const readySnapshot = {
   platform: 'linux', executionUser: 'vps-sandbox', cgroup: 'cgroup2fs', cgroupDelegation: true, userNamespace: true,
   subuid: true, subgid: true, newuidmap: true, newgidmap: true,
   slirp4netns: true, pasta: false, fuseOverlayfs: true,
-  podman: true, podmanVersion: 'podman version 5.0.0',
+  podman: true, podmanVersion: 'podman version 5.0.0', seccompProfile: true,
   noNewPrivileges: false, capSetuid: true, capSetgid: true,
   storageWritable: true, memoryBytes: 8 * 1024 ** 3, diskAvailableBytes: 50 * 1024 ** 3,
 };

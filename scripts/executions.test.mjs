@@ -56,6 +56,14 @@ describe('durable sandbox execution contracts', () => {
     });
   });
 
+  it('supports stable caller-supplied execution IDs and request fingerprints', () => {
+    const executionId = '234e5321-b4d7-4d4f-be92-ce56a984adaa';
+    const record = createExecutionRecord({ sandboxId, runtimeId: 'a'.repeat(64), command: ['node', '-v'], cwd: '', timeoutMs: 30_000,
+      id: executionId, requestFingerprint: 'b'.repeat(64), now: new Date('2026-11-22T00:00:00.000Z') });
+    expect(record.id).toBe(executionId);
+    expect(record.requestFingerprint).toBe('b'.repeat(64));
+  });
+
   it('persists only a redacted command summary and fingerprint, never raw arguments', () => {
     const command = ['node', '--token', 'ghp_' + 'a'.repeat(30)];
     const metadata = executionCommandMetadata(command);

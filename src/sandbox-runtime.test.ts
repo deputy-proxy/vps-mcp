@@ -39,6 +39,12 @@ describe('sandbox runtime request contract', () => {
     expect(() => validateSandboxRuntimeRequest({
       operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', worktreeId: id, image, workspacePath: '/tmp/project',
     })).toThrow('managed separately');
+    expect(() => validateSandboxRuntimeRequest({
+      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', image, network: 'none', readOnlyRootfs: true,
+    })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({
+      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', image, network: 'host' as unknown as 'none', readOnlyRootfs: true,
+    })).toThrow('network=none');
   });
 
   it('rejects mutable image tags, invalid IDs, raw flags and unsafe resource values', () => {
@@ -55,6 +61,9 @@ describe('sandbox runtime request contract', () => {
 
   it('requires a sandbox ID and validates task-only operation arguments', () => {
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, command: ['node', '-v'] })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, operationId: id, command: ['node', '-v'] })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, operationId: 'not-a-uuid', command: ['node', '-v'] })).toThrow('operation ID');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.execution.start', sandboxId: id, executionId: id, command: ['sleep', '1'] })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.list', sandboxId: id, path: '' })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.read', sandboxId: id, path: 'src/index.ts' })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.fs.write', sandboxId: id, path: 'notes.txt', content: 'hello' })).not.toThrow();

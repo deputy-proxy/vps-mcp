@@ -23,6 +23,7 @@ export function evaluateSnapshot(snapshot) {
   add('network-helper', snapshot.slirp4netns === true || snapshot.pasta === true, `slirp4netns=${snapshot.slirp4netns}; pasta=${snapshot.pasta}`);
   add('overlay-helper', snapshot.fuseOverlayfs === true, `fuse-overlayfs=${snapshot.fuseOverlayfs}`, false);
   add('podman', snapshot.podman === true, `podman=${snapshot.podmanVersion ?? 'not installed'}`);
+  add('seccomp-profile', snapshot.seccompProfile === true, snapshot.seccompProfileDetail ?? 'the administrator-managed Podman seccomp profile must be installed');
   add('storage-writable', snapshot.storageWritable === true, snapshot.storageDetail ?? 'rootless container storage directory must be writable');
   add('memory', snapshot.memoryBytes >= 2 * 1024 ** 3, `available=${snapshot.memoryBytes == null ? 'unknown' : `${Math.round(snapshot.memoryBytes / 1024 ** 3)} GiB`}`, false);
   add('disk', snapshot.diskAvailableBytes >= 10 * 1024 ** 3, `available=${snapshot.diskAvailableBytes == null ? 'unknown' : `${Math.round(snapshot.diskAvailableBytes / 1024 ** 3)} GiB`}`, false);
@@ -88,6 +89,8 @@ export function collectSnapshot() {
   const subuid = hasSubordinateRange('/etc/subuid', RUNTIME_USER);
   const subgid = hasSubordinateRange('/etc/subgid', RUNTIME_USER);
   const podmanVersion = command('podman', ['--version']);
+  const seccompProfilePath = '/usr/share/containers/seccomp.json';
+  const seccompProfile = (() => { try { accessSync(seccompProfilePath, constants.R_OK); return true; } catch { return false; } })();
   const processStatus = read('/proc/self/status') ?? '';
   const noNewPrivilegesMatch = processStatus.match(/^NoNewPrivs:\s+(\d+)$/m);
   const noNewPrivileges = noNewPrivilegesMatch ? noNewPrivilegesMatch[1] === '1' : null;
@@ -158,6 +161,8 @@ export function collectSnapshot() {
     fuseOverlayfs: has('fuse-overlayfs'),
     podman: Boolean(podmanVersion),
     podmanVersion,
+    seccompProfile,
+    seccompProfileDetail: `${seccompProfilePath} ${seccompProfile ? 'is readable' : 'is missing or unreadable'}`,
     noNewPrivileges,
     capSetuid,
     capSetgid,

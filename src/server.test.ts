@@ -121,7 +121,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(44);
+    expect(tools.size).toBe(51);
 
     for (const name of [
       "system.health",
@@ -137,6 +137,9 @@ describe("Streamable HTTP endpoint", () => {
       "sandbox.list",
       "sandbox.logs",
       "sandbox.image.inspect",
+      "resource.capacity",
+      "sandbox.cleanup.preview",
+      "sandbox.audit.list",
     ]) {
       expect(tools.get(name)?.annotations).toMatchObject({
         readOnlyHint: true,
@@ -165,7 +168,7 @@ describe("Streamable HTTP endpoint", () => {
         openWorldHint: name.startsWith("sandbox.") ? false : true,
       });
     }
-    for (const name of ["sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull", "sandbox.execution.start", "sandbox.execution.list", "sandbox.execution.status", "sandbox.execution.logs", "sandbox.execution.cancel"]) {
+    for (const name of ["sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull", "sandbox.execution.start", "sandbox.execution.list", "sandbox.execution.status", "sandbox.execution.logs", "sandbox.execution.cancel", "resource.capacity", "resource.reserve", "resource.release", "sandbox.cleanup.preview", "sandbox.cleanup.run", "sandbox.maintenance.pause", "sandbox.audit.list"]) {
       expect(tools.get(name)?.inputSchema).toBeDefined();
     }
     expect(tools.get("sandbox.execution.cancel")?.annotations).toMatchObject({
@@ -174,6 +177,9 @@ describe("Streamable HTTP endpoint", () => {
     expect(tools.get("sandbox.image.pull")?.annotations).toMatchObject({
       readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false,
     });
+    expect(tools.get("resource.reserve")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
+    expect(tools.get("sandbox.cleanup.run")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false });
+    expect(tools.get("sandbox.maintenance.pause")?.inputSchema).toBeDefined();
     expect(tools.get("sandbox.exec")?.inputSchema).toBeDefined();
     expect(tools.get("sandbox.filesystem.read")?.inputSchema).toBeDefined();
     expect(tools.get("repository.task-branch.validate")?.annotations).toMatchObject({
