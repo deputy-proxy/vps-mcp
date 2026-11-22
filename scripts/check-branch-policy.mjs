@@ -50,7 +50,7 @@ function branchList(value) {
 
 function hasBranchGuard(expression, branch) {
   const value = String(expression ?? "");
-  return new RegExp(`(?:github\\.ref\s*==\s*['\"]refs/heads/${branch}['\"]|github\\.ref_name\s*==\s*['\"]${branch}['\"])`).test(value);
+  return new RegExp(`(?:github\\.ref\\s*==\\s*['\"]refs/heads/${branch}['\"]|github\\.ref_name\\s*==\\s*['\"]${branch}['\"])`).test(value);
 }
 
 function hasPushEventGuard(expression) {
