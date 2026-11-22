@@ -253,13 +253,27 @@ async function discover(repository: ManagedRepository): Promise<{ defaultBranch:
 }
 
 async function directoryBytes(directory: string): Promise<number> {
+  let entries;
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return 0;
+    throw error;
+  }
+
   let total = 0;
-  const entries = await fs.readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
     const target = path.join(directory, entry.name);
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) total += await directoryBytes(target);
-    else if (entry.isFile()) total += (await fs.stat(target)).size;
+    else if (entry.isFile()) {
+      try {
+        total += (await fs.stat(target)).size;
+      } catch (error) {
+        // Git may remove transient lock files while the cache is being measured.
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      }
+    }
     if (total > MAX_CACHE_BYTES) return total;
   }
   return total;
