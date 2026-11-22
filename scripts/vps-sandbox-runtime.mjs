@@ -107,7 +107,6 @@ async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RES
       HOME: '/var/lib/vps-sandbox',
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '',
       DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ?? '',
-      CONTAINERS_CONF: '/etc/containers/containers.conf',
     },
   });
   return { stdout: stdout ?? '', stderr: stderr ?? '' };
