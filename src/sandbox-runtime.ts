@@ -138,7 +138,7 @@ export type RuntimeWorkloadRecord = {
 export interface SandboxRuntimeAdapter {
   inspectImage(image: string): Promise<{ image: string; imageId: string }>;
   pullImage(image: string): Promise<{ image: string; pulled: true; output: string }>;
-  createWorkload(input: Omit<Extract<SandboxRuntimeRequest, { operation: 'container.create' }>, 'workspacePath'>): Promise<RuntimeWorkloadRecord>;
+  createWorkload(input: Omit<Extract<SandboxRuntimeRequest, { operation: 'container.create' }>, 'operation' | 'workspacePath'>): Promise<RuntimeWorkloadRecord>;
   startWorkload(id: string, expectedType: WorkloadType): Promise<unknown>;
   inspectWorkload(id: string): Promise<unknown>;
   listWorkloads(): Promise<{ workloads: RuntimeWorkloadRecord[] }>;
@@ -159,11 +159,12 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
         if (workspace.repositoryId !== input.repositoryId) throw new Error('Worktree does not belong to the requested repository');
         return requestSandboxRuntime({
           ...input,
+          operation: 'container.create',
           workspacePath: workspace.workspacePath,
           workspaceAccess: input.workspaceAccess ?? 'read-write',
         }, socketPath);
       }
-      return requestSandboxRuntime(input, socketPath);
+      return requestSandboxRuntime({ ...input, operation: 'container.create' }, socketPath);
     },
     startWorkload: (workloadId, expectedWorkloadType) => requestSandboxRuntime({ operation: 'container.start', workloadId, expectedWorkloadType }, socketPath),
     inspectWorkload: (workloadId) => requestSandboxRuntime({ operation: 'container.inspect', workloadId }, socketPath),
