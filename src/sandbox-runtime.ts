@@ -1,5 +1,4 @@
 import net from 'node:net';
-import { prepareTaskWorkspaceForRuntime } from './task-workspaces.js';
 
 export type WorkloadType = 'task' | 'project-service';
 export type RuntimeResources = { cpuMilli?: number; memoryMiB?: number; pids?: number };
@@ -155,6 +154,7 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
     createWorkload: async (input) => {
       if (input.workloadType === 'task') {
         if (!input.worktreeId) throw new Error('Task workloads require a managed worktree ID');
+        const { prepareTaskWorkspaceForRuntime } = await import('./task-workspaces.js');
         const workspace = await prepareTaskWorkspaceForRuntime(input.worktreeId);
         if (workspace.repositoryId !== input.repositoryId) throw new Error('Worktree does not belong to the requested repository');
         return requestSandboxRuntime({
