@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const SOCKET = '/run/vps-sandbox-runtime.sock';
 const DATA_DIR = '/var/lib/vps-sandbox/workloads';
 const PODMAN = '/usr/bin/podman';
+const CGROUP_PARENT = '/system.slice/vps-sandbox-runtime.service';
 const MAX_REQUEST_BYTES = 32 * 1024;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -100,7 +101,7 @@ function commandFingerprint(command) {
   return createHash('sha256').update(JSON.stringify(command ?? null)).digest('hex');
 }
 async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RESPONSE_BYTES) {
-  const { stdout, stderr } = await execFileAsync(PODMAN, ['--cgroup-manager=systemd', ...args], {
+  const { stdout, stderr } = await execFileAsync(PODMAN, ['--cgroup-manager=cgroupfs', ...args], {
     encoding: 'utf8', timeout, maxBuffer,
     env: {
       PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
@@ -116,7 +117,7 @@ export function assertWorkloadTypeMatch(record, expectedWorkloadType) {
 }
 export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, command }) {
   return [
-    'create', '--pull=never', '--name', `vps-wl-${id}`,
+    'create', '--pull=never', '--cgroup-parent', CGROUP_PARENT, '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
     '--network=none', '--read-only', '--cap-drop=ALL',
     '--security-opt=no-new-privileges', '--pids-limit', String(resources.pids),
