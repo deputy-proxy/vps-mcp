@@ -91,7 +91,7 @@ describe("branch governance workflow validation", () => {
       pull_request: {
         head: { ref: "reconcile/main-into-development" },
         base: { ref: "development" },
-        body: "## Main reconciliation\\n\\nBring the production merge history back into development.",
+        body: "## Main reconciliation\n\nBring the production merge history back into development.",
       },
     })).toMatchObject({ valid: true, kind: "reconciliation" });
     expect(validatePullRequest({
@@ -105,7 +105,7 @@ describe("branch governance workflow validation", () => {
       pull_request: {
         head: { ref: "reconcile/main-into-development" },
         base: { ref: "main" },
-        body: "## Main reconciliation\\n\\nWrong direction.",
+        body: "## Main reconciliation\n\nWrong direction.",
       },
     }).valid).toBe(false);
   });
