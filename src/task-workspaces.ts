@@ -346,7 +346,7 @@ export async function removeTaskWorkspace(input: { id: string; confirm: boolean;
     }
   });
 }
-export async function pruneTaskWorkspaces(input: { olderThanDays: number; dryRun: boolean; confirm?: boolean }) {
+export async function pruneTaskWorkspaces(input: { olderThanDays: number; dryRun: boolean; confirm?: boolean }, beforeRemove?: (id: string) => Promise<void>) {
   if (!Number.isInteger(input.olderThanDays) || input.olderThanDays < 1 || input.olderThanDays > 3650) throw new Error("olderThanDays must be between 1 and 3650");
   if (!input.dryRun && input.confirm !== true) throw new Error("Pruning requires confirm=true when dryRun=false");
   const cutoff = Date.now() - input.olderThanDays * 86_400_000;
@@ -358,7 +358,7 @@ export async function pruneTaskWorkspaces(input: { olderThanDays: number; dryRun
       if (!state.exists || !state.linked) results.push({ id: candidate.id, eligible: false, reason: "worktree missing or unlinked" });
       else if (state.changes.dirty) results.push({ id: candidate.id, eligible: false, reason: "workspace has uncommitted or untracked changes" });
       else if (input.dryRun) results.push({ id: candidate.id, eligible: true });
-      else { await removeTaskWorkspace({ id: candidate.id, confirm: true }); results.push({ id: candidate.id, eligible: true, removed: true }); }
+      else { await beforeRemove?.(candidate.id); await removeTaskWorkspace({ id: candidate.id, confirm: true }); results.push({ id: candidate.id, eligible: true, removed: true }); }
     } catch (error) { results.push({ id: candidate.id, eligible: false, reason: error instanceof Error ? error.message : "prune check failed" }); }
   }
   return { dryRun: input.dryRun, olderThanDays: input.olderThanDays, candidates: results, removedCount: results.filter((item) => item.removed).length };
