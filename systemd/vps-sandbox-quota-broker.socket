@@ -1,0 +1,11 @@
+[Unit]
+Description=Restricted task workspace project-quota socket
+[Socket]
+ListenStream=/run/vps-sandbox-quota.sock
+SocketUser=root
+SocketGroup=vps-sandbox
+SocketMode=0660
+RemoveOnStop=yes
+Service=vps-sandbox-quota-broker.service
+[Install]
+WantedBy=sockets.target

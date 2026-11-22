@@ -203,4 +203,34 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('type=bind,src=/var/lib/vps-sandbox/execution-logs/134e5321-b4d7-4d4f-be92-ce56a984adaa,dst=/run/vps-mcp-executions,rw');
     expect(args).not.toContain('/workspace');
   });
+  it('allows task egress only through the administrator-pinned proxy network mode', () => {
+    const image = 'docker.io/library/node@sha256:' + 'a'.repeat(64);
+    const args = buildContainerCreateArgs({
+      id: '134e5321-b4d7-4d4f-be92-ce56a984adaa',
+      workloadType: 'task',
+      repositoryId: 'deputy-proxy-vps-mcp',
+      worktreeId: '234e5321-b4d7-4d4f-be92-ce56a984adaa',
+      image,
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+      workspaceMount: null,
+      executionMount: { path: '/var/lib/vps-sandbox/execution-logs/134e5321-b4d7-4d4f-be92-ce56a984adaa', destination: '/run/vps-mcp-executions' },
+      network: 'slirp4netns:allow_host_loopback=true',
+      proxyUrl: 'http://10.0.2.2:3128',
+    });
+    expect(args).toContain('--network=slirp4netns:allow_host_loopback=true');
+    expect(args).not.toContain('--network=host');
+    expect(() => buildContainerCreateArgs({
+      id: '134e5321-b4d7-4d4f-be92-ce56a984adaa',
+      workloadType: 'task',
+      repositoryId: 'deputy-proxy-vps-mcp',
+      worktreeId: '234e5321-b4d7-4d4f-be92-ce56a984adaa',
+      image,
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+      workspaceMount: null,
+      executionMount: { path: '/var/lib/vps-sandbox/execution-logs/134e5321-b4d7-4d4f-be92-ce56a984adaa', destination: '/run/vps-mcp-executions' },
+      network: 'slirp4netns:allow_host_loopback=true',
+      proxyUrl: 'http://attacker.invalid:3128',
+    })).toThrow('Unsupported workload network policy');
+  });
+
 });
