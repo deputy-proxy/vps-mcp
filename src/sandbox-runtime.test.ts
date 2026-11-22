@@ -13,6 +13,12 @@ describe('sandbox runtime request contract', () => {
       repositoryId: 'deputy-proxy-vps-mcp', worktreeId: id, workspacePath: '/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/' + id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
       network: 'none', readOnlyRootfs: true, command: ['sleep', 'infinity'],
     })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({
+      operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo', worktreeId: id, image,
+    })).toThrow('authorized managed worktree');
+    expect(() => validateSandboxRuntimeRequest({
+      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', worktreeId: id, image, workspacePath: '/tmp/project',
+    })).toThrow('managed separately');
   });
 
   it('rejects mutable image tags, invalid IDs, raw flags and unsafe resource values', () => {
