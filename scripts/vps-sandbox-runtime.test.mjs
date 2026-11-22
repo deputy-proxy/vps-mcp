@@ -47,6 +47,14 @@ describe('rootless workload runtime request validation', () => {
     expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.fs.list', sandboxId, path: '' }))).toMatchObject({ operation: 'sandbox.fs.list' });
     expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.fs.read', sandboxId, path: 'README.md' }))).toMatchObject({ operation: 'sandbox.fs.read' });
     expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.fs.write', sandboxId, path: 'notes.txt', content: 'hello' }))).toMatchObject({ operation: 'sandbox.fs.write' });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.start', sandboxId, command: ['node', 'build.js'], cwd: 'src', timeoutMs: 60_000 }))).toMatchObject({ operation: 'sandbox.execution.start', sandboxId });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.list', sandboxId }))).toMatchObject({ operation: 'sandbox.execution.list', sandboxId });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.status', sandboxId, executionId: '234e5321-b4d7-4d4f-be92-ce56a984adaa' }))).toMatchObject({ operation: 'sandbox.execution.status' });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.logs', sandboxId, executionId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', offset: 128, maxBytes: 8192 }))).toMatchObject({ operation: 'sandbox.execution.logs' });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.cancel', sandboxId, executionId: '234e5321-b4d7-4d4f-be92-ce56a984adaa' }))).toMatchObject({ operation: 'sandbox.execution.cancel' });
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.status', sandboxId, executionId: 'not-a-uuid' }))).toThrow('Invalid execution ID');
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.start', sandboxId, command: ['id'], timeoutMs: 90_000_000 }))).toThrow('timeoutMs');
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.logs', sandboxId, executionId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', maxBytes: 300_000 }))).toThrow('maxBytes');
     expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.exec', sandboxId, command: ['id'], cwd: '../etc' }))).toThrow('unsafe component');
     expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.exec', sandboxId, command: ['id'], env: { PATH: '/tmp' } }))).toThrow('Environment');
     expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.fs.read', sandboxId, path: '/etc/passwd' }))).toThrow('workspace-relative');
@@ -164,6 +172,7 @@ describe('rootless workload lifecycle isolation', () => {
       image: `docker.io/library/node@sha256:${'a'.repeat(64)}`,
       resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
       workspaceMount: null,
+      executionMount: { path: '/var/lib/vps-sandbox/execution-logs/134e5321-b4d7-4d4f-be92-ce56a984adaa', destination: '/run/vps-mcp-executions' },
     });
     expect(args).toContain('--cgroup-parent');
     expect(args).toContain('/system.slice/vps-sandbox-runtime.service');
@@ -175,6 +184,7 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).not.toContain('--privileged');
     expect(args).not.toContain('--pid=host');
     expect(args).not.toContain('--network=host');
-    expect(args).not.toContain('--mount');
+    expect(args).toContain('type=bind,src=/var/lib/vps-sandbox/execution-logs/134e5321-b4d7-4d4f-be92-ce56a984adaa,dst=/run/vps-mcp-executions,rw');
+    expect(args).not.toContain('/workspace');
   });
 });

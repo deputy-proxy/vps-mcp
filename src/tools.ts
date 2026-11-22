@@ -5,7 +5,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { config } from "./config.js";
 import { VERSION } from "./version.js";
-import { executeCommand, startExecution, getExecutionStatus, getExecutionLogs, cancelExecution } from "./executions.js";
+import { executeCommand } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
 import { isRuntimeOperation, runRuntimeOperation } from "./runtime.js";
 import { applyRepositoryBranchPolicy, fetchRepository, inspectRepository, listRepositories, registerRepository, removeRepository, updateRepository, validateRepository } from "./repositories.js";
@@ -98,34 +98,6 @@ export function createMcpServer(): McpServer {
       maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
     },
   }, async ({ command, cwd, timeoutMs, maxOutputBytes }) => guarded(() => safely(() => executeCommand({ command, ...(cwd ? { cwd } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(maxOutputBytes ? { maxOutputBytes } : {}) }))));
-
-  server.registerTool("terminal.start", {
-    title: "Start background command",
-    description: "Start a detached Bash command and persist its execution metadata and combined output log.",
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    inputSchema: { command: z.string().min(1).max(20_000), cwd: z.string().optional() },
-  }, async ({ command, cwd }) => guarded(() => safely(() => startExecution({ command, ...(cwd ? { cwd } : {}) }))));
-
-  server.registerTool("terminal.status", {
-    title: "Execution status",
-    description: "Inspect a background execution by its execution ID.",
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    inputSchema: { executionId: z.string().uuid() },
-  }, async ({ executionId }) => guarded(() => safely(() => getExecutionStatus(executionId))));
-
-  server.registerTool("terminal.logs", {
-    title: "Execution logs",
-    description: "Read the most recent output from a background execution.",
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    inputSchema: { executionId: z.string().uuid(), maxBytes: z.number().int().positive().max(262_144).optional() },
-  }, async ({ executionId, maxBytes }) => guarded(() => safely(() => getExecutionLogs(executionId, maxBytes))));
-
-  server.registerTool("terminal.cancel", {
-    title: "Cancel execution",
-    description: "Send SIGTERM to a background execution process group.",
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    inputSchema: { executionId: z.string().uuid() },
-  }, async ({ executionId }) => guarded(() => safely(() => cancelExecution(executionId))));
 
   server.registerTool("runtime.acceptance", {
     title: "Rootless runtime acceptance",
@@ -295,6 +267,55 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: { sandboxId: z.string().uuid(), path: z.string().min(1).max(4096), content: z.string().max(1024 * 1024) },
   }, async ({ sandboxId, path, content }) => guarded(() => safelySandbox(() => sandboxRuntime.writeTaskSandboxFile({ sandboxId, path, content }))));
+
+  server.registerTool("sandbox.execution.start", {
+    title: "Start background task execution",
+    description: "Start a durable background command inside the selected running task sandbox. The command is argument-array based, scoped to that sandbox, and never runs on the host. Command arguments are not persisted; only a redacted executable summary and fingerprint are stored. Execution timeout, log size, concurrency and disk quotas are enforced.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      sandboxId: z.string().uuid(),
+      command: z.array(z.string().min(1).max(4096)).min(1).max(64),
+      cwd: z.string().max(4096).optional(),
+      timeoutMs: z.number().int().min(1000).max(86_400_000).optional(),
+    },
+  }, async ({ sandboxId, command, cwd, timeoutMs }) => guarded(() => safelySandbox(() => sandboxRuntime.startTaskSandboxExecution({
+    sandboxId, command, ...(cwd !== undefined ? { cwd } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }))));
+
+  server.registerTool("sandbox.execution.list", {
+    title: "List task sandbox executions",
+    description: "List recent durable executions belonging only to the selected task sandbox. Project-service workloads and executions from other sandboxes are never included.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid() },
+  }, async ({ sandboxId }) => guarded(() => safelySandbox(() => sandboxRuntime.listTaskSandboxExecutions(sandboxId))));
+
+  server.registerTool("sandbox.execution.status", {
+    title: "Inspect task execution status",
+    description: "Reconcile one execution's durable record against its process identity inside the selected task sandbox. After restart, missing or indeterminate processes are reported honestly rather than inferred from reusable host PIDs.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid(), executionId: z.string().uuid() },
+  }, async ({ sandboxId, executionId }) => guarded(() => safelySandbox(() => sandboxRuntime.getTaskSandboxExecutionStatus({ sandboxId, executionId }))));
+
+  server.registerTool("sandbox.execution.logs", {
+    title: "Read task execution logs",
+    description: "Read bounded persistent logs for one execution. Without offset, returns the latest bytes; with offset, supports incremental reads. Logs have a seven-day retention period and explicit truncation/continuation metadata.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      sandboxId: z.string().uuid(),
+      executionId: z.string().uuid(),
+      offset: z.number().int().min(0).optional(),
+      maxBytes: z.number().int().min(1024).max(262_144).optional(),
+    },
+  }, async ({ sandboxId, executionId, offset, maxBytes }) => guarded(() => safelySandbox(() => sandboxRuntime.getTaskSandboxExecutionLogs({
+    sandboxId, executionId, ...(offset !== undefined ? { offset } : {}), ...(maxBytes !== undefined ? { maxBytes } : {}),
+  }))));
+
+  server.registerTool("sandbox.execution.cancel", {
+    title: "Cancel task execution",
+    description: "Gracefully terminate only the selected execution process group inside its owning task sandbox, then escalate to SIGKILL after a bounded grace period. Never signals host PIDs or project-service workloads.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: { sandboxId: z.string().uuid(), executionId: z.string().uuid() },
+  }, async ({ sandboxId, executionId }) => guarded(() => safelySandbox(() => sandboxRuntime.cancelTaskSandboxExecution({ sandboxId, executionId }))));
 
   server.registerTool("repository.register", {
     title: "Register repository",
