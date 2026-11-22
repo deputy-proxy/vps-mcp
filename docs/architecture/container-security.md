@@ -36,7 +36,7 @@ Only these exact root directories may be configured:
 - /srv/vps-mcp-workspaces
 - /var/lib/vps-mcp/task-workspaces/worktrees
 
-The administrator must provision the chosen directory and prove ownership/access boundaries before adding it to the runtime environment file. A path under a permitted root is not automatically safe: workspace creation and ownership must still be controlled by the repository/worktree manager.
+The administrator must provision the chosen directory and prove ownership/access boundaries before adding it to the runtime environment file. The task-workspace manager grants per-worktree POSIX ACLs only after verifying the registry record and Git worktree linkage: execute-only access on ancestors (no listing), and read/write access plus inherited ACLs on the exact worktree. Callers cannot select a different path. The host acl package (setfacl) is required. A path under a permitted root is not automatically safe: workspace creation and ownership must still be controlled by the repository/worktree manager.
 
 ## Image policy
 
