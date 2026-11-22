@@ -29,7 +29,7 @@ Install from the checked-out repository as root:
 
 The installer copies the agent to /usr/local/libexec/vps-mcp/, installs the systemd socket and service, creates /etc/vps-sandbox/runtime.env if absent, and enables the socket. It preserves an existing runtime environment file. It does not modify vps-mcp.service, the diagnostic broker, Caddy, production services or application repositories.
 
-The default environment file leaves VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS and VPS_SANDBOX_ALLOWED_IMAGES empty. Do not populate it until the workspace root is provisioned and the vps-sandbox access boundary has been verified.
+The default environment file leaves VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS and VPS_SANDBOX_ALLOWED_IMAGES empty. Do not populate it until the workspace root is provisioned and the vps-sandbox access boundary has been verified. The runtime agent uses Podman’s cgroupfs manager with the fixed cgroup parent `/system.slice/vps-sandbox-runtime.service`; the service unit delegates CPU, memory and PID controllers. Keep this parent fixed so limits remain enforced inside the runtime service boundary.
 
 ## Verify service readiness
 
