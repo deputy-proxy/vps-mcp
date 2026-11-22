@@ -135,7 +135,7 @@ describe('durable sandbox execution contracts', () => {
     let child;
     try {
       child = spawn('/usr/bin/setsid', [
-        '/bin/bash', '-c', fixture.script, '--', executionId, '', '60', '4096', '/bin/sleep', '30',
+        '/bin/bash', '-c', fixture.script, '--', executionId, '', '60', '4096', '/bin/sh', '-c', 'trap \"\" TERM; exec /bin/sleep 30',
       ], { stdio: 'ignore' });
       for (let attempt = 0; attempt < 100; attempt += 1) {
         try {
@@ -179,7 +179,10 @@ describe('durable sandbox execution contracts', () => {
 
   it('validates a process identity inside the container rather than a host PID', () => {
     expect(buildExecutionIdentityCheckScript()).toContain('/proc/$pid/stat');
-    expect(buildExecutionIdentityCheckScript()).toContain('VPS_MCP_EXECUTION_ID=$id');
+    expect(buildExecutionIdentityCheckScript()).toContain('expected_start');
+    expect(buildExecutionIdentityCheckScript()).toContain('ps -o pgid,stat');
+    expect(buildExecutionIdentityCheckScript()).toContain('state=');
+    expect(buildExecutionIdentityCheckScript()).toContain('\"$state\" != Z');
     expect(buildExecutionCancelScript()).toContain('kill -TERM -"$process_group"');
     expect(buildExecutionCancelScript()).not.toContain('process.kill');
   });

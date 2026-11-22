@@ -186,14 +186,17 @@ id=$1
 pid=$2
 expected_group=$3
 expected_start=$4
+[ "$pid" -gt 1 ] && [ "$expected_group" = "$pid" ] || exit 1
 if [ -r "/proc/$pid/stat" ]; then
-  stat_line=$(sed 's/^.*) //' "/proc/$pid/stat")
-  start_time=$(printf '%s\n' "$stat_line" | awk '{print $20}')
+  stat_line=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null || true)
+  state=$(printf '%s\n' "$stat_line" | awk '{print $1}')
   process_group=$(printf '%s\n' "$stat_line" | awk '{print $3}')
-  if [ "$start_time" = "$expected_start" ] && [ "$process_group" = "$expected_group" ] &&
-     tr '\0' '\n' < "/proc/$pid/environ" | grep -Fx "VPS_MCP_EXECUTION_ID=$id" >/dev/null; then exit 0; fi
+  start_time=$(printf '%s\n' "$stat_line" | awk '{print $20}')
+  [ "$state" != Z ] && [ "$process_group" = "$expected_group" ] && [ "$start_time" = "$expected_start" ]
+  exit $?
 fi
-kill -0 -"$expected_group" 2>/dev/null
+# Ignore zombies when the original group leader has already exited.
+ps -o pgid,stat | awk -v expected_group="$expected_group" '$1 == expected_group && $2 !~ /^Z/ { found=1 } END { exit !found }'
 `;
 }
 
@@ -206,24 +209,29 @@ process_group=$4
 start_time=$5
 reason_file="/run/vps-mcp-executions/$id.reason"
 [ "$pid" -gt 1 ] && [ "$process_group" = "$pid" ] || exit 4
-alive=0
 if [ -r "/proc/$pid/stat" ]; then
-  stat_line=$(sed 's/^.*) //' "/proc/$pid/stat")
-  current_start=$(printf '%s\n' "$stat_line" | awk '{print $20}')
+  stat_line=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null || true)
   current_group=$(printf '%s\n' "$stat_line" | awk '{print $3}')
-  if [ "$current_start" = "$start_time" ] && [ "$current_group" = "$process_group" ] &&
-     tr '\0' '\n' < "/proc/$pid/environ" | grep -Fx "VPS_MCP_EXECUTION_ID=$id" >/dev/null; then alive=1; fi
-elif kill -0 -"$process_group" 2>/dev/null; then
-  alive=1
+  current_start=$(printf '%s\n' "$stat_line" | awk '{print $20}')
+  [ "$current_group" = "$process_group" ] && [ "$current_start" = "$start_time" ] || exit 2
+elif ! ps -o pgid,stat | awk -v expected_group="$process_group" '$1 == expected_group && $2 !~ /^Z/ { found=1 } END { exit !found }'; then
+  exit 2
 fi
-if [ "$alive" -eq 1 ]; then
-  [ -e "$reason_file" ] || { printf '%s\n' "$reason" > "$reason_file.tmp"; mv "$reason_file.tmp" "$reason_file"; }
-  kill -TERM -"$process_group" 2>/dev/null || true
-  sleep 2
-  if kill -0 -"$process_group" 2>/dev/null; then kill -KILL -"$process_group" 2>/dev/null || true; fi
-  exit 0
+[ -e "$reason_file" ] || { printf '%s\n' "$reason" > "$reason_file.tmp"; mv "$reason_file.tmp" "$reason_file"; }
+kill -TERM -"$process_group" 2>/dev/null || true
+sleep 2
+if [ -r "/proc/$pid/stat" ]; then
+  stat_line=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null || true)
+  current_group=$(printf '%s\n' "$stat_line" | awk '{print $3}')
+  current_start=$(printf '%s\n' "$stat_line" | awk '{print $20}')
+  if [ "$current_group" = "$process_group" ] && [ "$current_start" = "$start_time" ]; then
+    kill -KILL -"$process_group" 2>/dev/null || true
+  fi
+else
+  ps -o pgid,stat | awk -v expected_group="$process_group" '$1 == expected_group && $2 !~ /^Z/ { found=1 } END { exit !found }' &&
+    kill -KILL -"$process_group" 2>/dev/null || true
 fi
-exit 2
+exit 0
 `;
 }
 

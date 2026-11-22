@@ -781,7 +781,7 @@ async function startSandboxExecution(request) {
     const usage = await sumRegularFileBytes(EXECUTION_LOG_ROOT);
     const sandboxUsage = await sumRegularFileBytes(executionLogDirectory(request.sandboxId));
     assertExecutionLogQuota({ globalBytes: usage, sandboxBytes: sandboxUsage });
-    await runPodman(['exec', runtimeId, 'sh', '-c', 'for tool in setsid env head mkfifo awk sed grep tr sleep date; do command -v $tool >/dev/null 2>&1 || exit 127; done; ulimit -f 4097 >/dev/null 2>&1 || exit 127; test -d /run/vps-mcp-executions && test -w /run/vps-mcp-executions && test -r /proc/self/stat'], 10_000, 16 * 1024);
+    await runPodman(['exec', runtimeId, 'sh', '-c', 'for tool in setsid env head mkfifo awk sed grep tr sleep date ps; do command -v $tool >/dev/null 2>&1 || exit 127; done; ulimit -f 4097 >/dev/null 2>&1 || exit 127; test -d /run/vps-mcp-executions && test -w /run/vps-mcp-executions && test -r /proc/self/stat'], 10_000, 16 * 1024);
     const command = safeArgv(request.command);
     const cwd = request.cwd ?? '';
     validateWorkspaceRelativePath(cwd, true);
