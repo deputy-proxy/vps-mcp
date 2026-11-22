@@ -49,13 +49,15 @@ function main() {
     add('connector-checkout-inaccessible', accessDenied('/srv/vps-mcp', constants.X_OK), 'sandbox identity cannot traverse the private connector checkout');
     add('root-home-inaccessible', accessDenied('/root', constants.X_OK), 'sandbox identity cannot traverse the root home directory');
     add('execution-module-installed', existsSync('/usr/local/libexec/vps-mcp/executions.mjs'), 'durable execution module is installed beside the runtime agent');
+    add('governance-module-installed', existsSync('/usr/local/libexec/vps-mcp/resource-governance.mjs'), 'resource governance and durable lock module is installed beside the runtime agent');
     const uid = run(['unshare', 'id', '-u']);
     add('rootless-identity', hostUser === 'vps-sandbox' && uid === '0', `container namespace root uid=${uid}; host executor=${hostUser}`);
 
     run([
       'create', '--cgroup-parent', CGROUP_PARENT, '--name', name, '--pull=missing',
       '--network=none', '--read-only', '--cap-drop=ALL',
-      '--security-opt=no-new-privileges',
+      '--userns=keep-id', '--user', `${process.getuid()}:${process.getgid()}`,
+      '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json',
       '--pids-limit=64', '--memory=128m', '--cpus=0.5',
       '--tmpfs=/tmp:rw,noexec,nosuid,size=16m',
       '--volume', workspace + ':/workspace:ro',
@@ -68,6 +70,9 @@ function main() {
     const config = inspect(name);
     const host = config.HostConfig ?? {};
     add('container-read-only-rootfs', host.ReadonlyRootfs === true, `ReadonlyRootfs=${host.ReadonlyRootfs}`);
+    const containerUid = run(['exec', name, 'id', '-u']);
+    add('container-nonroot-identity', containerUid !== '0' && containerUid === String(process.getuid()), `container uid=${containerUid}; expected host-mapped vps-sandbox uid=${process.getuid()}`);
+    add('container-seccomp-profile', Array.isArray(host.SecurityOpt) && host.SecurityOpt.some((value) => String(value).includes('seccomp')), `SecurityOpt=${JSON.stringify(host.SecurityOpt ?? [])}`);
     add('container-no-network', host.NetworkMode === 'none', `NetworkMode=${host.NetworkMode}`);
     add('container-capabilities-dropped', Array.isArray(host.CapDrop) && host.CapDrop.length > 0, `Podman expanded CapDrop=${JSON.stringify(host.CapDrop ?? [])}`);
     add('container-no-new-privileges', Array.isArray(host.SecurityOpt) && host.SecurityOpt.some((value) => String(value).includes('no-new-privileges')), `SecurityOpt=${JSON.stringify(host.SecurityOpt ?? [])}`);
@@ -115,7 +120,8 @@ function main() {
 
     const writableFile = join(workspace, 'rw-proof.txt');
     run(['run', '--cgroup-parent', CGROUP_PARENT, '--rm', '--pull=missing', '--network=none', '--read-only',
-      '--cap-drop=ALL', '--security-opt=no-new-privileges',
+      '--cap-drop=ALL', '--userns=keep-id', '--user', `${process.getuid()}:${process.getgid()}`,
+      '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json',
       '--volume', `${workspace}:/workspace:rw`, IMAGE,
       'sh', '-c', 'echo writable-mount-proof > /workspace/rw-proof.txt']);
     add('workspace-writable-mount', readFileSync(writableFile, 'utf8').trim() === 'writable-mount-proof', 'explicit writable workspace mount persists expected file');

@@ -2,7 +2,7 @@ import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 
 export type WorkloadType = 'task' | 'project-service';
-export type RuntimeResources = { cpuMilli?: number; memoryMiB?: number; pids?: number };
+export type RuntimeResources = { cpuMilli?: number; memoryMiB?: number; pids?: number; diskMiB?: number };
 export type SandboxRuntimeRequest =
   | { operation: 'image.inspect' | 'image.pull'; image: string }
   | {
@@ -23,13 +23,20 @@ export type SandboxRuntimeRequest =
   | { operation: 'container.start' | 'container.stop' | 'container.remove'; workloadId: string; expectedWorkloadType: WorkloadType }
   | { operation: 'container.list' }
   | { operation: 'container.exec'; workloadId: string; command: string[]; timeoutMs?: number }
-  | { operation: 'sandbox.exec'; sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }
+  | { operation: 'sandbox.exec'; sandboxId: string; operationId?: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }
   | { operation: 'sandbox.fs.list' | 'sandbox.fs.read'; sandboxId: string; path: string }
   | { operation: 'sandbox.fs.write'; sandboxId: string; path: string; content: string }
-  | { operation: 'sandbox.execution.start'; sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number }
+  | { operation: 'sandbox.execution.start'; sandboxId: string; executionId?: string; command: string[]; cwd?: string; timeoutMs?: number }
   | { operation: 'sandbox.execution.status' | 'sandbox.execution.cancel'; sandboxId: string; executionId: string }
   | { operation: 'sandbox.execution.logs'; sandboxId: string; executionId: string; offset?: number; maxBytes?: number }
-  | { operation: 'sandbox.execution.list'; sandboxId: string };
+  | { operation: 'sandbox.execution.list'; sandboxId: string }
+  | { operation: 'resource.inspect' | 'cleanup.preview' }
+  | { operation: 'resource.reserve'; repositoryId: string; resources: RuntimeResources & { diskMiB?: number } }
+  | { operation: 'resource.release'; repositoryId: string }
+  | { operation: 'sandbox.retention.set'; sandboxId: string; retained: boolean }
+  | { operation: 'cleanup.run'; dryRun?: boolean; confirm?: boolean }
+  | { operation: 'cleanup.pause'; paused: boolean }
+  | { operation: 'audit.list'; limit?: number };
 
 const SOCKET_PATH = process.env.VPS_SANDBOX_RUNTIME_SOCKET ?? '/run/vps-sandbox-runtime.sock';
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -47,6 +54,7 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
   if ('sandboxId' in request) {
     if (!UUID.test(request.sandboxId)) throw new Error('Invalid sandbox ID');
     if (request.operation === 'sandbox.exec') {
+      if (request.operationId !== undefined && !UUID.test(request.operationId)) throw new Error('Invalid operation ID');
       validateArgv(request.command);
       if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1000 || request.timeoutMs > 120_000)) throw new Error('timeoutMs must be between 1000 and 120000');
       if (request.maxOutputBytes !== undefined && (!Number.isInteger(request.maxOutputBytes) || request.maxOutputBytes < 1024 || request.maxOutputBytes > 1_048_576)) throw new Error('maxOutputBytes must be between 1024 and 1048576');
@@ -59,6 +67,7 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
       validateWorkspaceRelativePath(request.path, request.operation === 'sandbox.fs.list');
       if (request.operation === 'sandbox.fs.write' && (typeof request.content !== 'string' || Buffer.byteLength(request.content, 'utf8') > 1024 * 1024)) throw new Error('File content exceeds the 1 MiB write limit');
     } else if (request.operation === 'sandbox.execution.start') {
+      if (request.executionId !== undefined && !UUID.test(request.executionId)) throw new Error('Invalid execution ID');
       validateArgv(request.command);
       if (request.cwd !== undefined) validateWorkspaceRelativePath(request.cwd, true);
       if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1000 || request.timeoutMs > 86_400_000)) throw new Error('timeoutMs must be between 1000 and 86400000');
@@ -136,6 +145,7 @@ function validateResources(resources?: RuntimeResources): void {
   if (!Number.isInteger(cpuMilli) || cpuMilli < 100 || cpuMilli > 2000) throw new Error('cpuMilli must be between 100 and 2000');
   if (!Number.isInteger(memoryMiB) || memoryMiB < 128 || memoryMiB > 4096) throw new Error('memoryMiB must be between 128 and 4096');
   if (!Number.isInteger(pids) || pids < 32 || pids > 512) throw new Error('pids must be between 32 and 512');
+  if (resources.diskMiB !== undefined && (!Number.isInteger(resources.diskMiB) || resources.diskMiB < 128 || resources.diskMiB > 102400)) throw new Error('diskMiB must be between 128 and 102400');
 }
 
 export async function requestSandboxRuntime<T = Record<string, unknown>>(
@@ -208,7 +218,7 @@ export interface SandboxRuntimeAdapter {
   removeWorkload(id: string, expectedType: WorkloadType): Promise<unknown>;
   executeInWorkload(id: string, command: string[], timeoutMs?: number): Promise<{ workloadId: string; exitCode: number; stdout: string; stderr: string }>;
   readWorkloadLogs(id: string): Promise<{ workloadId: string; logs: string }>;
-  executeTaskSandbox(input: { sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }): Promise<{ sandboxId: string; cwd: string; exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; truncated: boolean }>;
+  executeTaskSandbox(input: { sandboxId: string; operationId?: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }): Promise<{ sandboxId: string; cwd: string; exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; truncated: boolean }>;
   listTaskSandboxFiles(input: { sandboxId: string; path?: string }): Promise<{ sandboxId: string; path: string; entries: Array<{ name: string; type: 'file' | 'directory'; sizeBytes: number }> }>;
   readTaskSandboxFile(input: { sandboxId: string; path: string }): Promise<{ sandboxId: string; path: string; content: string; sizeBytes: number }>;
   writeTaskSandboxFile(input: { sandboxId: string; path: string; content: string }): Promise<{ sandboxId: string; path: string; sizeBytes: number; written: boolean }>;
@@ -219,11 +229,19 @@ export interface SandboxRuntimeAdapter {
   stopTaskSandbox(workloadId: string): Promise<unknown>;
   removeTaskSandbox(workloadId: string): Promise<unknown>;
   readTaskSandboxLogs(workloadId: string): Promise<{ workloadId: string; logs: string }>;
-  startTaskSandboxExecution(input: { sandboxId: string; command: string[]; cwd?: string; timeoutMs?: number }): Promise<Record<string, unknown>>;
+  startTaskSandboxExecution(input: { sandboxId: string; executionId?: string; command: string[]; cwd?: string; timeoutMs?: number }): Promise<Record<string, unknown>>;
   getTaskSandboxExecutionStatus(input: { sandboxId: string; executionId: string }): Promise<Record<string, unknown>>;
   listTaskSandboxExecutions(sandboxId: string): Promise<{ sandboxId: string; executions: Record<string, unknown>[] }>;
   getTaskSandboxExecutionLogs(input: { sandboxId: string; executionId: string; offset?: number; maxBytes?: number }): Promise<Record<string, unknown>>;
   cancelTaskSandboxExecution(input: { sandboxId: string; executionId: string }): Promise<Record<string, unknown>>;
+  inspectResourceCapacity(): Promise<Record<string, unknown>>;
+  reserveProjectResources(input: { repositoryId: string; resources: RuntimeResources & { diskMiB?: number } }): Promise<Record<string, unknown>>;
+  releaseProjectResources(repositoryId: string): Promise<Record<string, unknown>>;
+  setTaskSandboxRetention(input: { sandboxId: string; retained: boolean }): Promise<Record<string, unknown>>;
+  previewSandboxCleanup(): Promise<Record<string, unknown>>;
+  runSandboxCleanup(input: { dryRun?: boolean; confirm?: boolean }): Promise<Record<string, unknown>>;
+  setMaintenancePause(paused: boolean): Promise<Record<string, unknown>>;
+  listRuntimeAudit(limit?: number): Promise<Record<string, unknown>>;
 }
 function assertTaskWorkload(workload: RuntimeWorkloadRecord): void {
   if (!workload || workload.workloadType !== 'task') throw new Error('SANDBOX_TYPE_MISMATCH: operation is available only for task workloads');
@@ -313,5 +331,13 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
     listTaskSandboxExecutions: (sandboxId) => requestSandboxRuntime({ operation: 'sandbox.execution.list', sandboxId }, socketPath),
     getTaskSandboxExecutionLogs: (input) => requestSandboxRuntime({ operation: 'sandbox.execution.logs', ...input }, socketPath),
     cancelTaskSandboxExecution: (input) => requestSandboxRuntime({ operation: 'sandbox.execution.cancel', ...input }, socketPath),
+    inspectResourceCapacity: () => requestSandboxRuntime({ operation: 'resource.inspect' }, socketPath),
+    reserveProjectResources: (input) => requestSandboxRuntime({ operation: 'resource.reserve', ...input }, socketPath),
+    releaseProjectResources: (repositoryId) => requestSandboxRuntime({ operation: 'resource.release', repositoryId }, socketPath),
+    setTaskSandboxRetention: (input) => requestSandboxRuntime({ operation: 'sandbox.retention.set', ...input }, socketPath),
+    previewSandboxCleanup: () => requestSandboxRuntime({ operation: 'cleanup.preview' }, socketPath),
+    runSandboxCleanup: (input) => requestSandboxRuntime({ operation: 'cleanup.run', ...input }, socketPath),
+    setMaintenancePause: (paused) => requestSandboxRuntime({ operation: 'cleanup.pause', paused }, socketPath),
+    listRuntimeAudit: (limit) => requestSandboxRuntime({ operation: 'audit.list', ...(limit !== undefined ? { limit } : {}) }, socketPath),
   };
 }

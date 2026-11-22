@@ -62,6 +62,19 @@ describe('rootless workload runtime request validation', () => {
     expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.fs.read', sandboxId, path: 'a'.repeat(4097) }))).toThrow('workspace-relative');
     expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.fs.write', sandboxId, path: 'file', content: 'x'.repeat(1024 * 1024 + 1) }))).toThrow('1 MiB');
     expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.exec', sandboxId, command: ['id'], extra: true }))).toThrow('unsupported properties');
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'resource.inspect' }))).toMatchObject({ operation: 'resource.inspect' });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.retention.set', sandboxId, retained: true }))).toMatchObject({ operation: 'sandbox.retention.set', retained: true });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.exec', sandboxId, operationId: sandboxId, command: ['id'] }))).toMatchObject({ operation: 'sandbox.exec', operationId: sandboxId });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.execution.start', sandboxId, executionId: sandboxId, command: ['sleep', '1'] }))).toMatchObject({ operation: 'sandbox.execution.start', executionId: sandboxId });
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'sandbox.retention.set', sandboxId, retained: 'yes' }))).toThrow('retained must be a boolean');
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'resource.reserve', repositoryId: 'repo-123', resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 } }))).toMatchObject({ operation: 'resource.reserve' });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'cleanup.run', dryRun: true }))).toMatchObject({ operation: 'cleanup.run' });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'cleanup.pause', paused: true }))).toMatchObject({ operation: 'cleanup.pause' });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'audit.list', limit: 20 }))).toMatchObject({ operation: 'audit.list' });
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'resource.reserve', repositoryId: 'repo-123', resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, admin: true } }))).toThrow('unsupported properties');
+    const create = { operation: 'container.create', workloadId: sandboxId, workloadType: 'task', repositoryId: 'repo-123', worktreeId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', image: `docker.io/library/node@sha256:${'a'.repeat(64)}`, network: 'host', readOnlyRootfs: true };
+    expect(() => parseRuntimeRequest(JSON.stringify(create))).toThrow('Only network=none');
+    expect(parseRuntimeRequest(JSON.stringify({ ...create, workloadType: 'project-service', network: 'none' }))).toMatchObject({ operation: 'container.create', workloadType: 'project-service', network: 'none' });
   });
 
   it('runs list/read/write operations within the workspace root and rejects escapes', async () => {
@@ -177,6 +190,9 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('--cgroup-parent');
     expect(args).toContain('/system.slice/vps-sandbox-runtime.service');
     expect(args).toContain('--network=none');
+    expect(args).toContain('--userns=keep-id');
+    expect(args).toContain('--user');
+    expect(args).toContain('--security-opt=seccomp=/usr/share/containers/seccomp.json');
     expect(args).toContain('--read-only');
     expect(args).toContain('--cap-drop=ALL');
     expect(args).toContain('--security-opt=no-new-privileges');

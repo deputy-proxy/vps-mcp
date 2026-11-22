@@ -235,11 +235,13 @@ exit 0
 `;
 }
 
-export function createExecutionRecord({ sandboxId, runtimeId, command, cwd, timeoutMs, now = new Date() }) {
-  const id = randomUUID();
+export function createExecutionRecord({ sandboxId, runtimeId, command, cwd, timeoutMs, id = randomUUID(), requestFingerprint, now = new Date() }) {
+  id = safeExecutionId(id);
+  if (requestFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(requestFingerprint)) throw new Error('Invalid execution request fingerprint');
   return {
     id,
     sandboxId,
+    ...(requestFingerprint ? { requestFingerprint } : {}),
     command: executionCommandMetadata(command),
     cwd,
     runtimeIdentity: { runtimeId, containerPid: null, processGroupId: null, processStartTime: null, marker: id },

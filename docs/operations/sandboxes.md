@@ -16,6 +16,7 @@ Review these files before installation:
 - systemd/vps-sandbox-runtime.service
 - scripts/vps-sandbox-runtime.mjs
 - scripts/executions.mjs
+- scripts/resource-governance.mjs
 - scripts/install-vps-sandbox-runtime.sh
 
 Install the ACL prerequisite if it is not already present:
@@ -28,7 +29,7 @@ Install from the checked-out repository as root:
 
     sudo bash scripts/install-vps-sandbox-runtime.sh
 
-The installer copies the runtime agent and executions.mjs module to /usr/local/libexec/vps-mcp/, installs the systemd socket and service, creates /etc/vps-sandbox/runtime.env if absent, and enables the socket. It preserves an existing runtime environment file. It does not modify vps-mcp.service, the diagnostic broker, Caddy, production services or application repositories.
+The installer copies the runtime agent, executions.mjs and resource-governance.mjs modules to /usr/local/libexec/vps-mcp/, installs the systemd socket and service, creates /etc/vps-sandbox/runtime.env if absent, and enables the socket. It preserves an existing runtime environment file. It does not modify vps-mcp.service, the diagnostic broker, Caddy, production services or application repositories.
 
 The default environment file leaves VPS_SANDBOX_ALLOWED_WORKSPACE_ROOTS and VPS_SANDBOX_ALLOWED_IMAGES empty. Do not populate it until the workspace root is provisioned and the vps-sandbox access boundary has been verified. The runtime agent uses Podman’s cgroupfs manager with the fixed cgroup parent `/system.slice/vps-sandbox-runtime.service`; the service unit delegates CPU, memory and PID controllers. Keep this parent fixed so limits remain enforced inside the runtime service boundary.
 
@@ -47,7 +48,7 @@ The MCP-side adapter uses /run/vps-sandbox-runtime.sock by default. An alternate
 Do not use a production repository or real user data for the first runtime tests. Use a disposable workload and an approved digest-pinned image. Capture sanitized output for each test:
 
 1. Inspect and pull the exact image digest.
-2. Create a task workload with network disabled, read-only rootfs, all capabilities dropped and explicit CPU/memory/PID limits.
+2. Create a task workload with network disabled, read-only rootfs, all capabilities dropped, a non-root mapped UID/GID, the explicit seccomp profile and CPU/memory/PID budgets plus a monitored workspace disk budget (2 GiB by default).
 3. Start it and inspect its runtime state.
 4. Execute a harmless synchronous argv command and read bounded container logs.
 5. Through `sandbox.exec`, verify the supplied sandbox ID selects the only execution container, cwd is confined to `/workspace`, argv values are not shell-expanded, timeouts and output limits are enforced, and host environment variables are not inherited.
@@ -97,3 +98,13 @@ Task workspaces and runtime sandboxes have separate identifiers and lifecycles:
 8. Remove the task worktree separately with `task-workspace.remove` after confirming its changes are retained or intentionally discarded.
 
 The MCP API does not accept Podman flags, host paths, raw container IDs, arbitrary environment variables or mutable image tags. Network isolation, read-only root filesystem, dropped capabilities, no-new-privileges and resource bounds are enforced by the runtime agent. The runtime agent independently enforces the administrator-managed image and workspace-root allowlists. Durable execution records are kept outside containers; only the selected sandbox’s bounded log directory is mounted into that container.
+
+## Capacity, cleanup and emergency controls
+
+Use `resource.capacity` to inspect global/per-repository reservations, active workloads, container storage and disk pressure. The default budget reserves only a conservative fraction of host CPU and memory, caps active task sandboxes, and keeps a 5 GiB disk safety margin. Tune `VPS_SANDBOX_GLOBAL_*` and `VPS_SANDBOX_REPOSITORY_*` values in the runtime service environment only after measuring the host.
+
+Before creating a persistent project environment, call `resource.reserve` with its repository ID and planned CPU, memory, PID and disk requirements. The reservation is durable and idempotent per repository. Call `resource.release` only after the project environment is deprovisioned. An active project-service workload consumes its reservation instead of being counted twice.
+
+Use `sandbox.cleanup.preview` before cleanup. `sandbox.cleanup.run` is dry-run by default; actual removal requires both `dryRun=false` and `confirm=true`. The reaper is disabled unless `VPS_SANDBOX_CLEANUP_ENABLED=true`. When enabled, it removes only expired stopped task containers with no active or unknown executions. It never removes worktrees or files. Task workspace disk quotas default to 2 GiB and are enforced by a periodic monitor that stops an over-quota task container; this is not a strict filesystem project quota.
+
+Use `sandbox.maintenance.pause` with `paused=true` during an emergency. It blocks new sandbox creation/start, workspace writes and command execution, and suspends automatic cleanup. Existing workloads can still be stopped or removed. Use `sandbox.audit.list` to inspect recent private audit events.

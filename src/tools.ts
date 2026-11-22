@@ -12,6 +12,7 @@ import { applyRepositoryBranchPolicy, fetchRepository, inspectRepository, listRe
 import { validateTaskBranchCreation } from "./branch-policy.js";
 import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbox-runtime.js";
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
+import { inspectManagedStorage } from "./storage-metrics.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -46,6 +47,33 @@ async function guarded<T extends ToolResult>(operation: () => Promise<T>): Promi
 
 export function createMcpServer(): McpServer {
   const sandboxRuntime = createSandboxRuntimeAdapter();
+  const attachedTaskSandbox = async (worktreeId: string) => {
+    const { workloads } = await sandboxRuntime.listWorkloads();
+    return workloads.find((workload) => workload.workloadType === 'task' && workload.worktreeId === worktreeId && workload.status !== 'removed');
+  };
+  const retainWorkspaceSafely = async (id: string) => {
+    const current = await inspectTaskWorkspace(id);
+    const attached = await attachedTaskSandbox(current.workspace.id);
+    if (attached) await sandboxRuntime.setTaskSandboxRetention({ sandboxId: attached.id, retained: true });
+    try {
+      return current.workspace.status === 'retained' ? current : await retainTaskWorkspace(id);
+    } catch (error) {
+      if (attached) await sandboxRuntime.setTaskSandboxRetention({ sandboxId: attached.id, retained: false }).catch(() => {});
+      throw error;
+    }
+  };
+  const resumeWorkspaceSafely = async (id: string) => {
+    const current = await inspectTaskWorkspace(id);
+    const attached = await attachedTaskSandbox(current.workspace.id);
+    if (current.workspace.status === 'active') {
+      if (attached) await sandboxRuntime.setTaskSandboxRetention({ sandboxId: attached.id, retained: false });
+      return current;
+    }
+    if (current.workspace.status !== 'retained') throw new Error('Only retained workspaces can be resumed');
+    const resumed = await resumeTaskWorkspace(id);
+    if (attached) await sandboxRuntime.setTaskSandboxRetention({ sandboxId: attached.id, retained: false });
+    return resumed;
+  };
   const ensureTaskWorkspaceHasNoSandbox = async (worktreeId: string): Promise<void> => {
     const { workloads } = await sandboxRuntime.listWorkloads();
     const attached = workloads.find((workload) =>
@@ -146,7 +174,7 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("sandbox.create", {
     title: "Create task sandbox",
-    description: "Create a rootless task container for an existing registered task workspace. The runtime verifies the exact workspace identity and grants access only to that worktree. The image must be digest-pinned and administrator-allowlisted. Network is disabled, the root filesystem is read-only, capabilities are dropped, and bounded resources are enforced. Returns a distinct sandboxId; it is not the task-workspace ID.",
+    description: "Create a rootless task container for an existing registered task workspace. The runtime verifies the exact workspace identity and grants access only to that worktree. The image must be digest-pinned and administrator-allowlisted. Task containers run as the mapped non-root runtime user with an explicit seccomp profile, no network egress, a read-only root filesystem, dropped capabilities, bounded CPU/memory/PID limits and a monitored workspace disk budget. Returns a distinct sandboxId; it is not the task-workspace ID.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       repositoryId: z.string().min(1).max(200),
@@ -156,7 +184,8 @@ export function createMcpServer(): McpServer {
         cpuMilli: z.number().int().min(100).max(2000).optional(),
         memoryMiB: z.number().int().min(128).max(4096).optional(),
         pids: z.number().int().min(32).max(512).optional(),
-      }).optional(),
+        diskMiB: z.number().int().min(128).max(102400).optional(),
+      }).strict().optional(),
       workspaceAccess: z.enum(["read-only", "read-write"]).default("read-write"),
       command: z.array(z.string().min(1).max(4096)).min(1).max(64).optional(),
     },
@@ -167,6 +196,7 @@ export function createMcpServer(): McpServer {
         cpuMilli: resources.cpuMilli ?? 500,
         memoryMiB: resources.memoryMiB ?? 512,
         pids: resources.pids ?? 64,
+        diskMiB: resources.diskMiB ?? 2048,
       } } : {}),
       ...(command ? { command } : {}),
     });
@@ -235,17 +265,18 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("sandbox.exec", {
     title: "Execute in task sandbox",
-    description: "Execute an argument-array command inside the selected running task sandbox. Requires its sandbox ID; never falls back to host execution. cwd is workspace-relative, environment overrides are allowlisted, and timeout/output/concurrency are bounded.",
+    description: "Execute an argument-array command inside the selected running task sandbox. Requires its sandbox ID; never falls back to host execution. Supply a stable operationId UUID when retrying so completed results are replayed rather than executing twice. cwd is workspace-relative, environment overrides are allowlisted, and timeout/output/concurrency are bounded.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       sandboxId: z.string().uuid(),
+      operationId: z.string().uuid().optional(),
       command: z.array(z.string().min(1).max(4096)).min(1).max(64),
       cwd: z.string().max(4096).optional(),
       timeoutMs: z.number().int().min(1000).max(120_000).optional(),
       maxOutputBytes: z.number().int().min(1024).max(1_048_576).optional(),
       env: z.record(z.string(), z.string().max(256)).optional(),
     },
-  }, async ({ sandboxId, command, cwd, timeoutMs, maxOutputBytes, env }) => guarded(() => safelySandbox(() => sandboxRuntime.executeTaskSandbox({ sandboxId, command, ...(cwd !== undefined ? { cwd } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(maxOutputBytes !== undefined ? { maxOutputBytes } : {}), ...(env !== undefined ? { env } : {}) }))));
+  }, async ({ sandboxId, operationId, command, cwd, timeoutMs, maxOutputBytes, env }) => guarded(() => safelySandbox(() => sandboxRuntime.executeTaskSandbox({ sandboxId, ...(operationId ? { operationId } : {}), command, ...(cwd !== undefined ? { cwd } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(maxOutputBytes !== undefined ? { maxOutputBytes } : {}), ...(env !== undefined ? { env } : {}) }))));
 
   server.registerTool("sandbox.filesystem.list", {
     title: "List task sandbox files",
@@ -270,16 +301,17 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("sandbox.execution.start", {
     title: "Start background task execution",
-    description: "Start a durable background command inside the selected running task sandbox. The command is argument-array based, scoped to that sandbox, and never runs on the host. Command arguments are not persisted; only a redacted executable summary and fingerprint are stored. Execution timeout, log size, concurrency and disk quotas are enforced.",
+    description: "Start a durable background command inside the selected running task sandbox. Supply a stable executionId UUID when retrying so an existing execution is returned instead of started twice. Command arguments are not persisted; only a redacted executable summary and fingerprint are stored. Execution timeout, log size, concurrency and disk quotas are enforced.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       sandboxId: z.string().uuid(),
+      executionId: z.string().uuid().optional(),
       command: z.array(z.string().min(1).max(4096)).min(1).max(64),
       cwd: z.string().max(4096).optional(),
       timeoutMs: z.number().int().min(1000).max(86_400_000).optional(),
     },
-  }, async ({ sandboxId, command, cwd, timeoutMs }) => guarded(() => safelySandbox(() => sandboxRuntime.startTaskSandboxExecution({
-    sandboxId, command, ...(cwd !== undefined ? { cwd } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }, async ({ sandboxId, executionId, command, cwd, timeoutMs }) => guarded(() => safelySandbox(() => sandboxRuntime.startTaskSandboxExecution({
+    sandboxId, ...(executionId ? { executionId } : {}), command, ...(cwd !== undefined ? { cwd } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   }))));
 
   server.registerTool("sandbox.execution.list", {
@@ -316,6 +348,67 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: { sandboxId: z.string().uuid(), executionId: z.string().uuid() },
   }, async ({ sandboxId, executionId }) => guarded(() => safelySandbox(() => sandboxRuntime.cancelTaskSandboxExecution({ sandboxId, executionId }))));
+
+  server.registerTool("resource.capacity", {
+    title: "Inspect workload capacity",
+    description: "Inspect global and per-repository CPU, memory, PID and disk reservations, active task counts, container storage and the host disk safety margin. This is a private operational view.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {},
+  }, async () => guarded(() => safely(async () => {
+    const [runtime, repositories] = await Promise.all([sandboxRuntime.inspectResourceCapacity(), listRepositories()]);
+    const managedStorage = await inspectManagedStorage(repositories.repositories, config.dataDir, config.allowedRoots);
+    return { ...runtime, managedStorage };
+  })));
+
+  server.registerTool("resource.reserve", {
+    title: "Reserve project resources",
+    description: "Create or replace a durable per-repository resource reservation for a future persistent development environment. Reservations are enforced against global and per-repository capacity before task workloads are admitted.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      repositoryId: z.string().min(2).max(200),
+      resources: z.object({
+        cpuMilli: z.number().int().min(100).max(2000),
+        memoryMiB: z.number().int().min(128).max(4096),
+        pids: z.number().int().min(32).max(512),
+        diskMiB: z.number().int().min(128).max(102400).optional(),
+      }).strict(),
+    },
+  }, async ({ repositoryId, resources }) => guarded(() => safelySandbox(() => sandboxRuntime.reserveProjectResources({ repositoryId, resources: { cpuMilli: resources.cpuMilli, memoryMiB: resources.memoryMiB, pids: resources.pids, ...(resources.diskMiB !== undefined ? { diskMiB: resources.diskMiB } : {}) } }))));
+
+  server.registerTool("resource.release", {
+    title: "Release project resource reservation",
+    description: "Release the durable resource reservation for a repository after its persistent project environment has been deprovisioned.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200) },
+  }, async ({ repositoryId }) => guarded(() => safelySandbox(() => sandboxRuntime.releaseProjectResources(repositoryId))));
+
+  server.registerTool("sandbox.cleanup.preview", {
+    title: "Preview expired sandbox cleanup",
+    description: "Preview expired task containers, terminal orphan task containers, stale lock directories and eligible temporary files. Persistent project-service containers, running/unknown orphans, retained sandboxes and worktree files are protected.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {},
+  }, async () => guarded(() => safelySandbox(() => sandboxRuntime.previewSandboxCleanup())));
+
+  server.registerTool("sandbox.cleanup.run", {
+    title: "Run expired sandbox cleanup",
+    description: "Run a dry-run cleanup by default. Actual cleanup requires dryRun=false and confirm=true. Removes only expired task containers and eligible terminal orphan task containers, then reaps stale locks and old atomic-write temporary files. Project services and worktree contents are never removed.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { dryRun: z.boolean().default(true), confirm: z.boolean().default(false) },
+  }, async ({ dryRun, confirm }) => guarded(() => safelySandbox(() => sandboxRuntime.runSandboxCleanup({ dryRun, confirm }))));
+
+  server.registerTool("sandbox.maintenance.pause", {
+    title: "Emergency workload pause",
+    description: "Pause or resume new sandbox creation, starts, workspace writes and command execution. Existing workloads can still be stopped or removed. Automatic cleanup is also suspended while paused.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: { paused: z.boolean() },
+  }, async ({ paused }) => guarded(() => safelySandbox(() => sandboxRuntime.setMaintenancePause(paused))));
+
+  server.registerTool("sandbox.audit.list", {
+    title: "Read runtime audit events",
+    description: "Read recent private lifecycle, resource-governance, cleanup and maintenance audit events. Sensitive token patterns are redacted and command arguments are not recorded.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { limit: z.number().int().min(1).max(500).default(100) },
+  }, async ({ limit }) => guarded(() => safelySandbox(() => sandboxRuntime.listRuntimeAudit(limit))));
 
   server.registerTool("repository.register", {
     title: "Register repository",
@@ -428,14 +521,14 @@ export function createMcpServer(): McpServer {
     description: "Mark a task worktree as retained without removing it or discarding dirty/untracked work.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { id: z.string().uuid() },
-  }, async ({ id }) => guarded(() => safely(() => retainTaskWorkspace(id))));
+  }, async ({ id }) => guarded(() => safely(() => retainWorkspaceSafely(id))));
 
   server.registerTool("task-workspace.resume", {
     title: "Resume task workspace",
     description: "Resume an existing retained worktree. Missing or unlinked worktrees are not recreated automatically.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { id: z.string().uuid() },
-  }, async ({ id }) => guarded(() => safely(() => resumeTaskWorkspace(id))));
+  }, async ({ id }) => guarded(() => safely(() => resumeWorkspaceSafely(id))));
 
   server.registerTool("task-workspace.remove", {
     title: "Remove task workspace",
