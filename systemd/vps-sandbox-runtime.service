@@ -14,6 +14,8 @@ Restart=on-failure
 RestartSec=2
 TimeoutStartSec=30
 TimeoutStopSec=15
+# The agent is a control plane; rootless conmon/container processes must survive its restart.
+KillMode=process
 NoNewPrivileges=no
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 Delegate=cpu memory pids
