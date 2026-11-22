@@ -1,6 +1,6 @@
 import net from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { requestSandboxRuntime, validateSandboxRuntimeRequest } from './sandbox-runtime.js';
+import { createSandboxRuntimeAdapter, requestSandboxRuntime, validateSandboxRuntimeRequest } from './sandbox-runtime.js';
 
 const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
 const image = `docker.io/library/node@sha256:${'a'.repeat(64)}`;
@@ -71,6 +71,33 @@ describe('sandbox runtime socket client', () => {
     });
     await new Promise<void>((resolve) => server!.listen(socketPath, resolve));
     await expect(requestSandboxRuntime<{ status: string }>({ operation: 'container.list' }, socketPath)).resolves.toEqual({ operation: 'container.list', status: 'ok' });
+  });
+
+  it('sets the create operation for project-service workloads', async () => {
+    socketPath = `/tmp/vps-runtime-create-${process.pid}-${Date.now()}.sock`;
+    server = net.createServer((socket) => {
+      sockets.push(socket);
+      let input = '';
+      socket.on('data', (chunk) => {
+        input += chunk.toString();
+        if (input.includes('\n')) {
+          const request = JSON.parse(input.trim());
+          socket.end(JSON.stringify({ result: request }) + '\n');
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(socketPath, resolve));
+    const adapter = createSandboxRuntimeAdapter(socketPath);
+    const result = await adapter.createWorkload({
+      workloadId: id,
+      workloadType: 'project-service',
+      repositoryId: 'deputy-proxy-vps-mcp',
+      image,
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+      network: 'none',
+      readOnlyRootfs: true,
+    });
+    expect(result).toMatchObject({ operation: 'container.create', workloadId: id, workloadType: 'project-service' });
   });
 
   it('surfaces a broker error without pretending the operation succeeded', async () => {
