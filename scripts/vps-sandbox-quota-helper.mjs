@@ -9,7 +9,7 @@ const stagingRoot='/var/lib/vps-sandbox-mounts';
 const repoRe=/^[a-z0-9][a-z0-9._-]{1,199}$/i;
 const uuidRe=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const run=(cmd,args,timeout=30000)=>execFileSync(cmd,args,{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout,env:{PATH:'/usr/sbin:/usr/bin:/sbin:/bin'}}).trim();
-const isMountpoint=(target)=>{try{execFileSync('/usr/bin/mountpoint',['-q',target],{stdio:'ignore',timeout:5000});return true;}catch(e){if(e.status===1)return false;throw e;}};
+export function isMountpoint(target, execFile=execFileSync){try{execFile('/usr/bin/mountpoint',['-q',target],{stdio:'ignore',timeout:5000});return true;}catch(e){if(e.status===32)return false;throw e;}}
 export function applyWorkspaceProjectQuota(repositoryId,worktreeId,diskMiB){
  if(process.getuid()!==0)throw Error('Quota helper must run as root');
  if(!repoRe.test(repositoryId)||!uuidRe.test(worktreeId))throw Error('Invalid repository or worktree identity');
