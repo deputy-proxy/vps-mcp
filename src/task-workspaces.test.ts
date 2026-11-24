@@ -212,12 +212,16 @@ it("authorizes only a verified registered worktree for the rootless runtime", as
   expect(paths.aclCalls[0]!.command).toBe("/usr/bin/setfacl");
   expect(paths.aclCalls[0]!.args.slice(0, 2)).toEqual(["-m", "u:vps-sandbox:--x"]);
   expect(paths.aclCalls[0]!.args).toContain(process.env.MCP_DATA_DIR!);
-  expect(paths.aclCalls[1]).toMatchObject({
-    command: "/usr/bin/setfacl",
-    args: ["-R", "-m", "u:vps-sandbox:rwX", workspace.worktreePath],
-  });
+  expect(paths.aclCalls[1]!.command).toBe("/usr/bin/find");
+  expect(paths.aclCalls[1]!.args).toEqual([
+    workspace.worktreePath, "-uid", String(process.getuid?.() ?? -1), "-exec", "/usr/bin/setfacl", "-m",
+    "u:vps-sandbox:rwX", "{}", "+",
+  ]);
   expect(paths.aclCalls[2]!.command).toBe("/usr/bin/find");
-  expect(paths.aclCalls[2]!.args).toContain(workspace.worktreePath);
+  expect(paths.aclCalls[2]!.args).toEqual([
+    workspace.worktreePath, "-type", "d", "-uid", String(process.getuid?.() ?? -1), "-exec", "/usr/bin/setfacl", "-m",
+    "d:u:vps-sandbox:rwX", "{}", "+",
+  ]);
   await retainTaskWorkspace(workspace.id);
   await expect(prepareTaskWorkspaceForRuntime(workspace.id)).resolves.toMatchObject({ id: workspace.id });
   await removeTaskWorkspace({ id: workspace.id, confirm: true, discardChanges: true });

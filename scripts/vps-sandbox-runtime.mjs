@@ -166,36 +166,37 @@ function validateWorkspaceRelativePath(value, allowEmpty = false) {
   const parts = value.split('/');
   assert(value && parts.every((part) => part && part !== '.' && part !== '..'), 'Path contains an unsafe component');
 }
-async function applyWorkspaceDiskQuota(repositoryId, worktreeId, diskMiB) {
-  const request = JSON.stringify({ operation: 'apply', repositoryId, worktreeId, diskMiB }) + String.fromCharCode(10);
+async function quotaBrokerRequest(payload, timeoutMs = 60000) {
+  const request = JSON.stringify(payload) + String.fromCharCode(10);
   return await new Promise((resolve, reject) => {
-    const socket = net.createConnection(QUOTA_SOCKET);
-    let response = '';
-    let settled = false;
-    const finish = (error, value) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (error) reject(error); else resolve(value);
-    };
-    socket.setTimeout(60000);
-    socket.on('connect', () => socket.write(request));
-    socket.on('data', (chunk) => {
-      response += chunk.toString('utf8');
-      if (Buffer.byteLength(response) > 8192) finish(new Error('Quota broker response exceeded the allowed size.'));
-    });
-    socket.on('end', () => {
-      try {
-        const result = JSON.parse(response.trim());
-        if (result.error) finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: ' + result.error));
-        else if (result.ok !== true || result.enforcement !== 'ext4-project-quota' || result.repositoryId !== repositoryId || result.worktreeId !== worktreeId || result.diskMiB !== diskMiB) finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker returned an invalid result'));
-        else finish(undefined, result);
-      } catch { finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker returned invalid JSON')); }
-    });
+    const socket = net.createConnection(QUOTA_SOCKET); let response = ''; let settled = false;
+    const finish = (error, value) => { if (settled) return; settled = true; socket.destroy(); if (error) reject(error); else resolve(value); };
+    socket.setTimeout(timeoutMs); socket.on('connect', () => socket.write(request));
+    socket.on('data', (chunk) => { response += chunk.toString('utf8'); if (Buffer.byteLength(response) > 8192) finish(new Error('Quota broker response exceeded the allowed size.')); });
+    socket.on('end', () => { try { const result = JSON.parse(response.trim()); if (result.error) finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: ' + result.error)); else finish(undefined, result); } catch { finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker returned invalid JSON')); } });
     socket.on('timeout', () => finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker timed out')));
     socket.on('error', (error) => finish(new Error('SANDBOX_DISK_QUOTA_UNAVAILABLE: ' + (error.code === 'ENOENT' || error.code === 'ECONNREFUSED' ? 'quota broker is not installed or active' : error.code === 'EACCES' ? 'runtime identity cannot access the quota broker socket' : error.message))));
   });
 }
+async function applyWorkspaceDiskQuota(repositoryId, worktreeId, diskMiB) {
+  const result = await quotaBrokerRequest({ operation: 'apply', repositoryId, worktreeId, diskMiB });
+  assert(result.ok === true && result.enforcement === 'ext4-project-quota' && result.repositoryId === repositoryId && result.worktreeId === worktreeId && result.diskMiB === diskMiB, 'SANDBOX_DISK_QUOTA_UNAVAILABLE: quota broker returned an invalid result');
+  return result;
+}
+async function stageWorkspaceMount(repositoryId, worktreeId, workloadId) {
+  const result = await quotaBrokerRequest({ operation: 'stage', repositoryId, worktreeId, workloadId });
+  assert(result.ok === true && result.repositoryId === repositoryId && result.worktreeId === worktreeId && result.workloadId === workloadId && result.stagedPath === `/var/lib/vps-sandbox-mounts/${repositoryId}/${worktreeId}/${workloadId}`, 'SANDBOX_WORKSPACE_MOUNT_FAILED: quota broker returned an invalid staging result');
+  return result.stagedPath;
+}
+async function unstageWorkspaceMount(repositoryId, worktreeId, workloadId) {
+  const result = await quotaBrokerRequest({ operation: 'unstage', repositoryId, worktreeId, workloadId });
+  assert(result.ok === true && result.unstaged === true && result.repositoryId === repositoryId && result.worktreeId === worktreeId && result.workloadId === workloadId, 'SANDBOX_WORKSPACE_MOUNT_FAILED: quota broker returned an invalid unmount result');
+  return result;
+}
+async function releaseWorkspaceMount(record) {
+  if (record.workloadType === 'task' && record.workspaceMount?.path && record.worktreeId) await unstageWorkspaceMount(record.repositoryId, record.worktreeId, record.id);
+}
+
 async function ensureDataDir() { await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 }); }
 function recordPath(id) { return path.join(DATA_DIR, safeId(id), 'record.json'); }
 function executionLogDirectory(sandboxId) { return path.join(EXECUTION_LOG_ROOT, safeId(sandboxId)); }
@@ -433,6 +434,18 @@ async function pruneSandboxOperations(sandboxId) {
   }
   assert(records.length < 50, 'SANDBOX_CAPACITY_EXCEEDED: operation history is full; resolve unknown/running operations before retrying');
 }
+export function reconcileSandboxOperationRecord(record, finishedAt = new Date().toISOString()) {
+  if (record.status !== 'running') return record;
+  return { ...record, status: 'unknown', finishedAt, recoveryReason: 'runtime_agent_restarted' };
+}
+
+export function workspacePathsForStorageScan(records) {
+  return [...new Set(records
+    .filter((record) => record.status !== 'removed')
+    .map((record) => record.workspaceMount?.path)
+    .filter(Boolean))];
+}
+
 async function recoverSandboxOperations() {
   await fs.mkdir(OPERATION_RECORDS_DIR, { recursive: true, mode: 0o700 });
   const sandboxes = await fs.readdir(OPERATION_RECORDS_DIR, { withFileTypes: true });
@@ -453,9 +466,8 @@ async function recoverSandboxOperations() {
         assert(record.sandboxId === sandbox.name && record.operationId === operationId, 'Operation record identity mismatch');
         assert(['running', 'unknown', 'completed', 'failed'].includes(record.status) && /^[a-f0-9]{64}$/.test(record.fingerprint ?? ''), 'Operation record metadata is invalid');
       } catch { await appendAudit('sandbox.operation.recovery_failed', { sandboxId: sandbox.name, operationId: entry.name.slice(0, -5) }).catch(() => {}); continue; }
-      if (record.status === 'running') {
-        await writeSandboxOperation({ ...record, status: 'unknown', finishedAt: new Date().toISOString(), recoveryReason: 'runtime_agent_restarted' });
-      }
+      const recoveredRecord = reconcileSandboxOperationRecord(record);
+      if (recoveredRecord !== record) await writeSandboxOperation(recoveredRecord);
     }
   }
 }
@@ -477,7 +489,7 @@ async function resourceStatus() {
     .catch(() => ({ unavailable: true }));
   const storageScanWarnings = [];
   const measure = async (directory) => sumRegularFileBytes(directory).catch((error) => { storageScanWarnings.push({ path: directory, reason: error instanceof Error ? error.message.slice(0, 160) : 'scan_failed' }); return 0; });
-  const workspaces = [...new Set(records.map((item) => item.workspaceMount?.path).filter(Boolean))];
+  const workspaces = workspacePathsForStorageScan(records);
   const [executionLogsBytes, executionRecordsBytes, operationRecordsBytes, workloadMetadataBytes, reservationBytes, auditBytes, workspaceSizes] = await Promise.all([
     measure(EXECUTION_LOG_ROOT), measure(EXECUTION_RECORDS_DIR), measure(OPERATION_RECORDS_DIR), measure(DATA_DIR), measure(RESERVATION_ROOT), measure(AUDIT_ROOT),
     Promise.all(workspaces.map(async (workspace) => ({ path: workspace, bytes: await measure(workspace) }))),
@@ -993,13 +1005,21 @@ export function buildContainerCreateArgs({ id, workloadType, repositoryId, workt
   return [
     'create', '--pull=never', '--cgroup-parent', CGROUP_PARENT, '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
-    '--network=' + network, '--read-only', '--cap-drop=ALL',
+    '--network=' + network, '--http-proxy=false', '--read-only', '--cap-drop=ALL',
     '--userns=keep-id', '--user', `${process.getuid()}:${process.getgid()}`,
     '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json', '--pids-limit', String(resources.pids),
     '--memory', `${resources.memoryMiB}m`, '--cpus', String(resources.cpuMilli / 1000),
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',
-    ...(workspaceMount ? ['--mount', `type=bind,src=${workspaceMount.path},dst=/workspace,${workspaceMount.access === 'read-only' ? 'ro' : 'rw'}`] : []),
+    ...(workspaceMount ? ['--mount', `type=bind,src=${workspaceMount.stagedPath ?? workspaceMount.path},dst=/workspace,${workspaceMount.access === 'read-only' ? 'ro' : 'rw'}`] : []),
     ...(executionMount ? ['--mount', `type=bind,src=${executionMount.path},dst=/run/vps-mcp-executions,rw`] : []),
+    ...(proxyUrl ? [
+      '--env', `HTTP_PROXY=${proxyUrl}`,
+      '--env', `HTTPS_PROXY=${proxyUrl}`,
+      '--env', `http_proxy=${proxyUrl}`,
+      '--env', `https_proxy=${proxyUrl}`,
+      '--env', 'NO_PROXY=localhost,127.0.0.1,::1',
+      '--env', 'no_proxy=localhost,127.0.0.1,::1',
+    ] : []),
     image,
     ...(command === undefined ? [] : safeArgv(command)),
   ];
@@ -1112,8 +1132,7 @@ async function createWorkload(request) {
   const capacity = evaluateResourceRequest({ records: currentRecords, reservations, requested: { workloadType, repositoryId, worktreeId, resources }, budget: resourceBudget(), freeDiskBytes: disk.freeBytes });
   assert(capacity.allowed, capacity.reasons.join('; '));
   if (workloadType === 'task') await applyWorkspaceDiskQuota(repositoryId, worktreeId, resources.diskMiB);
-
-  const record = retryRecord ?? {
+  let record = retryRecord ?? {
     id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}),
     image, imageDigest: image.slice(image.lastIndexOf('@') + 1),
     runtimeId: null, workspaceMount, executionMount, resources, network, networkPolicy, commandFingerprint: fingerprint,
@@ -1121,10 +1140,11 @@ async function createWorkload(request) {
   };
   await writeRecord(record);
   try {
+    const stagedWorkspacePath = workloadType === 'task' ? await stageWorkspaceMount(repositoryId, worktreeId, id) : null;
+    if (stagedWorkspacePath) { record = { ...record, stagedWorkspacePath }; await writeRecord(record); }
     const args = buildContainerCreateArgs({
-      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, executionMount, command: request.command, network, proxyUrl: egressEnabled ? EGRESS_PROXY_CONTAINER : undefined,
+      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount: workspaceMount ? { ...workspaceMount, stagedPath: stagedWorkspacePath } : null, executionMount, command: request.command, network, proxyUrl: egressEnabled ? EGRESS_PROXY_CONTAINER : undefined,
     });
-    if (egressEnabled) args.push('--env', 'HTTP_PROXY=' + EGRESS_PROXY_CONTAINER, '--env', 'HTTPS_PROXY=' + EGRESS_PROXY_CONTAINER, '--env', 'http_proxy=' + EGRESS_PROXY_CONTAINER, '--env', 'https_proxy=' + EGRESS_PROXY_CONTAINER, '--env', 'NO_PROXY=localhost,127.0.0.1,::1', '--env', 'no_proxy=localhost,127.0.0.1,::1');
     const result = await runPodman(args, 120_000);
     const runtimeId = result.stdout.trim().split(/\s+/)[0];
     assert(/^[a-f0-9]{12,64}$/i.test(runtimeId ?? ''), 'Podman returned an invalid container ID');
@@ -1147,6 +1167,7 @@ async function mutate(request, action) {
   if (!runtimeId) {
     if (request.operation === 'container.remove') {
       const updatedAt = new Date().toISOString();
+      await releaseWorkspaceMount(record);
       const removed = { ...record, status: 'removed', runtimeId: null, removedAt: updatedAt, updatedAt };
       await writeRecord(removed);
       await appendAudit('sandbox.removed', { sandboxId: removed.id, workloadType: removed.workloadType, repositoryId: removed.repositoryId, alreadyMissing: true });
@@ -1183,6 +1204,7 @@ async function mutate(request, action) {
   }
   if (request.operation === 'container.remove' && current === 'missing') {
     const updatedAt = new Date().toISOString();
+    await releaseWorkspaceMount(recovered);
     const removed = { ...recovered, status: 'removed', runtimeId: null, removedAt: updatedAt, updatedAt };
     await writeRecord(removed);
     await appendAudit('sandbox.removed', { sandboxId: removed.id, workloadType: removed.workloadType, repositoryId: removed.repositoryId, alreadyMissing: true });
@@ -1868,6 +1890,7 @@ async function execute(request) {
     const runtimeId = await resolveRuntimeId(record);
     if (!runtimeId) {
       if (record.workloadType === 'task') await markActiveExecutionsInterrupted(record.id, 'sandbox_removed');
+      await releaseWorkspaceMount(record);
       const removed = { ...record, status: 'removed', updatedAt: new Date().toISOString() };
       await writeRecord(removed);
       await appendAudit('sandbox.removed', { sandboxId: id, workloadType: removed.workloadType, repositoryId: removed.repositoryId });
@@ -1878,11 +1901,13 @@ async function execute(request) {
     const exists = await runPodman(['inspect', '--format', '{{.Id}}', runtimeId]).then(() => true).catch(() => false);
     if (!exists) {
       if (record.workloadType === 'task') await markActiveExecutionsInterrupted(record.id, 'sandbox_removed');
+      await releaseWorkspaceMount(record);
       const missing = { ...record, status: 'removed', runtimeId: null, updatedAt: new Date().toISOString() };
       await writeRecord(missing);
       return { workload: missing, removed: true };
     }
     const result = await runPodman(['rm', '--force', runtimeId], 30_000);
+    await releaseWorkspaceMount(record);
     if (record.workloadType === 'task') await markActiveExecutionsInterrupted(record.id, 'sandbox_removed');
     const updated = { ...record, status: 'removed', updatedAt: new Date().toISOString(), runtimeId: null };
     await writeRecord(updated);
@@ -2012,12 +2037,35 @@ function handleConnection(socket) {
   socket.on('error', () => {});
   socket.on('timeout', () => socket.destroy());
 }
-function main() {
+async function recoverWorkspaceMounts() {
+  const records = await readWorkloadRecords();
+  for (const record of records) {
+    if (record.workloadType !== 'task' || !record.workspaceMount?.path || !['removed', 'creating'].includes(record.status)) continue;
+    const runtimeId = await resolveRuntimeId(record);
+    if (runtimeId) continue;
+    await releaseWorkspaceMount(record);
+    if (record.status === 'creating') {
+      await writeRecord({ ...record, status: 'error', runtimeId: null, error: 'Creation was interrupted before a managed container could be confirmed', updatedAt: new Date().toISOString() });
+    }
+  }
+}
+
+async function main() {
   if (process.getuid() === 0) { console.error('Runtime agent must never run as root.'); process.exit(77); }
   if (process.env.USER !== 'vps-sandbox') { console.error('Runtime agent must run as vps-sandbox.'); process.exit(77); }
   if (process.env.LISTEN_PID !== String(process.pid) || process.env.LISTEN_FDS !== '1') {
     console.error('Runtime agent must be started by its systemd socket unit.'); process.exit(77);
   }
+
+  try {
+    await recoverSandboxOperations();
+    await recoverWorkspaceMounts();
+  } catch (error) {
+    console.error(`Sandbox operation recovery failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    process.exit(1);
+    return;
+  }
+
   const server = net.createServer(handleConnection);
   server.on('error', (error) => { console.error(error.message); process.exit(1); });
   server.listen({ fd: 3 });
@@ -2025,4 +2073,4 @@ function main() {
   reaper.unref();
   void reapExpiredSandboxes();
 }
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (import.meta.url === `file://${process.argv[1]}`) void main();

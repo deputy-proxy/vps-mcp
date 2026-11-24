@@ -2,7 +2,9 @@
 
 ## Capacity model
 
-The runtime agent reserves host headroom and admits workloads only when the requested CPU, memory, PID and disk reservations fit both the global budget and the repository budget. Defaults are intentionally conservative:
+The runtime agent reserves host headroom and admits workloads only when the requested CPU, memory, PID and disk reservations fit both the global budget and the repository budget.
+
+The configured defaults are intentionally conservative:
 
 - CPU: 70% of detected logical CPU capacity.
 - Memory: 70% of detected host memory.
@@ -13,9 +15,9 @@ The runtime agent reserves host headroom and admits workloads only when the requ
 - Global disk reservation: 150 GiB.
 - Disk warning threshold: 15 GiB free.
 - Disk critical/reserved headroom: 5 GiB free.
-- Task workspace disk budget: 2 GiB per task container.
+- Task workspace hard quota: 2 GiB per task worktree.
 
-The budget is configurable through `/etc/vps-sandbox/runtime.env`, which is read by the rootless runtime systemd service. The installer seeds these values for new installations and preserves an existing file. Blank CPU/memory/per-repository overrides use the calculated defaults. See [the runtime environment example](vps-sandbox-runtime.env.example).
+The budget is configurable through `/etc/vps-sandbox/runtime.env`, which is read by the rootless runtime systemd service. The installer seeds values for new installations and preserves an existing file. Blank CPU, memory and per-repository overrides use the calculated defaults. See docs/operations/vps-sandbox-runtime.env.example.
 
 | Variable | Purpose | Default |
 |---|---|---:|
@@ -30,12 +32,13 @@ The budget is configurable through `/etc/vps-sandbox/runtime.env`, which is read
 | `VPS_SANDBOX_REPOSITORY_DISK_MIB` | Per-repository disk reservation | 102400 |
 | `VPS_SANDBOX_DISK_WARNING_BYTES` | Disk warning threshold | 16106127360 |
 | `VPS_SANDBOX_DISK_RESERVE_BYTES` | Minimum free-disk safety margin | 5368709120 |
+| `VPS_SANDBOX_TASK_DISK_MIB` | Hard task workspace quota | 2048 |
 
-The MCP API cannot set Podman flags or raise the configured ceilings. A reservation that would overcommit a budget fails with `SANDBOX_CAPACITY_EXCEEDED`; a disk safety-margin violation fails with `SANDBOX_DISK_PRESSURE`.
+The MCP API cannot set Podman flags or raise configured ceilings. A reservation that would overcommit a budget fails with `SANDBOX_CAPACITY_EXCEEDED`; a disk safety-margin violation fails with `SANDBOX_DISK_PRESSURE`.
 
 ## Persistent project reservations
 
-Before #42 provisions a persistent development environment, it must call `resource.reserve` with the registered repository ID and its planned resource vector:
+Before a persistent development environment is provisioned, its manager must call `resource.reserve` with the registered repository ID and planned resource vector:
 
 ```json
 {
@@ -49,49 +52,129 @@ Before #42 provisions a persistent development environment, it must call `resour
 }
 ```
 
-The operation is idempotent per repository and replaces that repository's prior reservation only after the new request passes admission checks. `resource.release` marks the reservation released; it must be called only after deprovisioning the associated project environment. When a project-service workload becomes active, its live resource vector replaces the reservation in capacity accounting to avoid double-counting.
+The operation is idempotent per repository and replaces that repository's prior reservation only after the new request passes admission checks.
+
+`resource.release` marks the reservation released. It must be called only after deprovisioning the associated project environment.
+
+When a project-service workload becomes active, its live resource vector replaces its reservation in capacity accounting to avoid double-counting.
+
+## Task workspace hard quotas
+
+Task workspace disk enforcement uses ext4 project quotas, not only periodic measurement.
+
+Before a task container is created, the runtime asks the root-owned quota broker to apply a hard block limit to the exact managed worktree. The broker accepts only a repository ID, worktree UUID and bounded disk budget. It derives the path from approved workspace roots and the quota registry; it does not accept arbitrary paths or shell commands.
+
+The helper:
+
+1. Verifies that the managed workspace is on the supported ext4 filesystem.
+2. Verifies the ext4 project feature and active `prjquota`/`pquota` mount option.
+3. Resolves the actual backing filesystem, including bind-mounted worktree roots.
+4. Assigns a deterministic project ID to the worktree.
+5. Enables project inheritance on its directories.
+6. Applies the hard block quota.
+
+Provisioning is deliberately separate from runtime installation. The provisioning script does not automatically remount or mutate a live root filesystem. Filesystem feature or mount-option changes require a reviewed maintenance window.
+
+Host provisioning procedure:
+
+1) Confirm that the task-worktree filesystem is ext4 and has the ext4 project feature.
+2) During a reviewed maintenance window, enable the prjquota mount option where required.
+3) Run sudo bash scripts/provision-vps-sandbox-quotas.sh.
+4) Run sudo bash scripts/install-vps-sandbox-runtime.sh to install and activate the restricted quota socket broker.
+5) Verify that a disposable task worktree reports an enforced project quota before enabling ordinary task creation.
+
+
+If project quotas are unavailable or the broker cannot apply the requested quota, task creation fails closed with `SANDBOX_DISK_QUOTA_UNAVAILABLE`. The runtime must not silently fall back to periodic-only enforcement.
+
+The five-minute workspace watchdog remains defense in depth. It measures workspace usage and can stop an over-budget task, but it is not the primary hard-limit mechanism.
+
+The project quota applies to the managed task worktree. It does not individually cap Podman image storage, container layers, repository caches, execution logs, audit records or persistent project data. Those categories require separate monitoring and capacity policies.
 
 ## Monitoring
 
-Call `resource.capacity` to inspect configured budgets, current active workload reservations, project reservations, Podman storage accounting and free disk. Disk level is `normal`, `warning` or `critical`. New workload creation is denied when it would cross the critical free-space reserve. When free space falls below that reserve, the watchdog stops running task containers first and leaves persistent project services untouched; operators must investigate and reclaim storage before resuming tasks.
+Call `resource.capacity` or `resource.inspect` to inspect configured budgets, current active workload reservations, project reservations, Podman storage accounting and free disk.
 
-Workspace disk limits are checked by the runtime watchdog. A task container that exceeds its configured workspace disk budget is stopped, active executions are marked interrupted and the workspace contents are retained. The watchdog scans every five minutes. This is a fail-safe workload stop, not a strict block-level filesystem quota; a task may temporarily exceed its threshold between scans. A quota-capable filesystem and separately reviewed host provisioning are required for hard per-directory enforcement.
+The runtime reports:
+
+- CPU, memory and PID reservations.
+- Active task and project-service counts.
+- Global and per-repository disk budgets.
+- Filesystem capacity and free-space pressure.
+- Podman images, containers and local volumes.
+- Execution logs and records.
+- Operation records and audit data.
+- Registered task worktree storage.
+- Scan warnings.
+
+Disk level is `normal`, `warning` or `critical`. New workload creation is denied when it would cross the critical free-space reserve.
+
+When free space falls below the critical reserve, the watchdog stops running task containers first and leaves persistent project services untouched. Operators must investigate and reclaim storage before resuming tasks.
+
+Do not automatically prune Podman images, repository caches, project databases, persistent project storage, worktrees or logs as part of task cleanup. Those resources require their own ownership, backup and retention policies. Image/cache pruning remains an explicit operator action after capacity inspection.
 
 ## Concurrency and locks
 
-Mutating operations acquire durable locks for the global resource pool, repository, worktree or workload as applicable. Multiple lock keys are acquired in sorted order. Lock owner records contain PID, process start time and a random ownership token. A lock is not reclaimed merely because it is old: the recorded process must be proven dead or its PID must have been reused. An incomplete owner record is eligible for reclamation only after the configured stale-lock grace period. Lock acquisition has a bounded timeout and returns `SANDBOX_BUSY` on contention timeout.
+Mutating operations acquire durable locks for the global resource pool, repository, worktree or workload as applicable. Multiple lock keys are acquired in sorted order.
+
+Lock owner records contain PID, process start time and a random ownership token. A lock is not reclaimed merely because it is old: the recorded process must be proven dead or its PID must have been reused. An incomplete owner record is eligible for reclamation only after the configured stale-lock grace period.
+
+Lock acquisition has a bounded timeout and returns `SANDBOX_BUSY` on contention timeout.
 
 Defaults:
 
 - `VPS_SANDBOX_LOCK_TIMEOUT_MS=180000`
 - `VPS_SANDBOX_STALE_LOCK_MS=60000`
 
+Lifecycle operations persist durable operation records. Retries must preserve operation identity and arguments. At runtime startup, interrupted operations previously recorded as running are changed to `unknown` with a recovery reason. They are retained for inspection rather than blindly replayed.
+
 ## Network defaults
 
-Task sandboxes use `network=none`. Project-service workloads also remain fail-closed with no egress until the private project-network and authenticated proxy design in #42/#43 is implemented. This prevents host, private-network and metadata-service access, but package installation and application dependencies that require network access must use preloaded caches until an approved egress profile exists.
+
+Install the restricted egress configuration after reviewing the approved domains:
+
+sudo bash scripts/install-vps-sandbox-egress.sh
+
+The administrator-maintained exact-hostname allowlist is /etc/vps-sandbox/egress/allowed-domains.txt. Add only reviewed exact hostnames. Wildcard suffix entries are not supported.
+
+Task sandboxes use the restricted task egress profile:
+
+- Rootless `slirp4netns` networking.
+- Explicit HTTP/HTTPS proxy variables.
+- Host nftables enforcement that blocks direct outbound sockets from the `vps-sandbox` identity.
+- Squid exact-hostname allowlisting and private/link-local/metadata destination denial.
+- Upstream TCP restricted to ports 80 and 443.
+
+The proxy and firewall are required dependencies of the task runtime profile. If either is unavailable, the runtime must fail closed.
+
+Project-service workloads remain on `network=none` until the private project-network and authenticated proxy design is implemented. Task egress permissions must not be reused for project services.
+
+See [the container security policy](../architecture/container-security.md) and [the VPS-MCP threat model](../security/threat-model.md).
 
 ## Emergency pause
 
-Use `sandbox.maintenance.pause` with `paused=true` to block new workload creation/start, workspace writes and command execution. Stop/remove remain available so operators can contain an incident. The pause does not kill work already admitted before the pause transition. It also suspends automatic cleanup housekeeping, while disk-pressure and workspace-quota enforcement remain active. The pause state is durable across runtime-agent restarts. Set `paused=false` after the incident is resolved.
+Use `sandbox.maintenance.pause` with `paused=true` to block new workload creation/start, workspace writes and command execution.
 
-## Strict task workspace quotas
+Stop/remove remain available so operators can contain an incident. The pause also suspends automatic cleanup housekeeping, while disk-pressure and workspace-quota enforcement remain active. The pause state is durable across runtime-agent restarts.
 
-Task creation now requires a hard ext4 project quota to be applied to its exact managed worktree before Podman creates the container. The root-owned quota broker accepts only a repository ID, worktree UUID and bounded disk budget; it does not accept arbitrary paths or shell commands. The helper assigns a deterministic project ID, enables project inheritance on every existing directory in the worktree and applies the hard block limit with setquota. The five-minute watchdog remains as a secondary containment check.
+Set `paused=false` only after the incident is resolved.
 
-Provisioning is deliberately separate from runtime installation:
+## Validation and operational evidence
 
-1. Confirm the task-worktree filesystem is ext4 and has the ext4 project feature.
-2. During a reviewed maintenance window, enable the prjquota mount option on the filesystem. The provisioning script refuses to remount or mutate a live root filesystem automatically.
-3. Run sudo bash scripts/provision-vps-sandbox-quotas.sh.
-4. Run sudo bash scripts/install-vps-sandbox-runtime.sh to install and activate the restricted quota socket broker.
-5. Verify a disposable task worktree reports an enforced project quota before enabling ordinary task creation.
+Record the following for a deployment or material policy change:
 
-If project quotas are not active, task creation fails closed with SANDBOX_DISK_QUOTA_UNAVAILABLE; it does not silently fall back to periodic-only enforcement.
+- `npm run typecheck`
+- `npm test`
+- `npm run build`
+- Relevant CI workflow results
+- `systemd-analyze verify` for changed units
+- `git diff --check`
+- Effective systemd properties and service/socket state
+- `resource.inspect` output
+- Project quota configuration and a controlled over-limit write test
+- Allowed and denied egress tests, including direct-egress bypass attempts
+- Cleanup preview and, where applicable, controlled cleanup tests
+- Concurrency and resource-pressure test results
 
-## Restricted task egress
+Do not claim hard quota enforcement solely because the quota is configured. Record a controlled over-limit write that demonstrates the expected filesystem failure. Likewise, do not claim production-scale concurrency or disk-pressure acceptance without exercising those conditions.
 
-Task sandboxes can use a restricted HTTP CONNECT proxy for dependency registries. The installer provisions Squid under a dedicated vps-egress identity and an nftables output policy that permits the rootless vps-sandbox identity to open host sockets only to the loopback proxy. The proxy allows only the administrator-maintained exact-hostname allowlist, denies private, loopback, link-local and metadata destinations after DNS resolution, and permits only TCP 80/443 upstream. The firewall separately prevents the proxy identity from connecting to local/private destinations or arbitrary ports. Project-service containers remain on network=none.
-
-Install only after reviewing the allowed domains with sudo bash scripts/install-vps-sandbox-egress.sh.
-
-The installer enables the firewall before the proxy, adds a systemd dependency from the runtime agent to both services, then enables the restricted task profile. If the proxy or firewall is unavailable, the runtime agent does not start with the egress profile. Existing task network modes are immutable; recreate task sandboxes to adopt the new profile. Add exact hostnames as anchored regular expressions to /etc/vps-sandbox/egress/allowed-domains.txt after security review. Wildcard suffix entries are intentionally not supported.
+For the VPS-07 implementation, the live inspection confirmed zero active workloads, populated Podman storage reporting and no scan warnings. The host proxy allowed the npm registry and denied a non-allowlisted host and private destination. Direct egress attempts were blocked. A controlled hard-quota overflow and sustained concurrency/disk-pressure stress tests remain separate acceptance evidence.

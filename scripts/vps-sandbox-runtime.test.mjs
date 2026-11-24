@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan } from './vps-sandbox-runtime.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -170,6 +170,41 @@ describe('rootless workload runtime request validation', () => {
 });
 
 
+
+describe('runtime restart recovery and storage scans', () => {
+  it('marks interrupted running operations unknown after a runtime restart', () => {
+    const record = {
+      sandboxId: '134e5321-b4d7-4d4f-be92-ce56a984adaa',
+      operationId: '234e5321-b4d7-4d4f-be92-ce56a984adaa',
+      status: 'running',
+      fingerprint: 'a'.repeat(64),
+    };
+
+    expect(reconcileSandboxOperationRecord(record, '2026-11-24T00:00:00.000Z')).toEqual({
+      ...record,
+      status: 'unknown',
+      finishedAt: '2026-11-24T00:00:00.000Z',
+      recoveryReason: 'runtime_agent_restarted',
+    });
+  });
+
+  it.each(['unknown', 'completed', 'failed'])('preserves an already %s operation', (status) => {
+    const record = { status, fingerprint: 'b'.repeat(64) };
+    expect(reconcileSandboxOperationRecord(record)).toBe(record);
+  });
+
+  it('excludes removed workloads and deduplicates workspace paths', () => {
+    const records = [
+      { status: 'running', workspaceMount: { path: '/workspaces/active' } },
+      { status: 'created', workspaceMount: { path: '/workspaces/active' } },
+      { status: 'removed', workspaceMount: { path: '/workspaces/removed' } },
+      { status: 'removed', workspaceMount: null },
+    ];
+
+    expect(workspacePathsForStorageScan(records)).toEqual(['/workspaces/active']);
+  });
+});
+
 describe('rootless workload lifecycle isolation', () => {
   it('requires the expected workload type for stop/remove lifecycle operations', () => {
     const record = { workloadType: 'project-service' };
@@ -190,6 +225,8 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('--cgroup-parent');
     expect(args).toContain('/system.slice/vps-sandbox-runtime.service');
     expect(args).toContain('--network=none');
+    expect(args).toContain('--http-proxy=false');
+    expect(args.some((arg) => arg.startsWith('HTTP_PROXY='))).toBe(false);
     expect(args).toContain('--userns=keep-id');
     expect(args).toContain('--user');
     expect(args).toContain('--security-opt=seccomp=/usr/share/containers/seccomp.json');
@@ -203,6 +240,18 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('type=bind,src=/var/lib/vps-sandbox/execution-logs/134e5321-b4d7-4d4f-be92-ce56a984adaa,dst=/run/vps-mcp-executions,rw');
     expect(args).not.toContain('/workspace');
   });
+  it('uses the broker staging path for the workspace bind while preserving access mode', () => {
+    const args = buildContainerCreateArgs({
+      id: '134e5321-b4d7-4d4f-be92-ce56a984adaa', workloadType: 'task', repositoryId: 'deputy-proxy-vps-mcp',
+      worktreeId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', image: `docker.io/library/node@sha256:${'a'.repeat(64)}`,
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
+      workspaceMount: { path: '/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/234e5321-b4d7-4d4f-be92-ce56a984adaa', stagedPath: '/var/lib/vps-sandbox-mounts/deputy-proxy-vps-mcp/234e5321-b4d7-4d4f-be92-ce56a984adaa/134e5321-b4d7-4d4f-be92-ce56a984adaa', access: 'read-only', destination: '/workspace' },
+      executionMount: { path: '/var/lib/vps-sandbox/execution-logs/134e5321-b4d7-4d4f-be92-ce56a984adaa', destination: '/run/vps-mcp-executions' },
+    });
+    expect(args).toContain('type=bind,src=/var/lib/vps-sandbox-mounts/deputy-proxy-vps-mcp/234e5321-b4d7-4d4f-be92-ce56a984adaa/134e5321-b4d7-4d4f-be92-ce56a984adaa,dst=/workspace,ro');
+    expect(args.some((arg) => arg.includes('/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/234e5321-b4d7-4d4f-be92-ce56a984adaa'))).toBe(false);
+  });
+
   it('allows task egress only through the administrator-pinned proxy network mode', () => {
     const image = 'docker.io/library/node@sha256:' + 'a'.repeat(64);
     const args = buildContainerCreateArgs({
@@ -218,6 +267,15 @@ describe('rootless workload lifecycle isolation', () => {
       proxyUrl: 'http://10.0.2.2:3128',
     });
     expect(args).toContain('--network=slirp4netns:allow_host_loopback=true');
+    expect(args).toContain('--http-proxy=false');
+    expect(args).toEqual(expect.arrayContaining([
+      '--env', 'HTTP_PROXY=http://10.0.2.2:3128',
+      '--env', 'HTTPS_PROXY=http://10.0.2.2:3128',
+      '--env', 'http_proxy=http://10.0.2.2:3128',
+      '--env', 'https_proxy=http://10.0.2.2:3128',
+      '--env', 'NO_PROXY=localhost,127.0.0.1,::1',
+      '--env', 'no_proxy=localhost,127.0.0.1,::1',
+    ]));
     expect(args).not.toContain('--network=host');
     expect(() => buildContainerCreateArgs({
       id: '134e5321-b4d7-4d4f-be92-ce56a984adaa',

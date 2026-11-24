@@ -15,8 +15,12 @@ QUOTA_SOCKET_SOURCE="$REPO_DIR/systemd/vps-sandbox-quota-broker.socket"
 QUOTA_SERVICE_SOURCE="$REPO_DIR/systemd/vps-sandbox-quota-broker.service"
 QUOTA_SOCKET="$SYSTEMD_DIR/vps-sandbox-quota-broker.socket"
 QUOTA_SERVICE="$SYSTEMD_DIR/vps-sandbox-quota-broker.service"
+QUOTA_SERVICE_DROPIN_DIR="${QUOTA_SERVICE}.d"
+QUOTA_DEVICE_ALLOW=()
+declare -A SEEN_QUOTA_DEVICES=()
 UID_VALUE="$(id -u vps-sandbox)"
 RUNTIME_ENV="${ENV_DIR}/runtime.env"
+RUNTIME_SERVICE_DROPIN_DIR="${SYSTEMD_DIR}/vps-sandbox-runtime.service.d"
 
 getent passwd vps-sandbox >/dev/null || { echo "Missing vps-sandbox account; provision rootless Podman first." >&2; exit 2; }
 getent group vps-mcp >/dev/null || { echo "Missing vps-mcp group." >&2; exit 2; }
@@ -26,8 +30,37 @@ command -v systemd-analyze >/dev/null || { echo "systemd-analyze is required." >
 command -v setfacl >/dev/null || { echo "The acl package (setfacl) is required for per-worktree runtime access." >&2; exit 2; }
 command -v find >/dev/null || { echo "find is required for inherited worktree ACLs." >&2; exit 2; }
 
+# Resolve the block devices backing approved workspace roots. The quota broker
+# uses DevicePolicy=closed and receives access only to these devices.
+for workspace_root in /var/lib/vps-mcp/task-workspaces/worktrees /srv/vps-mcp-workspaces; do
+  [[ -d "$workspace_root" ]] || continue
+
+  source_device="$(findmnt -n -o SOURCE -T "$workspace_root")"
+  [[ "$source_device" == /dev/* && -b "$source_device" ]] || {
+    echo "Cannot safely resolve a block device for workspace root: $workspace_root ($source_device)" >&2
+    exit 2
+  }
+
+  device="$(readlink -f -- "$source_device")"
+  [[ -b "$device" ]] || {
+    echo "Workspace backing device is not a block device: $device" >&2
+    exit 2
+  }
+
+  if [[ -z "${SEEN_QUOTA_DEVICES[$device]+x}" ]]; then
+    SEEN_QUOTA_DEVICES["$device"]=1
+    QUOTA_DEVICE_ALLOW+=("$device")
+  fi
+done
+
+((${#QUOTA_DEVICE_ALLOW[@]} > 0)) || {
+  echo "No approved workspace root has a resolvable block device." >&2
+  exit 2
+}
+
 systemd-analyze verify "$REPO_DIR/systemd/vps-sandbox-runtime.socket" "$REPO_DIR/systemd/vps-sandbox-runtime.service" "$QUOTA_SOCKET_SOURCE" "$QUOTA_SERVICE_SOURCE"
 install -d -o root -g root -m 0755 "${LIBEXEC}" "${ENV_DIR}"
+install -d -o root -g vps-sandbox -m 0750 /var/lib/vps-sandbox-mounts
 install -o root -g root -m 0755 "${SCRIPT_DIR}/vps-sandbox-runtime.mjs" "${LIBEXEC}/vps-sandbox-runtime.mjs"
 install -o root -g root -m 0644 "${SCRIPT_DIR}/executions.mjs" "${LIBEXEC}/executions.mjs"
 install -o root -g root -m 0644 "$SCRIPT_DIR/resource-governance.mjs" "$LIBEXEC/resource-governance.mjs"
@@ -69,7 +102,25 @@ fi
 install -o root -g root -m 0644 "$REPO_DIR/systemd/vps-sandbox-runtime.socket" "$SYSTEMD_DIR/vps-sandbox-runtime.socket"
 install -o root -g root -m 0644 "$QUOTA_SOCKET_SOURCE" "$QUOTA_SOCKET"
 install -o root -g root -m 0644 "$QUOTA_SERVICE_SOURCE" "$QUOTA_SERVICE"
+
+install -d -o root -g root -m 0755 "$QUOTA_SERVICE_DROPIN_DIR"
+dropin_tmp="$(mktemp)"
+{
+  printf '[Service]\n'
+  for device in "${QUOTA_DEVICE_ALLOW[@]}"; do
+    printf 'DeviceAllow=%s rw\n' "$device"
+  done
+} > "$dropin_tmp"
+install -o root -g root -m 0644 "$dropin_tmp" "$QUOTA_SERVICE_DROPIN_DIR/device-access.conf"
+rm -f "$dropin_tmp"
 install -o root -g root -m 0644 "${REPO_DIR}/systemd/vps-sandbox-runtime.service" "${SYSTEMD_DIR}/vps-sandbox-runtime.service"
+
+# Podman needs its per-user runtime directory writable inside the service sandbox.
+install -d -o root -g root -m 0755 "${RUNTIME_SERVICE_DROPIN_DIR}"
+runtime_dropin_tmp="$(mktemp)"
+printf '[Service]\nReadWritePaths=/run/user/%s\n' "${UID_VALUE}" > "$runtime_dropin_tmp"
+install -o root -g root -m 0644 "$runtime_dropin_tmp" "${RUNTIME_SERVICE_DROPIN_DIR}/runtime-directory.conf"
+rm -f "$runtime_dropin_tmp"
 systemctl stop vps-sandbox-runtime.socket vps-sandbox-runtime.service vps-sandbox-quota-broker.socket vps-sandbox-quota-broker.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now vps-sandbox-runtime.socket vps-sandbox-quota-broker.socket
