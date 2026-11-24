@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, durableLockKeys, isNewWorkOperation } from './vps-sandbox-runtime.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -22,6 +22,20 @@ describe('rootless workload runtime request validation', () => {
     },
   ])('accepts the approved request shape %#', (request) => {
     expect(parseRuntimeRequest(JSON.stringify(request))).toEqual(request);
+  });
+
+  it('validates workspace write lease operations and serializes them with maintenance pause', () => {
+    const worktreeId = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'workspace.write.begin', repositoryId: 'repo-123', worktreeId })))
+      .toMatchObject({ operation: 'workspace.write.begin', repositoryId: 'repo-123', worktreeId });
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'workspace.write.finish', leaseId: worktreeId })))
+      .toMatchObject({ operation: 'workspace.write.finish', leaseId: worktreeId });
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'workspace.write.begin', repositoryId: '../repo', worktreeId }))).toThrow('Invalid repository ID');
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'workspace.write.finish', leaseId: 'not-a-uuid' }))).toThrow('Invalid workload ID');
+    expect(isNewWorkOperation({ operation: 'workspace.write.begin' })).toBe(true);
+    expect(durableLockKeys({ operation: 'workspace.write.begin', worktreeId })).toEqual(['maintenance:global', `worktree:${worktreeId}`]);
+    expect(durableLockKeys({ operation: 'cleanup.pause' })).toEqual(['maintenance:global']);
+    expect(isNewWorkOperation({ operation: 'sandbox.fs.write' })).toBe(true);
   });
 
   it('derives task workspace mounts from the registered repository/worktree identity', () => {
