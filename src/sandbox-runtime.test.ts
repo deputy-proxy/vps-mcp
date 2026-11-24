@@ -59,6 +59,21 @@ describe('sandbox runtime request contract', () => {
     })).not.toThrow();
   });
 
+  it('validates global runtime operations without requiring a workload ID', () => {
+    expect(() => validateSandboxRuntimeRequest({ operation: 'cleanup.pause', paused: true })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'cleanup.pause', paused: false })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'audit.list', limit: 20 })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'audit.list' })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'resource.inspect' })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'cleanup.preview' })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'cleanup.run', dryRun: true })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'resource.reserve', repositoryId: 'repo-123', resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 } })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'resource.release', repositoryId: 'repo-123' })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'cleanup.pause', paused: 'yes' as unknown as boolean })).toThrow('paused');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'audit.list', limit: 501 })).toThrow('limit');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'resource.reserve', repositoryId: 'repo-123', resources: { memoryMiB: 8192 } })).toThrow('memoryMiB');
+  });
+
   it('requires a sandbox ID and validates task-only operation arguments', () => {
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, command: ['node', '-v'] })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, operationId: id, command: ['node', '-v'] })).not.toThrow();
