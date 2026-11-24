@@ -13,6 +13,7 @@ import { validateTaskBranchCreation } from "./branch-policy.js";
 import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbox-runtime.js";
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 import { inspectManagedStorage } from "./storage-metrics.js";
+import { resolveAllowedPath, managedTaskWorkspaceIdentity } from "./paths.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -153,10 +154,20 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("filesystem.write", {
     title: "Write file",
-    description: "Atomically create or replace a UTF-8 file up to 2 MiB inside configured allowed roots.",
+    description: "Atomically create or replace a UTF-8 file up to 2 MiB inside configured allowed roots. Writes to managed task worktrees respect the emergency maintenance pause.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { path: z.string().min(1), content: z.string().max(2 * 1024 * 1024) },
-  }, async ({ path, content }) => guarded(() => safely(() => writeFile(path, content))));
+  }, async ({ path, content }) => guarded(() => safely(async () => {
+    const resolved = await resolveAllowedPath(path, { allowMissingLeaf: true });
+    const workspace = managedTaskWorkspaceIdentity(resolved);
+    if (!workspace) return writeFile(resolved, content);
+    const lease = await sandboxRuntime.beginWorkspaceWrite(workspace);
+    try {
+      return await writeFile(resolved, content);
+    } finally {
+      await sandboxRuntime.finishWorkspaceWrite(lease.leaseId).catch(() => {});
+    }
+  })));
 
   server.registerTool("sandbox.image.inspect", {
     title: "Inspect approved sandbox image",
@@ -398,7 +409,7 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("sandbox.maintenance.pause", {
     title: "Emergency workload pause",
-    description: "Pause or resume new sandbox creation, starts, workspace writes and command execution. Existing workloads can still be stopped or removed. Automatic cleanup is also suspended while paused.",
+    description: "Pause or resume new sandbox creation, starts, command execution and writes to managed task worktrees, including generic filesystem.write requests. Existing workloads can still be stopped or removed. Automatic cleanup is also suspended while paused.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: { paused: z.boolean() },
   }, async ({ paused }) => guarded(() => safelySandbox(() => sandboxRuntime.setMaintenancePause(paused))));
