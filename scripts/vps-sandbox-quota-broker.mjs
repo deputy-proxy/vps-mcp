@@ -14,19 +14,24 @@ export function parseQuotaBrokerRequest(raw) {
   let value;
   try { value = JSON.parse(raw); } catch { throw new Error('Request must be valid JSON'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Request must be an object');
-  if (Object.keys(value).sort().join(',') !== 'diskMiB,operation,repositoryId,worktreeId' || value.operation !== 'apply') throw new Error('Unsupported quota operation or properties');
+  const keys = Object.keys(value).sort().join(',');
+  const expected = value.operation === 'apply' ? 'diskMiB,operation,repositoryId,worktreeId' : ['stage','unstage'].includes(value.operation) ? 'operation,repositoryId,workloadId,worktreeId' : '';
+  if (!expected || keys !== expected) throw new Error('Unsupported quota operation or properties');
   if (typeof value.repositoryId !== 'string' || !/^[a-z0-9][a-z0-9._-]{1,199}$/i.test(value.repositoryId)) throw new Error('Invalid repository ID');
   if (typeof value.worktreeId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.worktreeId)) throw new Error('Invalid worktree ID');
-  if (!Number.isInteger(value.diskMiB) || value.diskMiB < 128 || value.diskMiB > 102400) throw new Error('diskMiB must be between 128 and 102400');
+  if (value.operation === 'apply' && (!Number.isInteger(value.diskMiB) || value.diskMiB < 128 || value.diskMiB > 102400)) throw new Error('diskMiB must be between 128 and 102400');
+  if (value.operation !== 'apply' && (typeof value.workloadId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.workloadId))) throw new Error('Invalid workload ID');
   return value;
 }
 
 export async function applyQuotaRequest(value) {
-  const result = await exec('/usr/bin/node', [HELPER, 'apply', value.repositoryId, value.worktreeId, String(value.diskMiB)], {
+  const args = value.operation === 'apply' ? ['apply', value.repositoryId, value.worktreeId, String(value.diskMiB)] : [value.operation, value.repositoryId, value.worktreeId, value.workloadId];
+  const result = await exec('/usr/bin/node', [HELPER, ...args], {
     encoding: 'utf8', timeout: 45000, maxBuffer: 8192, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin' },
   });
   return JSON.parse(result.stdout.trim());
 }
+export const performQuotaBrokerRequest = applyQuotaRequest;
 
 function respond(socket, value) {
   if (!socket.destroyed) socket.end(JSON.stringify(value) + NEWLINE);
