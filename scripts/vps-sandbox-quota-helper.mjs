@@ -55,7 +55,7 @@ export function stageWorkspaceMount(repositoryId,worktreeId,workloadId){
  const st=fs.lstatSync(target);if(!st.isDirectory()||st.isSymbolicLink()||fs.realpathSync(target)!==target)throw Error('Unsafe staging target');
  const mounted=isMountpoint(target);
  if(mounted){const source=run('/usr/bin/findmnt',['-n','-o','FSROOT','--mountpoint',target],10000);if(path.resolve(source)!==workspace)throw Error('Staging target is mounted from a different workspace');}
- else run('/usr/bin/nsenter',['-t','1','-m','--','/usr/bin/mount','--bind',workspace,target],30000);
+ else run('/usr/bin/mount',['--bind',workspace,target],30000);
  if(!isMountpoint(target))throw Error('Staging mount did not become visible in the host mount namespace');
  return {ok:true,repositoryId,worktreeId,workloadId,stagedPath:target};
 }
@@ -70,7 +70,7 @@ export function unstageWorkspaceMount(repositoryId,worktreeId,workloadId){
  if(mounted){
   const source=path.resolve(run('/usr/bin/findmnt',['-n','-o','FSROOT','--mountpoint',target],10000));
   if(!candidates.includes(source))throw Error('Refusing to unmount a staging target with a different source');
-  run('/usr/bin/nsenter',['-t','1','-m','--','/usr/bin/umount','--',target],30000);
+  run('/usr/bin/umount',['--',target],30000);
  }
  try{fs.rmdirSync(target);}catch(e){if(!['ENOENT','ENOTEMPTY','EBUSY'].includes(e.code))throw e;}
  return {ok:true,repositoryId,worktreeId,workloadId,unstaged:true};
