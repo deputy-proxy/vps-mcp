@@ -50,7 +50,25 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     if (!IMAGE_DIGEST.test(request.image)) throw new Error('Image must be pinned by sha256 digest');
     return;
   }
-  if (request.operation === 'container.list') return;
+  if (request.operation === 'container.list' || request.operation === 'resource.inspect' || request.operation === 'cleanup.preview') return;
+  if (request.operation === 'cleanup.run') {
+    if (request.dryRun !== undefined && typeof request.dryRun !== 'boolean') throw new Error('dryRun must be a boolean');
+    if (request.confirm !== undefined && typeof request.confirm !== 'boolean') throw new Error('confirm must be a boolean');
+    return;
+  }
+  if (request.operation === 'cleanup.pause') {
+    if (typeof request.paused !== 'boolean') throw new Error('paused must be a boolean');
+    return;
+  }
+  if (request.operation === 'audit.list') {
+    if (request.limit !== undefined && (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 500)) throw new Error('limit must be between 1 and 500');
+    return;
+  }
+  if (request.operation === 'resource.reserve' || request.operation === 'resource.release') {
+    if (!REPOSITORY_ID.test(request.repositoryId)) throw new Error('Invalid repository ID');
+    if (request.operation === 'resource.reserve') validateResources(request.resources);
+    return;
+  }
   if ('sandboxId' in request) {
     if (!UUID.test(request.sandboxId)) throw new Error('Invalid sandbox ID');
     if (request.operation === 'sandbox.exec') {
