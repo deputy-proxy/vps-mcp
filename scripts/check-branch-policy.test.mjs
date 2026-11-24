@@ -119,4 +119,10 @@ describe("branch governance workflow validation", () => {
     expect(validatePullRequest({ pull_request: { head: { ref: "hotfix/auth" }, base: { ref: "main" }, body: "## Development reconciliation\n\nMerge this fix back immediately." } })).toMatchObject({ valid: true, kind: "hotfix" });
     expect(validatePullRequest({ pull_request: { head: { ref: "hotfix/auth" }, base: { ref: "main" }, body: "No reconciliation." } }).valid).toBe(false);
   });
+
+  it("allows documented maintenance fixes into main with a development reconciliation plan", () => {
+    expect(validatePullRequest({ pull_request: { head: { ref: "fix/issue-36-workspace-acl" }, base: { ref: "main" }, body: "## Development reconciliation\n\nCarry this maintenance change into development after acceptance." } })).toMatchObject({ valid: true, kind: "maintenance" });
+    expect(validatePullRequest({ pull_request: { head: { ref: "fix/issue-36-workspace-acl" }, base: { ref: "main" }, body: "Maintenance change." } }).valid).toBe(false);
+    expect(validatePullRequest({ pull_request: { head: { ref: "feat/feature" }, base: { ref: "main" }, body: "## Development reconciliation\n\nCarry forward." } }).valid).toBe(false);
+  });
 });
