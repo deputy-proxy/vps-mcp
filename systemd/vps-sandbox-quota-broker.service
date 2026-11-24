@@ -13,16 +13,13 @@ TimeoutStartSec=15
 TimeoutStopSec=10
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
-ProtectSystem=strict
-ProtectHome=read-only
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 RestrictSUIDSGID=yes
-PrivateTmp=yes
 PrivateDevices=no
 DevicePolicy=closed
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/etc/vps-sandbox /var/lib/vps-sandbox-mounts /var/lib/vps-mcp/task-workspaces/worktrees -/srv/vps-mcp-workspaces
+# This broker must perform bind mounts in the host mount namespace so the
+# rootless runtime can consume them. Filesystem namespace directives such as
+# ProtectSystem, ProtectHome, PrivateTmp and ReadWritePaths are intentionally
+# absent: systemd would isolate the broker in a private mount namespace.
 UMask=0077
