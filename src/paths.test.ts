@@ -11,7 +11,7 @@ async function loadResolver(root: string) {
   process.env.MCP_ALLOWED_ROOTS = root;
   vi.resetModules();
   const module = await import("./paths.js");
-  return module.resolveAllowedPath;
+  return module;
 }
 
 afterEach(async () => {
@@ -27,14 +27,14 @@ describe("resolveAllowedPath", () => {
     temporaryRoots.push(root);
     const file = path.join(root, "safe.txt");
     await fs.writeFile(file, "safe");
-    const resolve = await loadResolver(root);
+    const { resolveAllowedPath: resolve } = await loadResolver(root);
     await expect(resolve(file)).resolves.toBe(file);
   });
 
   it("rejects paths outside allowed roots", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-"));
     temporaryRoots.push(root);
-    const resolve = await loadResolver(root);
+    const { resolveAllowedPath: resolve } = await loadResolver(root);
     await expect(resolve(path.join(os.tmpdir(), "outside.txt"), { allowMissingLeaf: true })).rejects.toThrow("outside");
   });
 
@@ -45,7 +45,25 @@ describe("resolveAllowedPath", () => {
     temporaryRoots.push(outside);
     const link = path.join(root, "escape");
     await fs.symlink(outside, link, "dir");
-    const resolve = await loadResolver(root);
+    const { resolveAllowedPath: resolve } = await loadResolver(root);
     await expect(resolve(path.join(link, "secret.txt"), { allowMissingLeaf: true })).rejects.toThrow();
+  });
+});
+
+
+describe("managedTaskWorkspaceIdentity", () => {
+  it("recognizes files nested under a managed task worktree", async () => {
+    const { managedTaskWorkspaceIdentity } = await import("./paths.js");
+    expect(managedTaskWorkspaceIdentity("/var/lib/vps-mcp/task-workspaces/worktrees/repo-123/134e5321-b4d7-4d4f-be92-ce56a984adaa/src/index.ts"))
+      .toEqual({ repositoryId: "repo-123", worktreeId: "134e5321-b4d7-4d4f-be92-ce56a984adaa" });
+    expect(managedTaskWorkspaceIdentity("/srv/vps-mcp-workspaces/repo-123/134e5321-b4d7-4d4f-be92-ce56a984adaa/README.md"))
+      .toEqual({ repositoryId: "repo-123", worktreeId: "134e5321-b4d7-4d4f-be92-ce56a984adaa" });
+  });
+
+  it("does not classify arbitrary allowed-root files or workspace roots as task worktrees", async () => {
+    const { managedTaskWorkspaceIdentity } = await import("./paths.js");
+    expect(managedTaskWorkspaceIdentity("/var/lib/vps-mcp/task-workspaces/worktrees/repo-123/README.md")).toBeNull();
+    expect(managedTaskWorkspaceIdentity("/var/lib/vps-mcp/task-workspaces/worktrees/repo-123/134e5321-b4d7-4d4f-be92-ce56a984adaa")).toBeNull();
+    expect(managedTaskWorkspaceIdentity("/etc/hosts")).toBeNull();
   });
 });

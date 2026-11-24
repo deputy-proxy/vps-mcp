@@ -74,6 +74,14 @@ describe('sandbox runtime request contract', () => {
     expect(() => validateSandboxRuntimeRequest({ operation: 'resource.reserve', repositoryId: 'repo-123', resources: { memoryMiB: 8192 } })).toThrow('memoryMiB');
   });
 
+  it('validates managed workspace write leases', () => {
+    expect(() => validateSandboxRuntimeRequest({ operation: 'workspace.write.begin', repositoryId: 'repo-123', worktreeId: id })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'workspace.write.begin', repositoryId: '../repo', worktreeId: id })).toThrow('repository ID');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'workspace.write.begin', repositoryId: 'repo-123', worktreeId: '../worktree' })).toThrow('worktree ID');
+    expect(() => validateSandboxRuntimeRequest({ operation: 'workspace.write.finish', leaseId: id })).not.toThrow();
+    expect(() => validateSandboxRuntimeRequest({ operation: 'workspace.write.finish', leaseId: 'not-a-uuid' })).toThrow('lease ID');
+  });
+
   it('requires a sandbox ID and validates task-only operation arguments', () => {
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, command: ['node', '-v'] })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({ operation: 'sandbox.exec', sandboxId: id, operationId: id, command: ['node', '-v'] })).not.toThrow();

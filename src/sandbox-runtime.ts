@@ -36,6 +36,8 @@ export type SandboxRuntimeRequest =
   | { operation: 'sandbox.retention.set'; sandboxId: string; retained: boolean }
   | { operation: 'cleanup.run'; dryRun?: boolean; confirm?: boolean }
   | { operation: 'cleanup.pause'; paused: boolean }
+  | { operation: 'workspace.write.begin'; repositoryId: string; worktreeId: string }
+  | { operation: 'workspace.write.finish'; leaseId: string }
   | { operation: 'audit.list'; limit?: number };
 
 const SOCKET_PATH = process.env.VPS_SANDBOX_RUNTIME_SOCKET ?? '/run/vps-sandbox-runtime.sock';
@@ -58,6 +60,15 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
   }
   if (request.operation === 'cleanup.pause') {
     if (typeof request.paused !== 'boolean') throw new Error('paused must be a boolean');
+    return;
+  }
+  if (request.operation === 'workspace.write.begin') {
+    if (!REPOSITORY_ID.test(request.repositoryId)) throw new Error('Invalid repository ID');
+    if (!UUID.test(request.worktreeId)) throw new Error('Invalid worktree ID');
+    return;
+  }
+  if (request.operation === 'workspace.write.finish') {
+    if (!UUID.test(request.leaseId)) throw new Error('Invalid workspace write lease ID');
     return;
   }
   if (request.operation === 'audit.list') {
@@ -259,6 +270,8 @@ export interface SandboxRuntimeAdapter {
   previewSandboxCleanup(): Promise<Record<string, unknown>>;
   runSandboxCleanup(input: { dryRun?: boolean; confirm?: boolean }): Promise<Record<string, unknown>>;
   setMaintenancePause(paused: boolean): Promise<Record<string, unknown>>;
+  beginWorkspaceWrite(input: { repositoryId: string; worktreeId: string }): Promise<{ leaseId: string; expiresAt: string }>;
+  finishWorkspaceWrite(leaseId: string): Promise<{ released: boolean }>;
   listRuntimeAudit(limit?: number): Promise<Record<string, unknown>>;
 }
 function assertTaskWorkload(workload: RuntimeWorkloadRecord): void {
@@ -356,6 +369,8 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
     previewSandboxCleanup: () => requestSandboxRuntime({ operation: 'cleanup.preview' }, socketPath),
     runSandboxCleanup: (input) => requestSandboxRuntime({ operation: 'cleanup.run', ...input }, socketPath),
     setMaintenancePause: (paused) => requestSandboxRuntime({ operation: 'cleanup.pause', paused }, socketPath),
+    beginWorkspaceWrite: (input) => requestSandboxRuntime({ operation: 'workspace.write.begin', ...input }, socketPath),
+    finishWorkspaceWrite: (leaseId) => requestSandboxRuntime({ operation: 'workspace.write.finish', leaseId }, socketPath),
     listRuntimeAudit: (limit) => requestSandboxRuntime({ operation: 'audit.list', ...(limit !== undefined ? { limit } : {}) }, socketPath),
   };
 }
