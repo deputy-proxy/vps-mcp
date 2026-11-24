@@ -3,6 +3,11 @@ import {parseQuotaBrokerRequest} from './vps-sandbox-quota-broker.mjs';
 const valid={operation:'apply',repositoryId:'deputy-proxy-vps-mcp',worktreeId:'134e5321-b4d7-4d4f-be92-ce56a984adaa',diskMiB:2048};
 describe('workspace quota broker request validation',()=>{
  it('accepts a valid bounded workspace quota request',()=>expect(parseQuotaBrokerRequest(JSON.stringify(valid))).toEqual(valid));
+ it('accepts bounded per-workload stage and unstage requests',()=>{
+  const request={operation:'stage',repositoryId:valid.repositoryId,worktreeId:valid.worktreeId,workloadId:'234e5321-b4d7-4d4f-be92-ce56a984adaa'};
+  expect(parseQuotaBrokerRequest(JSON.stringify(request))).toEqual(request);
+  expect(parseQuotaBrokerRequest(JSON.stringify({...request,operation:'unstage'})).operation).toBe('unstage');
+ });
  it('rejects unknown operations and extra properties',()=>{
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...valid,operation:'shell'}))).toThrow('Unsupported');
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...valid,command:'id'}))).toThrow('Unsupported');

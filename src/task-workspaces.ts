@@ -255,16 +255,19 @@ export async function prepareTaskWorkspaceForRuntime(id: string) {
     if (!linked) throw new Error("Task workspace is not a registered Git worktree; refusing runtime access");
 
     const repositoryDirectory = path.dirname(target);
+    const runtimeOwnerUid = process.getuid?.();
+    if (runtimeOwnerUid === undefined) throw new Error("Cannot determine the task workspace owner for runtime ACLs");
     const traversalPaths = [path.dirname(root), root, worktreeRoot, repositoryDirectory];
     try {
       execFileSync("/usr/bin/setfacl", ["-m", `u:${SANDBOX_RUNTIME_USER}:--x`, ...traversalPaths], {
         encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5_000,
       });
-      execFileSync("/usr/bin/setfacl", ["-R", "-m", `u:${SANDBOX_RUNTIME_USER}:rwX`, target], {
-        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000,
-      });
       execFileSync("/usr/bin/find", [
-        target, "-type", "d", "-exec", "/usr/bin/setfacl", "-m",
+        target, "-uid", String(runtimeOwnerUid), "-exec", "/usr/bin/setfacl", "-m",
+        `u:${SANDBOX_RUNTIME_USER}:rwX`, "{}", "+",
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+      execFileSync("/usr/bin/find", [
+        target, "-type", "d", "-uid", String(runtimeOwnerUid), "-exec", "/usr/bin/setfacl", "-m",
         `d:u:${SANDBOX_RUNTIME_USER}:rwX`, "{}", "+",
       ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
     } catch {

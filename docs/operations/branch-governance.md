@@ -17,6 +17,7 @@
 - Release PR descriptions must contain a non-empty `## Release summary`, `## Release notes`, or `## Summary` section.
 - The required CI check must pass on the latest target-branch base (`strict_required_status_checks_policy=true`).
 - Production hotfix exception: `hotfix/*` → `main`, with a non-empty `## Development reconciliation` section. Reconcile the fix to `development` immediately after production acceptance.
+- Maintenance exception: `fix/*` → `main`, with a non-empty `## Development reconciliation` section describing how the maintenance change will be carried into `development`. This exception does not permit `feat/*` or arbitrary branches to target `main`.
 
 ## Deployment guardrails
 

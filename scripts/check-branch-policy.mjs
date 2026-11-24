@@ -40,6 +40,11 @@ export function validatePullRequest(event) {
       ? { valid: true, kind: "hotfix" }
       : { valid: false, reason: "A production hotfix PR must include a non-empty 'Development reconciliation' section describing the immediate follow-up to development." };
   }
+  if (head.startsWith("fix/")) {
+    return sectionHasContent(body, /^##\s+development reconciliation\s*$/i)
+      ? { valid: true, kind: "maintenance" }
+      : { valid: false, reason: "A maintenance PR targeting main must include a non-empty 'Development reconciliation' section describing how the change will be carried into development." };
+  }
   return { valid: false, reason: "Production PRs must promote development to main. Only documented hotfix/* branches are an exception." };
 }
 
