@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import {describe,expect,it} from 'vitest';
 import {parseQuotaBrokerRequest} from './vps-sandbox-quota-broker.mjs';
 const valid={operation:'apply',repositoryId:'deputy-proxy-vps-mcp',worktreeId:'134e5321-b4d7-4d4f-be92-ce56a984adaa',diskMiB:2048};
@@ -22,5 +23,13 @@ describe('workspace quota broker request validation',()=>{
   expect(()=>parseQuotaBrokerRequest('{')).toThrow('valid JSON');
   expect(()=>parseQuotaBrokerRequest('[]')).toThrow('object');
   expect(()=>parseQuotaBrokerRequest(' '.repeat(1025))).toThrow('too large');
+ });
+});
+
+describe('quota broker systemd capability boundary',()=>{
+ it('grants only the host capabilities required for quota and staging ownership operations',()=>{
+  const unit=readFileSync(new URL('../systemd/vps-sandbox-quota-broker.service',import.meta.url),'utf8');
+  const match=unit.match(/^CapabilityBoundingSet=(.+)$/m);
+  expect(match?.[1].trim().split(' ')).toEqual(['CAP_SYS_ADMIN','CAP_CHOWN','CAP_FOWNER','CAP_DAC_OVERRIDE']);
  });
 });
