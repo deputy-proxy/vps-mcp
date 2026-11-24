@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, durableLockKeys, isNewWorkOperation } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation } from './vps-sandbox-runtime.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -216,6 +216,18 @@ describe('runtime restart recovery and storage scans', () => {
     ];
 
     expect(workspacePathsForStorageScan(records)).toEqual(['/workspaces/active']);
+  });
+
+  it('reconciles only interrupted task creations and never probes removed records', () => {
+    const creating = { id: 'creating-id', workloadType: 'task', status: 'creating', workspaceMount: { path: '/workspaces/creating' } };
+    const records = [
+      { id: 'removed-id', workloadType: 'task', status: 'removed', runtimeId: null, workspaceMount: { path: '/workspaces/removed' } },
+      creating,
+      { id: 'project-id', workloadType: 'project-service', status: 'creating', workspaceMount: { path: '/workspaces/project' } },
+      { id: 'no-mount-id', workloadType: 'task', status: 'creating', workspaceMount: null },
+    ];
+
+    expect(workspaceMountRecoveryCandidates(records)).toEqual([creating]);
   });
 });
 
