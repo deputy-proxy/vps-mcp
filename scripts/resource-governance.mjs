@@ -28,11 +28,21 @@ export function resourceBudget(env = process.env, host = { cpuCount: os.cpus().l
   const perRepositoryDiskMiB = positiveInteger(env.VPS_SANDBOX_REPOSITORY_DISK_MIB, 'VPS_SANDBOX_REPOSITORY_DISK_MIB', 102400);
   const globalDiskMiB = positiveInteger(env.VPS_SANDBOX_GLOBAL_DISK_MIB, 'VPS_SANDBOX_GLOBAL_DISK_MIB', 153600);
   const diskReserveBytes = positiveInteger(env.VPS_SANDBOX_DISK_RESERVE_BYTES, 'VPS_SANDBOX_DISK_RESERVE_BYTES', 5 * 1024 ** 3);
+  const diskWarningBytes = positiveInteger(env.VPS_SANDBOX_DISK_WARNING_BYTES, 'VPS_SANDBOX_DISK_WARNING_BYTES', 15 * 1024 ** 3);
+  if (diskWarningBytes <= diskReserveBytes) throw new Error('VPS_SANDBOX_DISK_WARNING_BYTES must be greater than VPS_SANDBOX_DISK_RESERVE_BYTES');
   const taskRetentionMs = positiveInteger(env.VPS_SANDBOX_TASK_RETENTION_MS, 'VPS_SANDBOX_TASK_RETENTION_MS', 7 * 24 * 60 * 60 * 1000);
   const lockTimeoutMs = positiveInteger(env.VPS_SANDBOX_LOCK_TIMEOUT_MS, 'VPS_SANDBOX_LOCK_TIMEOUT_MS', 180_000);
   const staleLockMs = positiveInteger(env.VPS_SANDBOX_STALE_LOCK_MS, 'VPS_SANDBOX_STALE_LOCK_MS', 60_000);
   const temporaryFileRetentionMs = positiveInteger(env.VPS_SANDBOX_TEMP_FILE_RETENTION_MS, 'VPS_SANDBOX_TEMP_FILE_RETENTION_MS', 10 * 60 * 1000);
-  return Object.freeze({ globalCpuMilli, globalMemoryMiB, globalPids, maxActiveTasks, perRepositoryCpuMilli, perRepositoryMemoryMiB, perRepositoryPids, perRepositoryDiskMiB, globalDiskMiB, diskReserveBytes, taskRetentionMs, lockTimeoutMs, staleLockMs, temporaryFileRetentionMs });
+  return Object.freeze({ globalCpuMilli, globalMemoryMiB, globalPids, maxActiveTasks, perRepositoryCpuMilli, perRepositoryMemoryMiB, perRepositoryPids, perRepositoryDiskMiB, globalDiskMiB, diskReserveBytes, diskWarningBytes, taskRetentionMs, lockTimeoutMs, staleLockMs, temporaryFileRetentionMs });
+}
+
+export function diskPressureLevel(freeDiskBytes, budget) {
+  if (!Number.isFinite(freeDiskBytes) || freeDiskBytes < 0) throw new Error('freeDiskBytes must be a non-negative finite number');
+  if (!Number.isSafeInteger(budget?.diskReserveBytes) || !Number.isSafeInteger(budget?.diskWarningBytes) || budget.diskWarningBytes <= budget.diskReserveBytes) {
+    throw new Error('Disk warning threshold must be greater than the disk reserve threshold');
+  }
+  return freeDiskBytes < budget.diskReserveBytes ? 'critical' : freeDiskBytes < budget.diskWarningBytes ? 'warning' : 'normal';
 }
 
 function resourceVector(record) {
