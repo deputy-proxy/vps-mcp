@@ -27,6 +27,8 @@ const RESERVATION_ROOT = '/var/lib/vps-sandbox/reservations';
 const AUDIT_ROOT = '/var/lib/vps-sandbox/audit';
 const LOCK_ROOT = '/var/lib/vps-sandbox/locks';
 const MAINTENANCE_FILE = '/var/lib/vps-sandbox/maintenance.json';
+const WORKSPACE_WRITE_LEASE_ROOT = '/var/lib/vps-sandbox/operations/workspace-write-leases';
+const WORKSPACE_WRITE_LEASE_TTL_MS = 30_000;
 const PODMAN = '/usr/bin/podman';
 const CGROUP_PARENT = '/system.slice/vps-sandbox-runtime.service';
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -42,7 +44,7 @@ const activeExecutionStarts = new Set();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_DIGEST = /^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/i;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
-const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.status', 'sandbox.execution.logs', 'sandbox.execution.cancel', 'sandbox.execution.list', 'resource.inspect', 'resource.reserve', 'resource.release', 'sandbox.retention.set', 'cleanup.preview', 'cleanup.run', 'cleanup.pause', 'audit.list']);
+const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.status', 'sandbox.execution.logs', 'sandbox.execution.cancel', 'sandbox.execution.list', 'resource.inspect', 'resource.reserve', 'resource.release', 'sandbox.retention.set', 'cleanup.preview', 'cleanup.run', 'cleanup.pause', 'workspace.write.begin', 'workspace.write.finish', 'audit.list']);
 let operationQueue = Promise.resolve();
 const ACTIVE_STATES = new Set(['creating', 'created', 'starting', 'running', 'stopping', 'stopped', 'removing', 'error']);
 const KNOWN_WORKLOAD_STATES = new Set([...ACTIVE_STATES, 'removed', 'unknown']);
@@ -111,6 +113,8 @@ export function parseRuntimeRequest(raw) {
     'cleanup.preview': ['operation'],
     'cleanup.run': ['operation', 'dryRun', 'confirm'],
     'cleanup.pause': ['operation', 'paused'],
+    'workspace.write.begin': ['operation', 'repositoryId', 'worktreeId'],
+    'workspace.write.finish': ['operation', 'leaseId'],
     'audit.list': ['operation', 'limit'],
   }[request.operation];
   assert(Object.keys(request).every((key) => allowed.includes(key)), 'Request contains unsupported properties');
@@ -131,6 +135,8 @@ export function parseRuntimeRequest(raw) {
     if (request.confirm !== undefined) assert(typeof request.confirm === 'boolean', 'confirm must be a boolean');
   }
   if (request.operation === 'cleanup.pause') assert(typeof request.paused === 'boolean', 'paused must be a boolean');
+  if (request.operation === 'workspace.write.begin') { safeRepositoryId(request.repositoryId); safeId(request.worktreeId); }
+  if (request.operation === 'workspace.write.finish') safeId(request.leaseId);
   if (request.operation === 'audit.list' && request.limit !== undefined) assert(Number.isInteger(request.limit) && request.limit >= 1 && request.limit <= 500, 'limit must be between 1 and 500');
   if (request.operation.startsWith('sandbox.')) {
     safeId(request.sandboxId);
@@ -842,10 +848,63 @@ async function runCleanup({ dryRun = true, confirm = false } = {}) {
   return { dryRun: false, removed, orphanRemoved, orphanInventory: { available: plan.orphanContainers.available, errorCode: plan.orphanContainers.errorCode ?? null }, staleLocksRemoved, temporaryFilesRemoved, skipped: plan.skipped, orphanSkipped: plan.orphanContainers.skipped };
 }
 
+async function listWorkspaceWriteLeases() {
+  await fs.mkdir(WORKSPACE_WRITE_LEASE_ROOT, { recursive: true, mode: 0o700 });
+  const now = Date.now();
+  const active = [];
+  for (const name of await fs.readdir(WORKSPACE_WRITE_LEASE_ROOT)) {
+    if (!UUID.test(name.replace(/\.json$/, '')) || !name.endsWith('.json')) continue;
+    const file = path.join(WORKSPACE_WRITE_LEASE_ROOT, name);
+    try {
+      const lease = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (!Number.isFinite(Date.parse(lease.expiresAt)) || Date.parse(lease.expiresAt) <= now) {
+        await fs.rm(file, { force: true });
+        continue;
+      }
+      active.push(lease);
+    } catch {
+      await fs.rm(file, { force: true }).catch(() => {});
+    }
+  }
+  return active;
+}
+
+async function beginWorkspaceWrite(request) {
+  const workspacePaths = ['/var/lib/vps-mcp/task-workspaces/worktrees', '/srv/vps-mcp-workspaces'];
+  let workspacePath;
+  for (const root of workspacePaths) {
+    const candidate = expectedTaskWorkspacePath(root, request.repositoryId, request.worktreeId);
+    try { if ((await fs.stat(candidate)).isDirectory()) { workspacePath = candidate; break; } } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  assert(workspacePath, 'Managed task workspace is unavailable');
+  await fs.mkdir(WORKSPACE_WRITE_LEASE_ROOT, { recursive: true, mode: 0o700 });
+  const leaseId = randomUUID();
+  const expiresAt = new Date(Date.now() + WORKSPACE_WRITE_LEASE_TTL_MS).toISOString();
+  await fs.writeFile(path.join(WORKSPACE_WRITE_LEASE_ROOT, `${leaseId}.json`), JSON.stringify({ leaseId, repositoryId: request.repositoryId, worktreeId: request.worktreeId, expiresAt }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  await appendAudit('workspace.write.started', { repositoryId: request.repositoryId, worktreeId: request.worktreeId });
+  return { leaseId, expiresAt };
+}
+
+async function finishWorkspaceWrite(leaseId) {
+  await fs.rm(path.join(WORKSPACE_WRITE_LEASE_ROOT, `${safeId(leaseId)}.json`), { force: true });
+  return { released: true };
+}
+
+async function waitForWorkspaceWritesToDrain() {
+  const deadline = Date.now() + WORKSPACE_WRITE_LEASE_TTL_MS + 1000;
+  while (Date.now() < deadline) {
+    const leases = await listWorkspaceWriteLeases();
+    if (leases.length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('SANDBOX_WORKSPACE_WRITES_BUSY: emergency pause is active; waiting for in-flight workspace writes to finish');
+}
+
 async function setMaintenancePause(paused) {
   const state = { paused, updatedAt: new Date().toISOString(), reason: paused ? 'operator_emergency_pause' : null };
   await writeJsonAtomic(MAINTENANCE_FILE, state);
   await appendAudit(paused ? 'maintenance.paused' : 'maintenance.resumed');
+  if (paused) await waitForWorkspaceWritesToDrain();
   return state;
 }
 
@@ -1820,6 +1879,8 @@ async function execute(request) {
   if (request.operation === 'cleanup.preview') return cleanupPlan();
   if (request.operation === 'cleanup.run') return runCleanup({ dryRun: request.dryRun !== false, confirm: request.confirm === true });
   if (request.operation === 'cleanup.pause') return setMaintenancePause(request.paused);
+  if (request.operation === 'workspace.write.begin') return beginWorkspaceWrite(request);
+  if (request.operation === 'workspace.write.finish') return finishWorkspaceWrite(request.leaseId);
   if (request.operation === 'audit.list') return { entries: await readAudit(request.limit ?? 100) };
   if (request.operation === 'sandbox.execution.start') return startSandboxExecution(request);
   if (request.operation === 'sandbox.execution.list') return listSandboxExecutions(request.sandboxId);
@@ -1943,12 +2004,13 @@ function respond(socket, value) {
   if (Buffer.byteLength(payload, 'utf8') > MAX_RESPONSE_BYTES) socket.end(JSON.stringify({ error: 'Response exceeds configured limit' }) + '\n');
   else socket.end(payload + '\n');
 }
-function durableLockKeys(request) {
+export function durableLockKeys(request) {
   if (request.operation === 'container.create') return ['resource:global', `repository:${request.repositoryId}`, ...(request.worktreeId ? [`worktree:${request.worktreeId}`] : [])];
   if (request.operation === 'resource.reserve' || request.operation === 'resource.release') return ['resource:global', `repository:${request.repositoryId}`];
   if (request.operation === 'cleanup.run') return ['cleanup:global'];
   if (request.operation === 'container.exec') return [`workload:${request.workloadId}`];
   if (request.operation === 'cleanup.pause') return ['maintenance:global'];
+  if (request.operation === 'workspace.write.begin') return ['maintenance:global', `worktree:${request.worktreeId}`];
   if (request.operation === 'sandbox.exec' || request.operation === 'sandbox.fs.write') return [`workload:${request.sandboxId}`];
   if (request.operation === 'sandbox.execution.start') return ['execution-start:global', `workload:${request.sandboxId}`];
   if (request.operation === 'sandbox.execution.cancel' || request.operation === 'sandbox.retention.set') return [`workload:${request.sandboxId}`];
@@ -1957,16 +2019,15 @@ function durableLockKeys(request) {
   return [];
 }
 
-function isNewWorkOperation(request) {
-  return ['container.create', 'container.start', 'container.exec', 'sandbox.exec', 'sandbox.fs.write', 'sandbox.execution.start'].includes(request.operation);
+export function isNewWorkOperation(request) {
+  return ['container.create', 'container.start', 'container.exec', 'sandbox.exec', 'sandbox.fs.write', 'sandbox.execution.start', 'workspace.write.begin'].includes(request.operation);
 }
 
 async function executeWithLocks(request) {
   const keys = durableLockKeys(request);
+  if (isNewWorkOperation(request) && !keys.includes('maintenance:global')) keys.push('maintenance:global');
   const run = async () => {
-    if (isNewWorkOperation(request)) {
-      await withDurableLocks(LOCK_ROOT, ['maintenance:global'], () => assertWorkloadsNotPaused(request.operation));
-    }
+    if (isNewWorkOperation(request)) await assertWorkloadsNotPaused(request.operation);
     return execute(request);
   };
   return keys.length ? withDurableLocks(LOCK_ROOT, keys, run) : run();
@@ -1988,6 +2049,10 @@ function handleConnection(socket) {
     try {
       requestForAudit = parseRuntimeRequest(input.slice(0, newline));
       const request = requestForAudit;
+      if (request.operation === 'workspace.write.finish') {
+        respond(socket, { result: await execute(request) });
+        return;
+      }
       const sandboxId = request.sandboxId ?? (request.expectedWorkloadType === 'task' ? request.workloadId : null);
       const sandboxOperation = request.operation.startsWith('sandbox.') || sandboxId !== null;
       if (sandboxOperation) {
