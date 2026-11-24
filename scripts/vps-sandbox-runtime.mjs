@@ -452,6 +452,12 @@ export function workspacePathsForStorageScan(records) {
     .filter(Boolean))];
 }
 
+export function workspaceMountRecoveryCandidates(records) {
+  return records.filter((record) => record.workloadType === 'task'
+    && record.workspaceMount?.path
+    && record.status === 'creating');
+}
+
 async function recoverSandboxOperations() {
   await fs.mkdir(OPERATION_RECORDS_DIR, { recursive: true, mode: 0o700 });
   const sandboxes = await fs.readdir(OPERATION_RECORDS_DIR, { withFileTypes: true });
@@ -2104,8 +2110,7 @@ function handleConnection(socket) {
 }
 async function recoverWorkspaceMounts() {
   const records = await readWorkloadRecords();
-  for (const record of records) {
-    if (record.workloadType !== 'task' || !record.workspaceMount?.path || !['removed', 'creating'].includes(record.status)) continue;
+  for (const record of workspaceMountRecoveryCandidates(records)) {
     const runtimeId = await resolveRuntimeId(record);
     if (runtimeId) continue;
     await releaseWorkspaceMount(record);
