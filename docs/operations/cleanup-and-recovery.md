@@ -24,7 +24,7 @@ The default `sandbox.cleanup.run` request is a dry run. Its report includes expi
 
 ## Emergency pause
 
-During an incident, call `sandbox.maintenance.pause` with `paused=true`. The runtime blocks new sandbox creation/start, task command execution and workspace writes. Existing workloads can still be stopped or removed. Automatic container cleanup and stale-lock/temp-file housekeeping pause too, preserving state for investigation. Disk-pressure and per-workspace quota enforcement remain active as safety controls. The pause is stored outside the MCP process and survives service restarts.
+During an incident, call `sandbox.maintenance.pause` with `paused=true`. The runtime blocks new sandbox creation/start, task command execution and writes to managed task worktrees. This includes generic `filesystem.write` calls that target a managed task worktree, not only sandbox-scoped filesystem tools. Managed-workspace writes acquire a short-lived runtime lease; pause activation prevents new leases and waits for in-flight writes to finish before returning. An abandoned lease expires after 30 seconds if the MCP process exits unexpectedly. Existing workloads can still be stopped or removed. Automatic container cleanup and stale-lock/temp-file housekeeping pause too, preserving state for investigation. Disk-pressure and per-workspace quota enforcement remain active as safety controls. The pause is stored outside the MCP process and survives service restarts.
 
 Resume with `paused=false` only after the incident is resolved. Both transitions are recorded in the private audit log.
 

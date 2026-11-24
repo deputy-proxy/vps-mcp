@@ -47,3 +47,23 @@ export async function resolveAllowedDirectory(input: string): Promise<string> {
   if (!stats.isDirectory()) throw new Error("Path is not a directory");
   return resolved;
 }
+
+const MANAGED_WORKSPACE_ROOTS = [
+  "/var/lib/vps-mcp/task-workspaces/worktrees",
+  "/srv/vps-mcp-workspaces",
+] as const;
+const REPOSITORY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
+const WORKTREE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function managedTaskWorkspaceIdentity(input: string): { repositoryId: string; worktreeId: string } | null {
+  const candidate = path.resolve(input);
+  for (const root of MANAGED_WORKSPACE_ROOTS) {
+    const relative = path.relative(root, candidate);
+    if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) continue;
+    const [repositoryId, worktreeId, ...rest] = relative.split(path.sep);
+    if (repositoryId && worktreeId && rest.length >= 1 && REPOSITORY_ID_PATTERN.test(repositoryId) && WORKTREE_ID_PATTERN.test(worktreeId)) {
+      return { repositoryId, worktreeId };
+    }
+  }
+  return null;
+}
