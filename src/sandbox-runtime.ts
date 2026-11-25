@@ -22,6 +22,7 @@ export type SandboxRuntimeRequest =
   | { operation: 'container.inspect' | 'container.logs'; workloadId: string }
   | { operation: 'container.start' | 'container.stop' | 'container.remove'; workloadId: string; expectedWorkloadType: WorkloadType }
   | { operation: 'container.list' }
+  | { operation: 'dashboard.inventory' }
   | { operation: 'container.exec'; workloadId: string; command: string[]; timeoutMs?: number }
   | { operation: 'sandbox.exec'; sandboxId: string; operationId?: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }
   | { operation: 'sandbox.fs.list' | 'sandbox.fs.read'; sandboxId: string; path: string }
@@ -52,7 +53,7 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     if (!IMAGE_DIGEST.test(request.image)) throw new Error('Image must be pinned by sha256 digest');
     return;
   }
-  if (request.operation === 'container.list' || request.operation === 'resource.inspect' || request.operation === 'cleanup.preview') return;
+  if (request.operation === 'container.list' || request.operation === 'dashboard.inventory' || request.operation === 'resource.inspect' || request.operation === 'cleanup.preview') return;
   if (request.operation === 'cleanup.run') {
     if (request.dryRun !== undefined && typeof request.dryRun !== 'boolean') throw new Error('dryRun must be a boolean');
     if (request.confirm !== undefined && typeof request.confirm !== 'boolean') throw new Error('confirm must be a boolean');
@@ -236,6 +237,19 @@ export type RuntimeWorkloadRecord = {
   createdAt: string;
   updatedAt: string;
 };
+export type DashboardRuntimeInventory = {
+  collectedAt: string;
+  workloads: Array<{
+    id: string; repositoryId: string; worktreeId: string | null; imageDigest: string;
+    resources: RuntimeResources; networkPolicy: string | null; retained: boolean;
+    lifecycleStatus: RuntimeWorkloadStatus; runtimeState: string; runtimeId: string | null;
+    createdAt: string; updatedAt: string; runtimeCreatedAt: string | null;
+    cgroup: Record<string, string | null> | null; metricsStatus: 'available' | 'unavailable';
+  }>;
+  unmatchedContainers: Array<{ containerId: string; runtimeState: string; createdAt: string; associationStatus: 'unmatched' }>;
+  sources: { workloadRegistry: string; podmanInventory: string };
+};
+
 export interface SandboxRuntimeAdapter {
   inspectImage(image: string): Promise<{ image: string; imageId: string }>;
   pullImage(image: string): Promise<{ image: string; pulled: true; output: string }>;
@@ -255,6 +269,7 @@ export interface SandboxRuntimeAdapter {
   startTaskSandbox(workloadId: string): Promise<unknown>;
   inspectTaskSandbox(workloadId: string): Promise<unknown>;
   listTaskSandboxes(): Promise<{ workloads: RuntimeWorkloadRecord[] }>;
+  getDashboardInventory(): Promise<DashboardRuntimeInventory>;
   stopTaskSandbox(workloadId: string): Promise<unknown>;
   removeTaskSandbox(workloadId: string): Promise<unknown>;
   readTaskSandboxLogs(workloadId: string): Promise<{ workloadId: string; logs: string }>;
@@ -342,6 +357,7 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
       const result = await requestSandboxRuntime<{ workloads: RuntimeWorkloadRecord[] }>({ operation: 'container.list' }, socketPath);
       return { workloads: result.workloads.filter((workload) => workload.workloadType === 'task' && workload.status !== 'removed') };
     },
+    getDashboardInventory: () => requestSandboxRuntime<DashboardRuntimeInventory>({ operation: 'dashboard.inventory' }, socketPath),
     stopTaskSandbox: async (workloadId) => {
       const inspected = await requestSandboxRuntime<{ workload: RuntimeWorkloadRecord }>({ operation: 'container.inspect', workloadId }, socketPath);
       assertTaskWorkload(inspected.workload);

@@ -343,6 +343,44 @@ export async function listRepositories(): Promise<{ schemaVersion: number; count
   return { schemaVersion: registry.schemaVersion, count: registry.repositories.length, repositories: registry.repositories };
 }
 
+/**
+ * Read the repository registry without creating directories, acquiring a write lock,
+ * migrating legacy schemas, or changing registry contents. Intended for read-only
+ * consumers such as the operator dashboard.
+ */
+export async function listRepositoriesReadOnly(): Promise<{ schemaVersion: number; count: number; repositories: ManagedRepository[] }> {
+  try {
+    const rootStat = await fs.lstat(root);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw new Error("Repository registry root is not a managed directory");
+    }
+    const registryStat = await fs.lstat(registryFile);
+    if (registryStat.isSymbolicLink() || !registryStat.isFile()) {
+      throw new Error("Repository registry is not a regular file");
+    }
+    const parsed = JSON.parse(await fs.readFile(registryFile, "utf8")) as Partial<Registry>;
+    if (parsed.schemaVersion !== SCHEMA_VERSION || !Array.isArray(parsed.repositories)) {
+      throw new Error("Repository registry is not in the current schema; read-only access will not migrate it");
+    }
+    for (const repository of parsed.repositories) {
+      if (!repository || typeof repository.id !== "string" || !repository.id
+        || typeof repository.fullName !== "string" || !parseGitHubRemote("https://github.com/" + repository.fullName).fullName) {
+        throw new Error("Repository registry contains an invalid record");
+      }
+    }
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      count: parsed.repositories.length,
+      repositories: parsed.repositories as ManagedRepository[],
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { schemaVersion: SCHEMA_VERSION, count: 0, repositories: [] };
+    }
+    throw error;
+  }
+}
+
 export async function inspectRepository(id: string) {
   const repository = await getById(id);
   const remote = await discover(repository);

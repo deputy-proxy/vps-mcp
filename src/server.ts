@@ -1,9 +1,33 @@
 import express from "express";
+import fs from "node:fs/promises";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { config } from "./config.js";
 import { authenticate } from "./security.js";
 import { createMcpServer } from "./tools.js";
+import { createDashboardAuth } from "./dashboard-auth.js";
+import { getDashboardHistory, getDashboardSnapshot } from "./dashboard.js";
+import { DASHBOARD_HTML } from "./dashboard-html.js";
+
+const dashboardAuth = config.dashboard.enabled
+  ? createDashboardAuth({
+      issuer: config.oauthIssuer!,
+      clientId: config.dashboard.clientId!,
+      clientSecret: config.dashboard.clientSecret!,
+      redirectUri: config.dashboard.redirectUri!,
+      allowedEmails: config.dashboard.allowedEmails,
+      sessionTtlSeconds: config.dashboard.sessionTtlSeconds,
+      secureCookies: config.dashboard.secureCookies,
+    })
+  : null;
+
+function setDashboardSecurityHeaders(response: express.Response): void {
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+}
 
 const CORS_ALLOWED_METHODS = ["GET", "POST"];
 const CORS_ALLOWED_HEADERS = ["accept", "authorization", "content-type", "mcp-protocol-version"];
@@ -130,6 +154,76 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
 
   app.use(express.json({ limit: config.maxRequestBytes }));
 
+  if (!dashboardAuth) {
+    app.use("/dashboard", (_request, response) => {
+      response.status(503).type("text/plain").send("Dashboard authentication is not configured.");
+    });
+  } else {
+    app.get("/dashboard/auth/login", (request, response) => {
+      setDashboardSecurityHeaders(response);
+      void dashboardAuth.begin(request, response);
+    });
+    app.get("/dashboard/auth/callback", (request, response) => {
+      setDashboardSecurityHeaders(response);
+      void dashboardAuth.callback(request, response);
+    });
+    app.post("/dashboard/auth/logout", dashboardAuth.requireSession({ api: true }), (request, response) => {
+      setDashboardSecurityHeaders(response);
+      dashboardAuth.logout(request, response);
+    });
+    app.get("/dashboard/assets/dashboard.js", dashboardAuth.requireSession(), async (_request, response) => {
+      setDashboardSecurityHeaders(response);
+      try {
+        response.type("application/javascript").send(await fs.readFile(new URL("../public/dashboard.js", import.meta.url), "utf8"));
+      } catch {
+        response.status(503).type("text/plain").send("Dashboard assets are unavailable.");
+      }
+    });
+    app.get("/dashboard/assets/dashboard.css", dashboardAuth.requireSession(), async (_request, response) => {
+      setDashboardSecurityHeaders(response);
+      try {
+        response.type("text/css").send(await fs.readFile(new URL("../public/dashboard.css", import.meta.url), "utf8"));
+      } catch {
+        response.status(503).type("text/plain").send("Dashboard assets are unavailable.");
+      }
+    });
+    app.get("/dashboard/api/overview", dashboardAuth.requireSession({ api: true }), async (request, response) => {
+      setDashboardSecurityHeaders(response);
+      try {
+        response.status(200).json(await getDashboardSnapshot({ forceRefresh: request.query.refresh === "1" }));
+      } catch {
+        response.status(503).json({ error: "Dashboard data is temporarily unavailable." });
+      }
+    });
+    app.get("/dashboard/api/history", dashboardAuth.requireSession({ api: true }), (_request, response) => {
+      setDashboardSecurityHeaders(response);
+      response.status(200).json(getDashboardHistory());
+    });
+    app.get("/dashboard/api/sandboxes/:id", dashboardAuth.requireSession({ api: true }), async (request, response) => {
+      setDashboardSecurityHeaders(response);
+      const sandboxId = Array.isArray(request.params.id) ? request.params.id[0] : request.params.id;
+      if (!/^[0-9a-f-]{36}$/i.test(sandboxId ?? "")) {
+        response.status(400).json({ error: "Invalid sandbox ID." });
+        return;
+      }
+      try {
+        const snapshot = await getDashboardSnapshot();
+        const sandbox = snapshot.sandboxes.find((item) => item.id === sandboxId);
+        if (!sandbox) response.status(404).json({ error: "Sandbox not found." });
+        else response.status(200).json(sandbox);
+      } catch {
+        response.status(503).json({ error: "Dashboard data is temporarily unavailable." });
+      }
+    });
+    app.get(["/dashboard", "/dashboard/"], dashboardAuth.requireSession(), (_request, response) => {
+      setDashboardSecurityHeaders(response);
+      response.type("html").send(DASHBOARD_HTML);
+    });
+    app.use("/dashboard", (_request, response) => {
+      response.status(404).json({ error: "Not found" });
+    });
+  }
+
   app.use("/mcp", (request, response, next) => {
     const startedAt = process.hrtime.bigint();
     response.once("finish", () => {
@@ -180,3 +274,4 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
   app.use((_request, response) => response.status(404).json({ error: "Not found" }));
   return app;
 }
+
