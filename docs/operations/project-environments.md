@@ -32,3 +32,12 @@ Inspect status and health before restart or restore. Preserve unknown workloads 
 ## Acceptance evidence
 
 Record the disposable repository identity, development commit SHA, profile version, reserved resource vector, isolated data paths (not secret values), deployment/rollback result, health results, restart/reboot recovery results, and proof that task cleanup did not affect the persistent environment.
+
+
+## Service profiles
+
+Use project-environment.profile.list to inspect available versioned service profiles. The initial laravel-php version 1 profile describes PHP 8.4, Composer 2, Node 22, PHP-FPM, a queue worker, the scheduler, MySQL 8, optional Redis 7, health checks, project-owned mounts, resource defaults and backup scope.
+
+This profile is currently definition-only. It has no approved immutable runtime image digest, so it is not eligible for provisioning. project-environment.register validates that the requested profile ID and version exist and derives default resource values from the profile. Registration remains metadata-only and does not reserve capacity, build images, run migrations, create databases or start containers.
+
+Migrations are disabled by default and seeders are disabled with an empty allowlist. Do not enable either until the deployment path proves that the target database is the repository's isolated development database. Production credentials and endpoints must never be available to profile hooks.

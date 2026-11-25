@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { getManagedRepository, updateRepository, withRepositoryLock } from "./repositories.js";
+import { getServiceProfile } from "./service-profiles.js";
 
 const SCHEMA_VERSION = 1;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
@@ -173,6 +174,7 @@ export async function registerProjectEnvironment(input: {
   assertRepositoryId(input.repositoryId);
   const profileVersion = input.profileVersion ?? 1;
   assertProfile(input.profileId, profileVersion);
+  const profile = getServiceProfile(input.profileId, profileVersion);
   const repository = await getManagedRepository(input.repositoryId);
   if (!repository.id || repository.status === "invalid") throw new Error("Repository must be registered and valid before creating a project environment");
   const canonicalPath = environmentPath(repository.id);
@@ -181,10 +183,10 @@ export async function registerProjectEnvironment(input: {
     await updateRepository({ id: repository.id, persistentEnvironmentPaths: [...repository.persistentEnvironmentPaths, canonicalPath] });
   }
   const resources = {
-    cpuMilli: input.resources?.cpuMilli ?? 500,
-    memoryMiB: input.resources?.memoryMiB ?? 1024,
-    pids: input.resources?.pids ?? 128,
-    diskMiB: input.resources?.diskMiB ?? 10240,
+    cpuMilli: input.resources?.cpuMilli ?? profile.resources.cpuMilli,
+    memoryMiB: input.resources?.memoryMiB ?? profile.resources.memoryMiB,
+    pids: input.resources?.pids ?? profile.resources.pids,
+    diskMiB: input.resources?.diskMiB ?? profile.resources.diskMiB,
   };
   assertResources(resources);
   return withRepositoryLock(repository.id, async () => withLock("registry", async () => {
