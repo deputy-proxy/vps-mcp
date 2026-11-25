@@ -45,6 +45,7 @@ Task workloads use the administrator-installed restricted egress profile:
 - Explicit `NO_PROXY`/`no_proxy` values limited to local loopback names.
 - Podman's automatic proxy injection is disabled; the runtime supplies the approved variables itself.
 - Host nftables rules allow the `vps-sandbox` UID to connect only to the loopback proxy at `127.0.0.1:3128` and drop its other direct outbound sockets.
+- The `vps-egress` UID may send only established TCP replies from source port `3128` to loopback and the slirp client subnet; other local/private destinations remain blocked.
 - Squid permits only exact hostnames in `/etc/vps-sandbox/egress/allowed-domains.txt`.
 - The proxy denies private, loopback, link-local and metadata destinations and restricts upstream TCP ports to 80 and 443.
 
