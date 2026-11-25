@@ -57,6 +57,9 @@ cache_store_log none
 access_log stdio:/dev/stdout
 cache_log stdio:/dev/stderr
 pid_filename /run/vps-sandbox-egress/squid.pid
+# Bound stale positive DNS answers so destination ACLs re-check rebinding targets.
+positive_dns_ttl 10 seconds
+negative_dns_ttl 10 seconds
 acl localhost src 127.0.0.1/32 ::1/128 10.0.2.0/24
 acl CONNECT method CONNECT
 acl Safe_ports port 80 443
