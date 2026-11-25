@@ -42,6 +42,34 @@ const allowedRoots = (process.env.MCP_ALLOWED_ROOTS ?? `/srv,${path.join(os.home
   .split(",").map((entry) => path.resolve(entry.trim())).filter(Boolean);
 if (allowedRoots.length === 0) throw new Error("MCP_ALLOWED_ROOTS must contain at least one directory");
 
+const dashboardClientId = process.env.DASHBOARD_OIDC_CLIENT_ID?.trim() || undefined;
+const dashboardClientSecret = process.env.DASHBOARD_OIDC_CLIENT_SECRET || undefined;
+const dashboardRedirectUri = process.env.DASHBOARD_OIDC_REDIRECT_URI?.trim() || undefined;
+const dashboardAllowedEmails = (process.env.DASHBOARD_ALLOWED_EMAILS ?? "")
+  .split(",").map((email) => email.trim().toLowerCase()).filter(Boolean);
+const dashboardSessionTtlSeconds = integerFromEnv("DASHBOARD_SESSION_TTL_SECONDS", 8 * 60 * 60);
+const dashboardConfigurationPresent = Boolean(
+  dashboardClientId || dashboardClientSecret || dashboardRedirectUri || Boolean(process.env.DASHBOARD_ALLOWED_EMAILS?.trim()),
+);
+const dashboardRedirectUrl = dashboardRedirectUri ? new URL(dashboardRedirectUri) : undefined;
+if (dashboardConfigurationPresent) {
+  if (!dashboardClientId || !dashboardClientSecret || !dashboardRedirectUri || dashboardAllowedEmails.length === 0) {
+    throw new Error("Dashboard OIDC requires DASHBOARD_OIDC_CLIENT_ID, DASHBOARD_OIDC_CLIENT_SECRET, DASHBOARD_OIDC_REDIRECT_URI and DASHBOARD_ALLOWED_EMAILS");
+  }
+  if (!oauthIssuer || !oauthIssuerUrl) throw new Error("Dashboard OIDC requires the existing OAUTH_ISSUER_URL configuration");
+  if (!dashboardRedirectUrl || dashboardRedirectUrl.username || dashboardRedirectUrl.password
+    || dashboardRedirectUrl.search || dashboardRedirectUrl.hash
+    || dashboardRedirectUrl.pathname !== "/dashboard/auth/callback"
+    || !(dashboardRedirectUrl.protocol === "https:" || (dashboardRedirectUrl.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(dashboardRedirectUrl.hostname) && process.env.NODE_ENV !== "production"))) {
+    throw new Error("DASHBOARD_OIDC_REDIRECT_URI must be an HTTPS callback URL at /dashboard/auth/callback (HTTP localhost is allowed outside production)");
+  }
+  if (dashboardClientSecret.length < 8) throw new Error("DASHBOARD_OIDC_CLIENT_SECRET is too short");
+  if (dashboardAllowedEmails.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    throw new Error("DASHBOARD_ALLOWED_EMAILS contains an invalid email address");
+  }
+  if (dashboardSessionTtlSeconds > 24 * 60 * 60) throw new Error("DASHBOARD_SESSION_TTL_SECONDS cannot exceed 24 hours");
+}
+
 const repositoryGitHubToken = process.env.REPOSITORY_GITHUB_TOKEN?.trim() || undefined;
 if (repositoryGitHubToken && (/\s/.test(repositoryGitHubToken) || repositoryGitHubToken.length > 4096)) {
   throw new Error("REPOSITORY_GITHUB_TOKEN must be a single-line token of at most 4096 characters");
@@ -70,6 +98,15 @@ export const config = {
   defaultCommandTimeoutMs: integerFromEnv("MCP_DEFAULT_COMMAND_TIMEOUT_MS", 30_000),
   maxCommandTimeoutMs: integerFromEnv("MCP_MAX_COMMAND_TIMEOUT_MS", 900_000),
   maxOutputBytes: integerFromEnv("MCP_MAX_OUTPUT_BYTES", 1_048_576),
+  dashboard: {
+    enabled: dashboardConfigurationPresent,
+    clientId: dashboardClientId,
+    clientSecret: dashboardClientSecret,
+    redirectUri: dashboardRedirectUri,
+    allowedEmails: dashboardAllowedEmails,
+    sessionTtlSeconds: dashboardSessionTtlSeconds,
+    secureCookies: dashboardRedirectUrl?.protocol === "https:",
+  },
   repositoryGitHubToken,
   repositoryRequiredStatusChecks,
 };

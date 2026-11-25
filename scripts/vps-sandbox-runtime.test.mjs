@@ -9,6 +9,7 @@ describe('rootless workload runtime request validation', () => {
   it.each([
     { operation: 'image.inspect', image: `docker.io/library/node@sha256:${'a'.repeat(64)}` },
     { operation: 'container.list' },
+    { operation: 'dashboard.inventory' },
     { operation: 'container.inspect', workloadId: '134e5321-b4d7-4d4f-be92-ce56a984adaa' },
     {
       operation: 'container.create',
@@ -22,6 +23,14 @@ describe('rootless workload runtime request validation', () => {
     },
   ])('accepts the approved request shape %#', (request) => {
     expect(parseRuntimeRequest(JSON.stringify(request))).toEqual(request);
+  });
+
+  it('accepts dashboard inventory as a read-only operation with no caller-controlled arguments', () => {
+    expect(parseRuntimeRequest(JSON.stringify({ operation: 'dashboard.inventory' })))
+      .toEqual({ operation: 'dashboard.inventory' });
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'dashboard.inventory', workloadId: '134e5321-b4d7-4d4f-be92-ce56a984adaa' })))
+      .toThrow('unsupported properties');
+    expect(isNewWorkOperation({ operation: 'dashboard.inventory' })).toBe(false);
   });
 
   it('validates workspace write lease operations and serializes them with maintenance pause', () => {
