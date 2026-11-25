@@ -6,6 +6,7 @@ import {describe,expect,it} from 'vitest';
 const scriptPath=fileURLToPath(new URL('./install-vps-sandbox-egress.sh',import.meta.url));
 const source=readFileSync(scriptPath,'utf8');
 const firewall=source.match(/cat > \/etc\/vps-sandbox\/egress\/egress\.nft <<'NFT'\n([\s\S]*?)\nNFT/);
+const squid=source.match(/cat > \/etc\/vps-sandbox\/egress\/squid\.conf <<'SQUID'\n([\s\S]*?)\nSQUID/);
 
 describe('VPS restricted egress firewall installer',()=>{
  it('is valid Bash syntax',()=>{
@@ -20,5 +21,13 @@ describe('VPS restricted egress firewall installer',()=>{
   expect(rules.indexOf(replyRule)).toBeLessThan(rules.indexOf('meta skuid vps-egress fib daddr type local drop'));
   expect(rules).toContain('meta skuid vps-egress tcp dport { 80, 443 } accept');
   expect(rules).toContain('meta skuid vps-egress drop');
+ });
+ it('bounds Squid DNS caching and denies private destinations before hostname allowlisting',()=>{
+  expect(squid).not.toBeNull();
+  const config=squid[1];
+  expect(config).toContain('positive_dns_ttl 10 seconds');
+  expect(config).toContain('negative_dns_ttl 10 seconds');
+  expect(config.indexOf('http_access deny private_dst')).toBeGreaterThanOrEqual(0);
+  expect(config.indexOf('http_access deny private_dst')).toBeLessThan(config.indexOf('http_access allow localhost allowed_domains'));
  });
 });
