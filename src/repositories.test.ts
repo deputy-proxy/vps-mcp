@@ -41,7 +41,7 @@ const requiredRules = [
 vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(requiredRules), { status: 200 })));
 paths.remotePath = remotePath;
 
-const { fetchRepository, inspectRepository, listRepositories, parseGitHubRemote, registerRepository, removeRepository, sanitizeGitError, updateRepository, validateRepository } = await import("./repositories.js");
+const { fetchRepository, inspectRepository, listRepositories, listRepositoriesReadOnly, parseGitHubRemote, registerRepository, removeRepository, sanitizeGitError, updateRepository, validateRepository } = await import("./repositories.js");
 
 function git(args: string[], cwd?: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } }).trim();
@@ -79,8 +79,15 @@ it("validates, migrates, registers, inspects, fetches and safely removes managed
   const registryPath = path.join(process.env.MCP_DATA_DIR!, "repositories", "registry.json");
   await fs.mkdir(path.dirname(registryPath), { recursive: true });
   await fs.writeFile(registryPath, JSON.stringify({ repositories: [{ fullName: "acme/demo", remoteUrl: "https://github.com/acme/demo.git", name: "demo" }] }));
+  const legacyBytes = await fs.readFile(registryPath);
+  await expect(listRepositoriesReadOnly()).rejects.toThrow("read-only access will not migrate");
+  expect(await fs.readFile(registryPath)).toEqual(legacyBytes);
+
   const migrated = await listRepositories();
   expect(migrated.schemaVersion).toBe(2);
+  const currentBytes = await fs.readFile(registryPath);
+  expect((await listRepositoriesReadOnly()).count).toBe(1);
+  expect(await fs.readFile(registryPath)).toEqual(currentBytes);
   expect(migrated.repositories[0]).toMatchObject({ id: expect.stringMatching(/^acme-demo-[a-f0-9]{10}$/), requiredBranches: ["main", "development"], requiredStatusChecks: ["quality"], status: "registered" });
   await fs.rm(registryPath);
 
