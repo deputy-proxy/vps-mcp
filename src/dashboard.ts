@@ -42,6 +42,7 @@ type SandboxDashboardRow = {
   createdAt: string;
   updatedAt: string;
   runtimeCreatedAt: string | null;
+  runtimeStartedAt: string | null;
   uptimeSeconds: number | null;
   resources: {
     cpuHostPercent: number | null;
@@ -55,9 +56,11 @@ type SandboxDashboardRow = {
     memoryPercent: number | null;
     pidsCurrent: number | null;
     pidsLimit: number | null;
-    workspaceDiskBytes: null;
-    networkRxBytes: null;
-    networkTxBytes: null;
+    workspaceDiskBytes: number | null;
+    workspaceDiskStatus: 'available' | 'partial' | 'unavailable';
+    networkRxBytes: number | null;
+    networkTxBytes: number | null;
+    networkStatus: 'available' | 'unavailable';
     metricStatus: string;
   };
 };
@@ -172,6 +175,41 @@ async function hostFilesystem() {
   }
 }
 
+async function measureWorkspaceDisk(worktreePath: string): Promise<{ bytes: number | null; status: 'available' | 'partial' | 'unavailable' }> {
+  const MAX_ENTRIES = 20_000;
+  const MAX_DURATION_MS = 2_000;
+  const startedAt = Date.now();
+  const pending = [worktreePath];
+  let entries = 0;
+  let totalBytes = 0;
+  try {
+    while (pending.length) {
+      if (entries >= MAX_ENTRIES || Date.now() - startedAt > MAX_DURATION_MS) return { bytes: totalBytes, status: 'partial' };
+      const directory = pending.pop()!;
+      const directoryStat = await fs.lstat(directory);
+      if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) continue;
+      const handle = await fs.opendir(directory);
+      for await (const child of handle) {
+        entries += 1;
+        if (entries > MAX_ENTRIES || Date.now() - startedAt > MAX_DURATION_MS) return { bytes: totalBytes, status: 'partial' };
+        if (child.isSymbolicLink()) continue;
+        const target = path.join(directory, child.name);
+        if (child.isDirectory()) {
+          const stat = await fs.lstat(target);
+          if (stat.isDirectory() && !stat.isSymbolicLink()) pending.push(target);
+        } else if (child.isFile()) {
+          const stat = await fs.lstat(target);
+          if (stat.isFile() && !stat.isSymbolicLink() && Number.isSafeInteger(stat.size) && stat.size >= 0) totalBytes += stat.size;
+          if (!Number.isSafeInteger(totalBytes)) return { bytes: null, status: 'unavailable' };
+        }
+      }
+    }
+    return { bytes: totalBytes, status: 'available' };
+  } catch {
+    return { bytes: null, status: 'unavailable' };
+  }
+}
+
 async function inspectWorkspace(workspace: Awaited<ReturnType<typeof listTaskWorkspaces>>[number]) {
   const expectedRoot = path.resolve(config.dataDir, "task-workspaces", "worktrees", workspace.repositoryId);
   const target = path.resolve(workspace.worktreePath);
@@ -181,10 +219,11 @@ async function inspectWorkspace(workspace: Awaited<ReturnType<typeof listTaskWor
   try {
     const stat = await fs.lstat(target);
     if (!stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(target) !== target) return null;
-    const [branch, commit, porcelain] = await Promise.all([
+    const [branch, commit, porcelain, disk] = await Promise.all([
       runManagedGit(["-C", target, "branch", "--show-current"], { timeoutMs: 5_000 }),
       runManagedGit(["-C", target, "rev-parse", "--verify", "HEAD"], { timeoutMs: 5_000 }),
       runManagedGit(["-C", target, "status", "--porcelain=v1", "--untracked-files=normal"], { timeoutMs: 5_000 }),
+      measureWorkspaceDisk(target),
     ]);
     const lines = porcelain.split(/\r?\n/).filter(Boolean);
     return {
@@ -194,12 +233,14 @@ async function inspectWorkspace(workspace: Awaited<ReturnType<typeof listTaskWor
       dirty: lines.length > 0,
       stagedChanges: lines.filter((line) => line.length >= 2 && line[0] !== " " && line[0] !== "?").length,
       untrackedFiles: lines.filter((line) => line.startsWith("?? ")).length,
+      diskBytes: disk.bytes,
+      diskStatus: disk.status,
       status: workspace.status,
     };
   } catch {
     return {
       id: workspace.id, branch: null, commit: null, dirty: null,
-      stagedChanges: null, untrackedFiles: null, status: "unavailable",
+      stagedChanges: null, untrackedFiles: null, diskBytes: null, diskStatus: "unavailable", status: "unavailable",
     };
   }
 }
@@ -294,8 +335,9 @@ async function collectSnapshot(): Promise<DashboardSnapshot> {
       : null;
     const cgroup = parseCgroup(workload.cgroup);
     const metrics = cgroupMetrics(workload.id, cgroup, sampledAt, cpuCount);
-    const created = workload.runtimeCreatedAt ?? workload.createdAt;
-    const createdTime = Date.parse(created);
+    const startedTime = workload.runtimeStartedAt ? Date.parse(workload.runtimeStartedAt) : Number.NaN;
+    const workspaceDiskBytes = workspace?.diskBytes ?? null;
+    const workspaceDiskStatus = (workspace?.diskStatus ?? 'unavailable') as 'available' | 'partial' | 'unavailable';
     return {
       id: workload.id,
       repository: repository ? { id: repository.id, fullName: repository.fullName } : null,
@@ -310,20 +352,32 @@ async function collectSnapshot(): Promise<DashboardSnapshot> {
       createdAt: workload.createdAt,
       updatedAt: workload.updatedAt,
       runtimeCreatedAt: workload.runtimeCreatedAt,
-      uptimeSeconds: workload.runtimeState === "running" && Number.isFinite(createdTime)
-        ? Math.max(0, Math.floor((sampledAt - createdTime) / 1000))
+      runtimeStartedAt: workload.runtimeStartedAt,
+      uptimeSeconds: workload.runtimeState === "running" && Number.isFinite(startedTime) && startedTime <= sampledAt
+        ? Math.floor((sampledAt - startedTime) / 1000)
         : null,
       resources: {
         ...metrics,
         configuredCpuMilli: workload.resources.cpuMilli ?? null,
         configuredMemoryBytes: workload.resources.memoryMiB == null ? null : workload.resources.memoryMiB * 1024 * 1024,
         configuredPids: workload.resources.pids ?? null,
-        workspaceDiskBytes: null,
-        networkRxBytes: null,
-        networkTxBytes: null,
+        workspaceDiskBytes,
+        workspaceDiskStatus,
+        networkRxBytes: workload.networkRxBytes,
+        networkTxBytes: workload.networkTxBytes,
+        networkStatus: workload.networkStatus,
       },
     };
   }));
+
+  for (const sandbox of sandboxes) {
+    if (sandbox.runtimeState === "running" && sandbox.resources.networkStatus === "unavailable") {
+      warnings.push("Network counters are unavailable for sandbox " + sandbox.id.slice(0, 8) + ".");
+    }
+    if (sandbox.runtimeState === "running" && sandbox.resources.workspaceDiskStatus !== "available") {
+      warnings.push("Workspace disk usage is " + sandbox.resources.workspaceDiskStatus + " for sandbox " + sandbox.id.slice(0, 8) + ".");
+    }
+  }
 
   const cpuPercent = hostCpuPercent(sampledAt);
   const totalMemoryBytes = os.totalmem();
