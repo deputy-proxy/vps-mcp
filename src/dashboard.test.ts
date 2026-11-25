@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -44,6 +44,10 @@ const workload = {
   createdAt: "2026-11-25T20:00:00.000Z",
   updatedAt: "2026-11-25T20:00:00.000Z",
   runtimeCreatedAt: "2026-11-25T20:00:00.000Z",
+  runtimeStartedAt: "2026-11-25T20:30:00.000Z",
+  networkRxBytes: 4096,
+  networkTxBytes: 8192,
+  networkStatus: "available" as const,
   cgroup: {
     "cpu.stat": "usage_usec 1000000\nuser_usec 700000\nsystem_usec 300000",
     "cpu.max": "50000 100000",
@@ -105,7 +109,11 @@ describe("dashboard snapshot aggregation", () => {
     });
     expect(snapshot.sandboxes[0]?.resources.cpuQuotaPercent).toBeNull();
     expect(snapshot.sandboxes[0]?.resources.workspaceDiskBytes).toBeNull();
-    expect(snapshot.sandboxes[0]?.resources.networkRxBytes).toBeNull();
+    expect(snapshot.sandboxes[0]?.resources.networkRxBytes).toBe(4096);
+    expect(snapshot.sandboxes[0]?.resources.networkTxBytes).toBe(8192);
+    expect(snapshot.sandboxes[0]?.runtimeStartedAt).toBe(workload.runtimeStartedAt);
+    expect(snapshot.sandboxes[0]?.uptimeSeconds).toBeGreaterThan(0);
+    expect(snapshot.sandboxes[0]?.uptimeSeconds).toBeLessThan(5 * 60 * 60);
     expect(getDashboardHistory().host).toHaveLength(1);
   });
 
@@ -113,6 +121,7 @@ describe("dashboard snapshot aggregation", () => {
     const workspaceId = "71b4a12c-7a43-4b70-9a5d-9e6e8a3c5a11";
     const worktreePath = path.join(dashboardTestDataDir, "task-workspaces", "worktrees", "repo-123", workspaceId);
     mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(path.join(worktreePath, "disk-probe.bin"), Buffer.alloc(1234));
     mocks.listTaskWorkspaces.mockResolvedValue([{
       id: workspaceId,
       repositoryId: "repo-123",
@@ -147,6 +156,8 @@ describe("dashboard snapshot aggregation", () => {
       dirty: true,
       stagedChanges: 1,
       untrackedFiles: 1,
+      diskBytes: 1234,
+      diskStatus: "available",
       status: "active",
     });
     expect(mocks.runManagedGit).toHaveBeenCalledTimes(3);
