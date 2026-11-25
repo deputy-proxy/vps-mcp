@@ -52,6 +52,14 @@ afterAll(async () => {
 });
 
 describe("Streamable HTTP endpoint", () => {
+  it("fails closed when browser dashboard authentication is not configured", async () => {
+    const response = await fetch(baseUrl + "/dashboard");
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("Dashboard authentication is not configured");
+    const apiResponse = await fetch(baseUrl + "/dashboard/api/overview");
+    expect(apiResponse.status).toBe(503);
+  });
+
   it("keeps the health endpoint public", async () => {
     const response = await fetch(`${baseUrl}/healthz`);
     expect(response.status).toBe(200);
