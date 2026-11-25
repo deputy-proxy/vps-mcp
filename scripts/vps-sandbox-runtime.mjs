@@ -44,7 +44,7 @@ const activeExecutionStarts = new Set();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_DIGEST = /^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/i;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
-const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.status', 'sandbox.execution.logs', 'sandbox.execution.cancel', 'sandbox.execution.list', 'resource.inspect', 'resource.reserve', 'resource.release', 'sandbox.retention.set', 'cleanup.preview', 'cleanup.run', 'cleanup.pause', 'workspace.write.begin', 'workspace.write.finish', 'audit.list']);
+const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'dashboard.inventory', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.status', 'sandbox.execution.logs', 'sandbox.execution.cancel', 'sandbox.execution.list', 'resource.inspect', 'resource.reserve', 'resource.release', 'sandbox.retention.set', 'cleanup.preview', 'cleanup.run', 'cleanup.pause', 'workspace.write.begin', 'workspace.write.finish', 'audit.list']);
 let operationQueue = Promise.resolve();
 const ACTIVE_STATES = new Set(['creating', 'created', 'starting', 'running', 'stopping', 'stopped', 'removing', 'error']);
 const KNOWN_WORKLOAD_STATES = new Set([...ACTIVE_STATES, 'removed', 'unknown']);
@@ -93,6 +93,7 @@ export function parseRuntimeRequest(raw) {
     'container.start': ['operation', 'workloadId', 'expectedWorkloadType'],
     'container.inspect': ['operation', 'workloadId'],
     'container.list': ['operation'],
+    'dashboard.inventory': ['operation'],
     'container.stop': ['operation', 'workloadId', 'expectedWorkloadType'],
     'container.remove': ['operation', 'workloadId', 'expectedWorkloadType'],
     'container.exec': ['operation', 'workloadId', 'command', 'timeoutMs'],
@@ -118,6 +119,7 @@ export function parseRuntimeRequest(raw) {
     'audit.list': ['operation', 'limit'],
   }[request.operation];
   assert(Object.keys(request).every((key) => allowed.includes(key)), 'Request contains unsupported properties');
+  if (request.operation === 'dashboard.inventory') return request;
   if (request.operation === 'container.create') {
     assert(request.workloadType === 'task' || request.workloadType === 'project-service', 'Invalid workload type');
     assert(request.network === undefined || request.network === 'none', 'Only network=none is supported by this runtime adapter');
@@ -309,9 +311,12 @@ async function readRecord(id) {
   assert(record.id === safeId(id), 'Workload record identity mismatch');
   return record;
 }
-async function readWorkloadRecords() {
-  await ensureDataDir();
-  const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });
+async function readWorkloadRecords(options = {}) {
+  if (options.ensureDirectory !== false) await ensureDataDir();
+  const entries = await fs.readdir(DATA_DIR, { withFileTypes: true }).catch((error) => {
+    if (options.ensureDirectory === false && error.code === 'ENOENT') return [];
+    throw error;
+  });
   const records = [];
   for (const entry of entries) {
     if (!UUID.test(entry.name)) continue;
@@ -1876,7 +1881,94 @@ async function markActiveExecutionsInterrupted(sandboxId, reason) {
   }
 }
 
+
+async function readCgroupMetricFiles(runtimeId) {
+  try {
+    const result = await runPodman(['inspect', '--format', '{{.State.CgroupPath}}', runtimeId], 10_000, 16 * 1024);
+    const rawPath = result.stdout.trim();
+    if (!rawPath || rawPath.includes(String.fromCharCode(0))) return null;
+    const root = '/sys/fs/cgroup';
+    const relative = rawPath.startsWith(root + '/') ? path.relative(root, rawPath) : rawPath.replace(/^[/]+/, '');
+    if (!relative || relative.split('/').some((part) => !part || part === '.' || part === '..')) return null;
+    const directory = path.resolve(root, relative);
+    const fromRoot = path.relative(root, directory);
+    if (fromRoot.startsWith('..') || path.isAbsolute(fromRoot)) return null;
+    const names = ['cpu.stat', 'cpu.max', 'memory.current', 'memory.max', 'pids.current', 'pids.max'];
+    const values = await Promise.all(names.map(async (name) => {
+      try {
+        const value = await fs.readFile(path.join(directory, name), 'utf8');
+        return value.length <= 16 * 1024 ? value.trim() : null;
+      } catch { return null; }
+    }));
+    if (!values.some((value) => value !== null)) return null;
+    return Object.fromEntries(names.map((name, index) => [name, values[index]]));
+  } catch {
+    return null;
+  }
+}
+
+async function dashboardInventory() {
+  const [records, containers] = await Promise.all([readWorkloadRecords({ ensureDirectory: false }), listManagedContainers()]);
+  const containerByWorkload = new Map(containers.filter((item) => item.workloadId).map((item) => [item.workloadId, item]));
+  const taskRecords = records.filter((record) => record.workloadType === 'task' && record.status !== 'removed');
+  const recordIds = new Set(taskRecords.map((record) => record.id));
+  const workloads = await Promise.all(taskRecords
+    .map(async (record) => {
+      const container = containerByWorkload.get(record.id);
+      const runtimeState = container?.state ?? (record.status === 'removed' ? 'removed' : 'unknown');
+      const runtimeId = container?.containerId ?? null;
+      let cgroup = null;
+      let metricsStatus = 'unavailable';
+      if (runtimeState === 'running' && runtimeId) {
+        try {
+          const identityMatches = await verifyRuntimeContainerIdentity(record, runtimeId);
+          if (identityMatches) {
+            cgroup = await readCgroupMetricFiles(runtimeId);
+            metricsStatus = cgroup ? 'available' : 'unavailable';
+          }
+        } catch {
+          metricsStatus = 'unavailable';
+        }
+      }
+      return {
+        id: record.id,
+        repositoryId: record.repositoryId,
+        worktreeId: record.worktreeId ?? null,
+        imageDigest: record.imageDigest,
+        resources: record.resources,
+        networkPolicy: record.networkPolicy ?? null,
+        retained: record.retained === true,
+        lifecycleStatus: record.status,
+        runtimeState,
+        runtimeId,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        runtimeCreatedAt: container?.createdAt ?? null,
+        cgroup,
+        metricsStatus,
+      };
+    }));
+  const unmatchedContainers = containers
+    .filter((container) => container.workloadType === 'task' && (!container.workloadId || !recordIds.has(container.workloadId)))
+    .map((container) => ({
+      containerId: container.containerId,
+      runtimeState: container.state,
+      createdAt: container.createdAt,
+      associationStatus: 'unmatched',
+    }));
+  return {
+    collectedAt: new Date().toISOString(),
+    workloads,
+    unmatchedContainers,
+    sources: {
+      workloadRegistry: 'available',
+      podmanInventory: 'available',
+    },
+  };
+}
+
 async function execute(request) {
+  if (request.operation === 'dashboard.inventory') return dashboardInventory();
   await ensureDataDir();
   if (request.operation === 'resource.inspect') return resourceStatus();
   if (request.operation === 'sandbox.retention.set') return setTaskSandboxRetention(request);
