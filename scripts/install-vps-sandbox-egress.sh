@@ -82,6 +82,8 @@ table inet vps_sandbox_egress {
     # addresses and arbitrary ports are denied before public web egress.
     meta skuid vps-egress udp dport 53 accept
     meta skuid vps-egress tcp dport 53 accept
+    # Permit only established replies from the proxy listener to its local clients.
+    meta skuid vps-egress ct state established ip daddr { 127.0.0.1, 10.0.2.0/24 } tcp sport 3128 accept
     meta skuid vps-egress fib daddr type local drop
     meta skuid vps-egress ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 } drop
     meta skuid vps-egress ip6 daddr { ::/128, ::1/128, ::ffff:0:0/96, fc00::/7, fe80::/10, ff00::/8 } drop
