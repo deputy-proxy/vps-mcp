@@ -22,9 +22,13 @@ A deployment follows prepare, validate, activate, verify, and commit phases. Bui
 
 ## Service profiles
 
-The core model is profile-driven and framework-neutral. A profile defines a versioned runtime/toolchain, immutable image digest, web process, optional queue workers and scheduler, health checks, ports, resource defaults, persistent mount declarations, startup/restart policy, database/cache requirements, build and release hooks, and backup/restore hooks.
+The core model is profile-driven and framework-neutral. A versioned profile defines its runtime/toolchain, immutable image digest, web process, optional queue workers and scheduler, health checks, ports, resource defaults, persistent mount declarations, startup/restart policy, database/cache requirements, build and release hooks, migration/seeder policy, and backup/restore requirements.
 
-Laravel/PHP is the first supported profile family. Laravel-specific behavior belongs in its profile implementation, not in the core environment identity, persistence, locking, source, or lifecycle model. Unknown or incomplete profiles fail closed.
+The profile catalog is exposed through project-environment.profile.list. Profile IDs and versions are immutable contracts: changing behavior requires a new profile version. Callers receive copies of profile definitions; they cannot mutate the in-process catalog.
+
+Laravel/PHP is the first profile family (laravel-php, version 1). It describes PHP 8.4, Composer 2 and Node 22, PHP-FPM, a queue worker, the Laravel scheduler, MySQL 8, optional Redis 7, project-scoped storage/cache/log mounts, conservative resource defaults, disabled migrations and disabled seeders. Laravel-specific behavior belongs in this profile implementation, not in the core environment identity, persistence, locking, source, or lifecycle model.
+
+The initial Laravel profile is deliberately definition-only: no trusted immutable runtime image digest has been selected and validated yet. It can be inspected and used to create metadata-only environment records, but it cannot be provisioned. A profile is eligible for provisioning only after it is marked deployable and pins an immutable sha256 image digest. Unknown, incomplete or definition-only profiles fail closed.
 
 ## Isolation and resource admission
 

@@ -48,12 +48,13 @@ it("is idempotent for an identical environment and rejects conflicting profile o
   const second = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   expect(second.created).toBe(false);
   expect(second.environment.id).toBe(first.environment.id);
-  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "node" })).rejects.toThrow("different profile or resource reservation");
+  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 750 } })).rejects.toThrow("different profile or resource reservation");
 });
 
 it("validates repository identity, profile and bounded resource requests", async () => {
   await expect(registerProjectEnvironment({ repositoryId: "../escape", profileId: "laravel-php" })).rejects.toThrow("Invalid repository ID");
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "../unsafe" })).rejects.toThrow("Invalid project environment profile ID");
+  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "unknown-profile" })).rejects.toThrow("Unknown project environment profile");
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 5000 } })).rejects.toThrow("cpuMilli must be between");
 });
 
