@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { EXECUTION_POLICY, safeExecutionId, executionCommandMetadata, buildExecutionStartArgs, buildExecutionIdentityCheckScript, buildExecutionCancelScript, createExecutionRecord, executionRetentionActions, assertExecutionLogQuota, executionLogReadWindow } from './executions.mjs';
 import { promisify } from 'node:util';
-import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanupEligibility, withDurableLocks, auditSafeValue, operationReplayDecision, orphanContainerEligibility, staleLockIsReapable, staleTemporaryFile, createWorkloadReplayDecision } from './resource-governance.mjs';
+import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanupEligibility, withDurableLocks, auditSafeValue, diskPressureLevel, operationReplayDecision, orphanContainerEligibility, staleLockIsReapable, staleTemporaryFile, createWorkloadReplayDecision } from './resource-governance.mjs';
 
 const execFileAsync = promisify(execFile);
 const SOCKET = '/run/vps-sandbox-runtime.sock';
@@ -489,7 +489,7 @@ async function diskStatus() {
   const totalBytes = Number(stats.blocks) * Number(stats.bsize);
   const freeBytes = Number(stats.bavail) * Number(stats.bsize);
   const budget = resourceBudget();
-  return { path: DATA_DIR, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes), level: freeBytes < budget.diskReserveBytes ? 'critical' : freeBytes < budget.diskWarningBytes ? 'warning' : 'normal' };
+  return { path: DATA_DIR, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes), level: diskPressureLevel(freeBytes, budget) };
 }
 
 async function resourceStatus() {

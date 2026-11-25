@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { auditSafeValue, cleanupEligibility, calculateResourceUsage, createWorkloadReplayDecision, evaluateResourceRequest, operationReplayDecision, orphanContainerEligibility, resourceBudget, staleLockIsReapable, staleTemporaryFile, withDurableLocks } from './resource-governance.mjs';
+import { auditSafeValue, cleanupEligibility, diskPressureLevel, calculateResourceUsage, createWorkloadReplayDecision, evaluateResourceRequest, operationReplayDecision, orphanContainerEligibility, resourceBudget, staleLockIsReapable, staleTemporaryFile, withDurableLocks } from './resource-governance.mjs';
 
 const budget = resourceBudget({
   VPS_SANDBOX_GLOBAL_CPU_MILLI: '2000', VPS_SANDBOX_GLOBAL_MEMORY_MIB: '2048', VPS_SANDBOX_GLOBAL_PIDS: '256',
@@ -15,8 +15,21 @@ afterEach(async () => { if (temporary) await fs.rm(temporary, { recursive: true,
 
 describe('resource governance', () => {
   it('derives conservative defaults and rejects malformed budget configuration', () => {
-    expect(resourceBudget({}, { cpuCount: 8, totalMemoryMiB: 8192 })).toMatchObject({ globalCpuMilli: 5600, globalMemoryMiB: 5734, maxActiveTasks: 8 });
+    expect(resourceBudget({}, { cpuCount: 8, totalMemoryMiB: 8192 })).toMatchObject({ globalCpuMilli: 5600, globalMemoryMiB: 5734, maxActiveTasks: 8, diskWarningBytes: 15 * 1024 ** 3, diskReserveBytes: 5 * 1024 ** 3 });
+    expect(resourceBudget({ VPS_SANDBOX_DISK_WARNING_BYTES: '2000', VPS_SANDBOX_DISK_RESERVE_BYTES: '1000' })).toMatchObject({ diskWarningBytes: 2000, diskReserveBytes: 1000 });
+    expect(() => resourceBudget({ VPS_SANDBOX_DISK_WARNING_BYTES: '1000', VPS_SANDBOX_DISK_RESERVE_BYTES: '1000' })).toThrow('must be greater than');
+    expect(() => resourceBudget({ VPS_SANDBOX_DISK_WARNING_BYTES: '999', VPS_SANDBOX_DISK_RESERVE_BYTES: '1000' })).toThrow('must be greater than');
     expect(() => resourceBudget({ VPS_SANDBOX_GLOBAL_CPU_MILLI: '0' }, { cpuCount: 2, totalMemoryMiB: 1024 })).toThrow('positive safe integer');
+  });
+
+  it('classifies disk headroom at warning and critical thresholds', () => {
+    const budget = { diskWarningBytes: 150, diskReserveBytes: 50 };
+    expect(diskPressureLevel(151, budget)).toBe('normal');
+    expect(diskPressureLevel(150, budget)).toBe('normal');
+    expect(diskPressureLevel(149, budget)).toBe('warning');
+    expect(diskPressureLevel(50, budget)).toBe('warning');
+    expect(diskPressureLevel(49, budget)).toBe('critical');
+    expect(() => diskPressureLevel(-1, budget)).toThrow('non-negative');
   });
 
   it('accounts for active workloads and project reservations without counting released reservations', () => {

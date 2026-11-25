@@ -14,7 +14,7 @@ The configured defaults are intentionally conservative:
 - Per-repository disk reservation: 100 GiB.
 - Global disk reservation: 150 GiB.
 - Disk warning threshold: 15 GiB free.
-- Disk critical/reserved headroom: 5 GiB free.
+- Disk critical/reserved headroom: 5 GiB free. The warning threshold must be strictly greater than the critical reserve threshold.
 - Task workspace hard quota: 2 GiB per task worktree.
 
 The budget is configurable through `/etc/vps-sandbox/runtime.env`, which is read by the rootless runtime systemd service. The installer seeds values for new installations and preserves an existing file. Blank CPU, memory and per-repository overrides use the calculated defaults. See docs/operations/vps-sandbox-runtime.env.example.
