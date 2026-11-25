@@ -1,9 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters } from './vps-sandbox-runtime.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+
+
+describe('dashboard runtime metric parsers', () => {
+  it('normalizes Podman Go timestamps with timezone abbreviations', () => {
+    expect(normalizePodmanTimestamp('2026-11-26 00:25:29.41056272 +0100 CET')).toBe('2026-11-25T23:25:29.410Z');
+    expect(normalizePodmanTimestamp('0001-01-01 00:00:00 +0000 UTC')).toBe('0001-01-01T00:00:00.000Z');
+    expect(normalizePodmanTimestamp('not-a-date')).toBeNull();
+  });
+
+  it('sums per-network-namespace byte counters and excludes loopback', () => {
+    const sample = [
+      'Inter-|   Receive                                                |  Transmit',
+      ' face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed',
+      '    lo: 900 9 0 0 0 0 0 0 900 9 0 0 0 0 0 0',
+      '  eth0: 1200 12 0 0 0 0 0 0 3400 34 0 0 0 0 0 0',
+      '  eth1: 800 8 0 0 0 0 0 0 600 6 0 0 0 0 0 0',
+    ].join(String.fromCharCode(10));
+    expect(parseNetworkNamespaceCounters(sample)).toEqual({ rxBytes: 2000, txBytes: 4000 });
+    expect(parseNetworkNamespaceCounters('bad')).toBeNull();
+  });
+});
 
 describe('rootless workload runtime request validation', () => {
   it.each([
