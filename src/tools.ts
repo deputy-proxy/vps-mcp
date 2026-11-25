@@ -14,6 +14,7 @@ import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbo
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 import { inspectManagedStorage } from "./storage-metrics.js";
 import { inspectProjectEnvironment, listProjectEnvironments, registerProjectEnvironment } from "./project-environments.js";
+import { listServiceProfiles } from "./service-profiles.js";
 import { resolveAllowedPath, managedTaskWorkspaceIdentity } from "./paths.js";
 
 type ToolResult = {
@@ -422,6 +423,13 @@ export function createMcpServer(): McpServer {
     inputSchema: { limit: z.number().int().min(1).max(500).default(100) },
   }, async ({ limit }) => guarded(() => safelySandbox(() => sandboxRuntime.listRuntimeAudit(limit))));
 
+  server.registerTool("project-environment.profile.list", {
+    title: "List project environment service profiles",
+    description: "List versioned framework-neutral service profile definitions and their readiness. Definition-only profiles cannot be provisioned; no runtime or resource state is changed.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { includeDefinitionOnly: z.boolean().default(true) },
+  }, async ({ includeDefinitionOnly }) => guarded(() => safely(async () => listServiceProfiles({ includeDefinitionOnly }))));
+
   server.registerTool("project-environment.list", {
     title: "List persistent project environments",
     description: "List durable per-repository development environment records. This is metadata only; it does not start, stop, deploy or modify project workloads.",
@@ -438,7 +446,7 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("project-environment.register", {
     title: "Register persistent project environment",
-    description: "Create an idempotent durable metadata record for a registered repository, pinning its source to development and defining isolated data paths and a resource plan. This does not reserve resources or provision/start containers; provisioning remains gated pending resource-governance acceptance and profile implementation.",
+    description: "Create an idempotent durable metadata record for a registered repository, pinning its source to development and defining isolated data paths and a resource plan. This does not reserve resources or provision/start containers; provisioning remains gated pending resource-governance acceptance and an approved deployable profile with a pinned runtime image digest.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       repositoryId: z.string().min(2).max(200),
