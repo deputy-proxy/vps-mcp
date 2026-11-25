@@ -227,6 +227,10 @@ Generate a token with `openssl rand -hex 32`.
 - Privileged host administration is limited to the explicitly installed `vps-sandboxctl` diagnostic allowlist; unrestricted sudo is not supported. The rootless workload runtime agent is installed and active; background task execution uses a separate persistent runtime record/log store.
 - Persistent repository registration, bare-clone caching, durable isolated task workspaces and the typed rootless runtime adapter are implemented. Persistent application environment provisioning, backup/restore, management UI and Railway Sandbox parity remain separate milestones.
 
+## VPS observability dashboard
+
+The optional read-only operator dashboard is served at /dashboard. Configure its AuthKit browser application and email allowlist as documented in docs/operations/dashboard.md. It is disabled and returns HTTP 503 until all required dashboard OIDC settings are configured.
+
 ## Repository management
 
 See [repository management architecture](docs/architecture/repository-management.md) and [repository operations](docs/operations/repositories.md) for the data model, canonical remote and branch policy, cache lifecycle, onboarding and safe cleanup procedures. See [task workspace architecture](docs/architecture/worktrees.md) and [task workspace operations](docs/operations/task-workspaces.md) for isolated worktree creation, retention, recovery and cleanup. The service account must have Git installed. Private GitHub repositories require an explicitly configured trusted credential-helper executable via `REPOSITORY_GIT_CREDENTIAL_HELPER`; credentials are never accepted in remote URLs or written to registry metadata. Branch governance uses GitHub repository rulesets. Configure `REPOSITORY_GITHUB_TOKEN` with `Metadata: read` to inspect private-repository rulesets and `Administration: write` to apply them. `REPOSITORY_REQUIRED_STATUS_CHECKS` defines the required check contexts (default `quality`). See [branch governance](docs/architecture/branch-and-release-policy.md) and [branch operations](docs/operations/branch-governance.md).

@@ -41,7 +41,7 @@ The CI workflow must run on pushes to and pull requests targeting both long-live
 - Release PRs use `development` → `main` and include a non-empty release summary.
 - A `hotfix/*` PR to `main` must include a non-empty `Development reconciliation` section.
 - A `fix/*` maintenance PR to `main` must include a non-empty `Development reconciliation` section; arbitrary feature branches remain prohibited from targeting `main`.
-- PRs from `main` or into branches other than `main`/`development` are rejected.
+- Direct PRs from `main` are rejected. After a production promotion, reconcile `main` back into `development` through a `reconcile/*` PR with a non-empty `Main reconciliation` section. PRs into branches other than `main`/`development` are rejected.
 
 Any deployment job must declare the `production` or `development` GitHub Actions environment so deployment secrets are environment-scoped. A production deployment must be gated by the successful `quality` job, a push-event check, an exact `refs/heads/main` guard, a serialized concurrency group, and the explicit repository Actions variable `VPS_PRODUCTION_DEPLOY_ENABLED == 'true'`. It is disabled until the host-side restricted SSH access and production environment secrets have been provisioned. Development deployment jobs, when configured, must use the `development` environment and an exact `development` branch guard. The workflow validator checks trigger filters, job guards, quality dependencies and concurrency to prevent cross-environment deployments.
 
