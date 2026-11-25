@@ -13,6 +13,7 @@ import { validateTaskBranchCreation } from "./branch-policy.js";
 import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbox-runtime.js";
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 import { inspectManagedStorage } from "./storage-metrics.js";
+import { inspectProjectEnvironment, listProjectEnvironments, registerProjectEnvironment } from "./project-environments.js";
 import { resolveAllowedPath, managedTaskWorkspaceIdentity } from "./paths.js";
 
 type ToolResult = {
@@ -420,6 +421,46 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { limit: z.number().int().min(1).max(500).default(100) },
   }, async ({ limit }) => guarded(() => safelySandbox(() => sandboxRuntime.listRuntimeAudit(limit))));
+
+  server.registerTool("project-environment.list", {
+    title: "List persistent project environments",
+    description: "List durable per-repository development environment records. This is metadata only; it does not start, stop, deploy or modify project workloads.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200).optional() },
+  }, async ({ repositoryId }) => guarded(() => safely(() => listProjectEnvironments(repositoryId ? { repositoryId } : {}))));
+
+  server.registerTool("project-environment.inspect", {
+    title: "Inspect persistent project environment",
+    description: "Inspect the durable environment record and its isolated data-path plan for one registered repository. Does not expose secret values or change runtime state.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200) },
+  }, async ({ repositoryId }) => guarded(() => safely(() => inspectProjectEnvironment(repositoryId))));
+
+  server.registerTool("project-environment.register", {
+    title: "Register persistent project environment",
+    description: "Create an idempotent durable metadata record for a registered repository, pinning its source to development and defining isolated data paths and a resource plan. This does not reserve resources or provision/start containers; provisioning remains gated pending resource-governance acceptance and profile implementation.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      repositoryId: z.string().min(2).max(200),
+      profileId: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/),
+      profileVersion: z.number().int().min(1).max(1000).optional(),
+      resources: z.object({
+        cpuMilli: z.number().int().min(100).max(2000).optional(),
+        memoryMiB: z.number().int().min(128).max(4096).optional(),
+        pids: z.number().int().min(32).max(512).optional(),
+        diskMiB: z.number().int().min(128).max(102400).optional(),
+      }).strict().optional(),
+    },
+  }, async ({ repositoryId, profileId, profileVersion, resources }) => guarded(() => safely(() => registerProjectEnvironment({
+    repositoryId, profileId,
+    ...(profileVersion !== undefined ? { profileVersion } : {}),
+    ...(resources !== undefined ? { resources: {
+      ...(resources.cpuMilli !== undefined ? { cpuMilli: resources.cpuMilli } : {}),
+      ...(resources.memoryMiB !== undefined ? { memoryMiB: resources.memoryMiB } : {}),
+      ...(resources.pids !== undefined ? { pids: resources.pids } : {}),
+      ...(resources.diskMiB !== undefined ? { diskMiB: resources.diskMiB } : {}),
+    } } : {}),
+  }))));
 
   server.registerTool("repository.register", {
     title: "Register repository",

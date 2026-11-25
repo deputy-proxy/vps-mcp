@@ -121,7 +121,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(51);
+    expect(tools.size).toBe(54);
 
     for (const name of [
       "system.health",
@@ -138,6 +138,8 @@ describe("Streamable HTTP endpoint", () => {
       "sandbox.logs",
       "sandbox.image.inspect",
       "resource.capacity",
+      "project-environment.list",
+      "project-environment.inspect",
       "sandbox.cleanup.preview",
       "sandbox.audit.list",
     ]) {
@@ -168,7 +170,8 @@ describe("Streamable HTTP endpoint", () => {
         openWorldHint: name.startsWith("sandbox.") ? false : true,
       });
     }
-    for (const name of ["sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull", "sandbox.execution.start", "sandbox.execution.list", "sandbox.execution.status", "sandbox.execution.logs", "sandbox.execution.cancel", "resource.capacity", "resource.reserve", "resource.release", "sandbox.cleanup.preview", "sandbox.cleanup.run", "sandbox.maintenance.pause", "sandbox.audit.list"]) {
+    expect(tools.get("project-environment.register")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
+    for (const name of ["project-environment.register", "project-environment.list", "project-environment.inspect", "sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull", "sandbox.execution.start", "sandbox.execution.list", "sandbox.execution.status", "sandbox.execution.logs", "sandbox.execution.cancel", "resource.capacity", "resource.reserve", "resource.release", "sandbox.cleanup.preview", "sandbox.cleanup.run", "sandbox.maintenance.pause", "sandbox.audit.list"]) {
       expect(tools.get(name)?.inputSchema).toBeDefined();
     }
     expect(tools.get("sandbox.execution.cancel")?.annotations).toMatchObject({
