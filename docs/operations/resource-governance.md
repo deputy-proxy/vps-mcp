@@ -142,6 +142,7 @@ Task sandboxes use the restricted task egress profile:
 - Explicit HTTP/HTTPS proxy variables.
 - Host nftables enforcement that blocks direct outbound sockets from the `vps-sandbox` identity.
 - Squid exact-hostname allowlisting and private/link-local/metadata destination denial.
+- Squid positive and negative DNS cache TTLs bounded to 10 seconds so destination checks do not retain stale positive DNS answers for the default six-hour period.
 - Upstream TCP restricted to ports 80 and 443.
 
 The proxy and firewall are required dependencies of the task runtime profile. If either is unavailable, the runtime must fail closed.

@@ -48,6 +48,7 @@ Task workloads use the administrator-installed restricted egress profile:
 - The `vps-egress` UID may send only established TCP replies from source port `3128` to loopback and the slirp client subnet; other local/private destinations remain blocked.
 - Squid permits only exact hostnames in `/etc/vps-sandbox/egress/allowed-domains.txt`.
 - The proxy denies private, loopback, link-local and metadata destinations and restricts upstream TCP ports to 80 and 443.
+- Squid positive and negative DNS cache TTLs are both bounded to 10 seconds. This limits stale positive answers so destination ACL checks can observe DNS changes promptly; the private-destination deny must remain before the hostname allowlist rule.
 
 The proxy and firewall are required dependencies of the runtime service when the restricted task egress profile is enabled. If the required profile is unavailable, the runtime must fail closed rather than silently start with unrestricted networking.
 
