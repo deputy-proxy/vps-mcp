@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { DASHBOARD_HTML } from "./dashboard-html.js";
 
 describe("dashboard header", () => {
-  it("uses the compact cr8or.sndbx title and removes the descriptive taglines", () => {
+  it("uses the CR8OR SVG brand mark and keeps the compact document title", () => {
     expect(DASHBOARD_HTML).toContain("<title>cr8or.sndbx</title>");
-    expect(DASHBOARD_HTML).toContain("<h1>cr8or.sndbx</h1>");
+    expect(DASHBOARD_HTML).toContain('<img class="brand-logo" src="/dashboard/assets/cr8or-logo.svg" alt="CR8OR" width="65" height="18">');
     expect(DASHBOARD_HTML).not.toContain("INFRASTRUCTURE / OBSERVABILITY");
     expect(DASHBOARD_HTML).not.toContain("Host capacity and managed task workloads");
   });
