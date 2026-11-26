@@ -187,6 +187,14 @@ export function createHttpServer(dependencies: { authenticateRequest?: Authentic
         response.status(503).type("text/plain").send("Dashboard assets are unavailable.");
       }
     });
+    app.get("/dashboard/assets/cr8or-logo.svg", dashboardAuth.requireSession(), async (_request, response) => {
+      setDashboardSecurityHeaders(response);
+      try {
+        response.type("image/svg+xml").send(await fs.readFile(new URL("../public/cr8or-logo.svg", import.meta.url), "utf8"));
+      } catch {
+        response.status(503).type("text/plain").send("Dashboard assets are unavailable.");
+      }
+    });
     app.get("/dashboard/api/overview", dashboardAuth.requireSession({ api: true }), async (request, response) => {
       setDashboardSecurityHeaders(response);
       try {
