@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { DASHBOARD_HTML } from "./dashboard-html.js";
 
@@ -26,5 +27,14 @@ describe("dashboard host utilization meters", () => {
     expect(DASHBOARD_HTML).toContain('role="progressbar" aria-label="CPU utilization"');
     expect(DASHBOARD_HTML).toContain('role="progressbar" aria-label="Memory used"');
     expect(DASHBOARD_HTML).toContain('role="progressbar" aria-label="Data filesystem"');
+  });
+});
+
+describe("dashboard logo asset route", () => {
+  it("serves the SVG referenced by the dashboard HTML", () => {
+    const serverSource = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
+    expect(serverSource).toContain('app.get("/dashboard/assets/cr8or-logo.svg"');
+    expect(serverSource).toContain('new URL("../public/cr8or-logo.svg", import.meta.url)');
+    expect(serverSource).toContain('response.type("image/svg+xml")');
   });
 });
