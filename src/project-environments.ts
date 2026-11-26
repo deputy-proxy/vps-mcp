@@ -194,8 +194,21 @@ export async function registerProjectEnvironment(input: {
     const existing = registry.environments.find((item) => item.repositoryId === repository.id);
     if (existing) {
       if (existing.desiredState === "deprovisioned") throw new Error("Deprovisioned environment records cannot be silently reused; explicitly retire the record first");
-      if (existing.profileId !== input.profileId || existing.profileVersion !== profileVersion || JSON.stringify(existing.resources) !== JSON.stringify(resources)) {
+      if (existing.profileId !== input.profileId || existing.profileVersion !== profileVersion) {
         throw new Error("Project environment already exists with a different profile or resource reservation");
+      }
+      if (JSON.stringify(existing.resources) !== JSON.stringify(resources)) {
+        const retryableAdmissionFailure = /^Resource reservation failed: SANDBOX_(CAPACITY_EXCEEDED|DISK_PRESSURE)/.test(existing.lastError ?? "");
+        if (!retryableAdmissionFailure) throw new Error("Project environment already exists with a different profile or resource reservation");
+        // A failed capacity admission has no matching reservation. Permit the
+        // operator to adjust the plan and retry; runtime admission remains the
+        // authority and will reject unsafe changes if a project workload exists.
+        existing.resources = resources;
+        existing.lastError = null;
+        existing.updatedAt = new Date().toISOString();
+        validateEnvironment(existing);
+        await writeRegistry(registry);
+        return { created: false, environment: existing, resourcesUpdated: true };
       }
       return { created: false, environment: existing };
     }

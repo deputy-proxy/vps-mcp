@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult } from './vps-sandbox-runtime.mjs';
+import { resourceReservationMatches } from './resource-governance.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -31,6 +32,20 @@ describe('dashboard runtime metric parsers', () => {
     ].join(String.fromCharCode(10));
     expect(parseNetworkNamespaceCounters(sample)).toEqual({ rxBytes: 2000, txBytes: 4000 });
     expect(parseNetworkNamespaceCounters('bad')).toBeNull();
+  });
+});
+
+describe('persistent project resource reservation idempotency', () => {
+  const resources = { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 };
+
+  it('recognizes an identical active reservation as a no-op', () => {
+    expect(resourceReservationMatches({ status: 'reserved', resources }, resources)).toBe(true);
+  });
+
+  it('does not treat released or changed reservations as identical', () => {
+    expect(resourceReservationMatches({ status: 'released', resources }, resources)).toBe(false);
+    expect(resourceReservationMatches({ status: 'reserved', resources: { ...resources, memoryMiB: 2048 } }, resources)).toBe(false);
+    expect(resourceReservationMatches(null, resources)).toBe(false);
   });
 });
 

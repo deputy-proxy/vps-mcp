@@ -13,7 +13,8 @@ import { validateTaskBranchCreation } from "./branch-policy.js";
 import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbox-runtime.js";
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 import { inspectManagedStorage } from "./storage-metrics.js";
-import { inspectProjectEnvironment, listProjectEnvironments, registerProjectEnvironment } from "./project-environments.js";
+import { inspectProjectEnvironment, listProjectEnvironments, registerProjectEnvironment, updateProjectEnvironment } from "./project-environments.js";
+import { registerProjectEnvironmentWithReservation } from "./project-environment-admission.js";
 import { listServiceProfiles } from "./service-profiles.js";
 import { resolveAllowedPath, managedTaskWorkspaceIdentity } from "./paths.js";
 
@@ -446,7 +447,7 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("project-environment.register", {
     title: "Register persistent project environment",
-    description: "Create an idempotent durable metadata record for a registered repository, pinning its source to development and defining isolated data paths and a resource plan. This does not reserve resources or provision/start containers; provisioning remains gated pending resource-governance acceptance and an approved deployable profile with a pinned runtime image digest.",
+    description: "Create an idempotent durable metadata record for a registered repository and reserve its profile resource vector through the resource-governance API. This does not provision or start containers; provisioning remains gated pending an approved deployable profile with a pinned runtime image digest.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       repositoryId: z.string().min(2).max(200),
@@ -459,7 +460,7 @@ export function createMcpServer(): McpServer {
         diskMiB: z.number().int().min(128).max(102400).optional(),
       }).strict().optional(),
     },
-  }, async ({ repositoryId, profileId, profileVersion, resources }) => guarded(() => safely(() => registerProjectEnvironment({
+  }, async ({ repositoryId, profileId, profileVersion, resources }) => guarded(() => safelySandbox(() => registerProjectEnvironmentWithReservation({
     repositoryId, profileId,
     ...(profileVersion !== undefined ? { profileVersion } : {}),
     ...(resources !== undefined ? { resources: {
@@ -468,6 +469,10 @@ export function createMcpServer(): McpServer {
       ...(resources.pids !== undefined ? { pids: resources.pids } : {}),
       ...(resources.diskMiB !== undefined ? { diskMiB: resources.diskMiB } : {}),
     } } : {}),
+  }, {
+    register: registerProjectEnvironment,
+    reserve: (input) => sandboxRuntime.reserveProjectResources(input),
+    update: updateProjectEnvironment,
   }))));
 
   server.registerTool("repository.register", {

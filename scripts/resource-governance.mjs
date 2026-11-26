@@ -51,6 +51,11 @@ function resourceVector(record) {
   return { cpuMilli: resources.cpuMilli ?? 0, memoryMiB: resources.memoryMiB ?? 0, pids: resources.pids ?? 0, diskMiB: resources.diskMiB ?? 0 };
 }
 
+export function resourceReservationMatches(reservation, resources) {
+  return reservation?.status === 'reserved'
+    && ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].every((key) => reservation.resources?.[key] === resources[key]);
+}
+
 export function calculateResourceUsage(records = [], reservations = []) {
   const usage = { cpuMilli: 0, memoryMiB: 0, pids: 0, diskMiB: 0, activeTasks: 0, byRepository: {} };
   const projectUsage = {};
