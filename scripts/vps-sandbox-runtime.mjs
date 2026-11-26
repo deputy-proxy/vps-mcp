@@ -646,6 +646,14 @@ export function normalizePodmanTimestamp(value) {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
+export function parsePodmanInspectResult(parsed) {
+  const container = Array.isArray(parsed) ? parsed[0] : parsed;
+  const state = container && typeof container === 'object' && !Array.isArray(container) ? (container.State ?? container.state ?? null) : null;
+  if (!state || typeof state !== 'object') return { startedAt: null, networkPid: null };
+  const pid = Number(state.Pid ?? state.pid);
+  return { startedAt: state.Running === true || state.running === true ? normalizePodmanTimestamp(state.StartedAt ?? state.startedAt) : null, networkPid: Number.isSafeInteger(pid) && pid > 0 ? pid : null };
+}
+
 export function parseNetworkNamespaceCounters(contents) {
   if (typeof contents !== 'string' || contents.length > 64 * 1024) return null;
   let rx = 0;
@@ -672,19 +680,13 @@ async function inspectContainerRuntime(containerId) {
   try {
     const result = await runPodman(['inspect', '--format', 'json', containerId], 10_000, 256 * 1024);
     const parsed = JSON.parse(result.stdout || '[]');
-    const state = Array.isArray(parsed) ? parsed[0]?.State : null;
-    if (!state || typeof state !== 'object') return { startedAt: null, network: null };
-    const pid = Number(state.Pid);
+    const inspected = parsePodmanInspectResult(parsed);
     let network = null;
-    if (Number.isSafeInteger(pid) && pid > 0) {
-      try {
-        network = parseNetworkNamespaceCounters(await fs.readFile('/proc/' + pid + '/net/dev', 'utf8'));
-      } catch { /* network namespace counters are optional when procfs denies access */ }
+    if (inspected.networkPid !== null) {
+      try { network = parseNetworkNamespaceCounters(await fs.readFile('/proc/' + inspected.networkPid + '/net/dev', 'utf8')); }
+      catch { /* network namespace counters are optional when procfs denies access */ }
     }
-    return {
-      startedAt: state.Running === true ? normalizePodmanTimestamp(state.StartedAt) : null,
-      network,
-    };
+    return { startedAt: inspected.startedAt, network };
   } catch {
     return { startedAt: null, network: null };
   }

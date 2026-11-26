@@ -50,14 +50,15 @@
     if (!matches.length) { const row = document.createElement("tr"), cell = document.createElement("td"); cell.colSpan = 8; cell.className = "empty-state"; cell.textContent = "No managed sandboxes are currently recorded."; row.append(cell); rows.append(row); return; }
     for (const s of matches) {
       const row = document.createElement("tr"); row.className = "selectable-row"; row.tabIndex = 0;
-      if (s.id === state.selectedId) row.classList.add("selected-row");
+      if (s.id === state.selectedId) { row.classList.add("selected-row"); row.setAttribute("aria-selected", "true"); }
+      else row.setAttribute("aria-selected", "false");
       row.addEventListener("click", () => selectSandbox(s.id));
       row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSandbox(s.id); } });
+      const runtime = addCell(row, s.runtimeState); runtime.firstChild.className = "status-pill " + (s.runtimeState === "running" ? "status-running" : ["stopped", "exited", "created", "removed"].includes(s.runtimeState) ? "status-stopped" : "status-unknown");
       const identity = document.createElement("td"), id = document.createElement("strong"), repo = document.createElement("span");
       id.textContent = s.id.slice(0, 8); repo.className = "cell-secondary"; repo.textContent = s.repository?.fullName ?? "Repository unknown"; identity.append(id, repo); row.append(identity);
       const branch = document.createElement("td"), branchName = document.createElement("strong"), commit = document.createElement("span");
       branchName.textContent = s.workspace?.branch ?? "Branch unknown"; commit.className = "cell-secondary mono"; commit.textContent = s.workspace?.commit ? s.workspace.commit.slice(0, 8) : "—"; branch.append(branchName, commit); row.append(branch);
-      const runtime = addCell(row, s.runtimeState); runtime.firstChild.className = "status-pill " + (s.runtimeState === "running" ? "status-running" : ["stopped", "exited", "created", "removed"].includes(s.runtimeState) ? "status-stopped" : "status-unknown");
       addCell(row, s.resources.cpuQuotaPercent != null
         ? number(s.resources.cpuQuotaPercent) + "% quota"
         : s.resources.cpuHostPercent != null ? number(s.resources.cpuHostPercent) + "% host"
@@ -115,13 +116,15 @@
   async function updateHistory() {
     try {
       const response = await fetch("/dashboard/api/history", { credentials: "same-origin", cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) throw new Error("History request failed");
       const history = await response.json();
       renderHistory("cpu-history", history.host.map((sample) => sample.cpuPercent), 100);
       const memoryValues = history.host.map((sample) => sample.memoryBytes);
       const maximum = Math.max(1, ...memoryValues.filter((value) => Number.isFinite(value)));
       renderHistory("memory-history", memoryValues, maximum);
-    } catch { /* history is supplemental; the current snapshot remains useful */ }
+      text("cpu-history-state", history.host.length < 2 ? "Collecting CPU baseline" : "Last 30 minutes");
+      text("memory-history-state", history.host.length ? "Last 30 minutes" : "Collecting samples");
+    } catch { text("cpu-history-state", "History unavailable"); text("memory-history-state", "History unavailable"); }
   }
 
   async function refresh(force = false) {
@@ -135,6 +138,10 @@
       if (state.selectedId) selectSandbox(state.selectedId);
       $("connection-state").className = "state-pill state-live";
       $("connection-state").textContent = state.snapshot.warnings.length ? "Partial data" : state.snapshot.summary.runningSandboxCount + " running";
+      const statusDetails = $("data-status"); statusDetails.classList.toggle("hidden", !state.snapshot.warnings.length);
+      text("data-status-summary", state.snapshot.warnings.length + " data warning" + (state.snapshot.warnings.length === 1 ? "" : "s"));
+      const warningList = $("data-status-list"); warningList.replaceChildren();
+      for (const warning of state.snapshot.warnings) { const item = document.createElement("li"); item.textContent = warning; warningList.append(item); }
       text("last-updated", "Updated " + state.lastSuccess.toLocaleTimeString() + " · " + state.snapshot.summary.managedSandboxCount + " managed");
     } catch {
       $("connection-state").className = "state-pill state-error"; text("connection-state", "Stale data");
