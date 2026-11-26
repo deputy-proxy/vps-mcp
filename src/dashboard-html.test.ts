@@ -19,3 +19,12 @@ describe("dashboard header", () => {
     expect(DASHBOARD_HTML).toContain(">Sign out</button>");
   });
 });
+
+
+describe("dashboard host utilization meters", () => {
+  it("renders accessible progress bars for CPU, memory and filesystem utilization", () => {
+    expect(DASHBOARD_HTML).toContain('role="progressbar" aria-label="CPU utilization"');
+    expect(DASHBOARD_HTML).toContain('role="progressbar" aria-label="Memory used"');
+    expect(DASHBOARD_HTML).toContain('role="progressbar" aria-label="Data filesystem"');
+  });
+});
