@@ -457,6 +457,13 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
     expect(args).toContain('type=bind,src=' + base + '/cache,dst=/app/bootstrap/cache,rw');
     expect(args).toContain('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    // The dedicated logs bind intentionally overlays the storage bind. Keep
+    // the parent mount first so the nested target exists before Podman applies it.
+    const storageMountIndex = args.indexOf('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
+    const logsMountIndex = args.indexOf('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    expect(storageMountIndex).toBeGreaterThan(-1);
+    expect(logsMountIndex).toBeGreaterThan(storageMountIndex);
+    expect(base + '/storage').not.toBe(base + '/logs');
     expect(args).not.toContain('--privileged');
     expect(args).not.toContain('--device');
     expect(args.join(' ')).not.toContain('/var/lib/vps-mcp/task-workspaces');
