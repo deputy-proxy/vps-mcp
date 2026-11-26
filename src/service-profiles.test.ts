@@ -3,7 +3,7 @@ import { assertServiceProfileDeployable, getServiceProfile, listServiceProfiles 
 
 it("lists the Laravel profile as definition-only with a bounded resource plan", () => {
   const result = listServiceProfiles();
-  expect(result.count).toBe(1);
+  expect(result.count).toBe(2);
   expect(result.profiles[0]).toMatchObject({
     id: "laravel-php",
     version: 1,
@@ -14,6 +14,32 @@ it("lists the Laravel profile as definition-only with a bounded resource plan", 
   });
   expect(result.profiles[0]!.processes.workers).toEqual([]);
   expect(result.profiles[0]!.processes.scheduler).toEqual({ enabled: false, command: null });
+});
+
+it("adds a digest-pinned candidate profile without enabling provisioning", () => {
+  const profile = getServiceProfile("laravel-php", 2);
+  expect(profile).toMatchObject({
+    version: 2,
+    readiness: "definition-only",
+    runtime: {
+      imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:07022280f3b8e1a1be9abed133870af82a85912d78e4300144b1a3e38933a9da",
+      toolchain: { php: "8.4.28", composer: "2.9.2", node: "22.23.0" },
+    },
+    processes: { workers: [], scheduler: { enabled: false, command: null } },
+  });
+  expect(() => assertServiceProfileDeployable(profile)).toThrow("definition-only and cannot be provisioned");
+});
+
+it("documents and validates the intentional storage-then-logs nested mount", () => {
+  const profile = getServiceProfile("laravel-php", 2);
+  expect(profile.mounts.map(({ name, target }) => [name, target])).toEqual([
+    ["storage", "/app/storage"],
+    ["cache", "/app/bootstrap/cache"],
+    ["logs", "/app/storage/logs"],
+  ]);
+  const invalid = structuredClone(profile);
+  invalid.mounts[2]!.target = "/app/bootstrap/cache/logs";
+  expect(() => assertServiceProfileDeployable(invalid)).toThrow("unsupported nested mount");
 });
 
 it("omits definition-only profiles when callers request deployable profiles only", () => {
@@ -28,7 +54,7 @@ it("returns isolated profile copies so callers cannot mutate the catalog", () =>
 
 it("rejects unknown profile IDs and versions", () => {
   expect(() => getServiceProfile("unknown-profile")).toThrow("Unknown project environment profile");
-  expect(() => getServiceProfile("laravel-php", 2)).toThrow("Unknown project environment profile");
+  expect(() => getServiceProfile("laravel-php", 3)).toThrow("Unknown project environment profile");
 });
 
 it("fails closed until an immutable image digest is configured and the profile is deployable", () => {
