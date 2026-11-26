@@ -112,12 +112,36 @@ describe('durable sandbox execution contracts', () => {
     try {
       const result = runRunner(fixture.script, executionId, 30, 4096, ['/bin/sh', '-c', 'printf stdout; printf stderr >&2; exit 7']);
       expect(result.status).toBe(0);
-      expect(await fs.readFile(path.join(fixture.executionRoot, executionId + '.log'), 'utf8')).toBe('stdoutstderr');
+      expect(await fs.readFile(path.join(fixture.executionRoot, executionId + '.log'), 'utf8')).toBe('stdoutstderr\n');
       expect(await fs.readFile(path.join(fixture.executionRoot, executionId + '.status'), 'utf8')).toBe('7\n');
       const identity = (await fs.readFile(path.join(fixture.executionRoot, executionId + '.identity'), 'utf8')).trim().split(/\s+/);
       expect(identity).toHaveLength(3);
       expect(Number(identity[0])).toBeGreaterThan(1);
       expect(identity[0]).toBe(identity[1]);
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts sensitive values before durable execution logs are written', async () => {
+    const fixture = await executionFixture();
+    try {
+      const result = runRunner(fixture.script, executionId, 30, 4096, ['/bin/sh', '-c', "printf 'password=synthetic-password\\nx-api-key: synthetic-api-key\\nAuthorization: Basic synthetic-basic\\n'; printf '%s\\n' '{\"password\":\"json-password\",\"api_key\":\"json-api-key\"}' '-----BEGIN PRIVATE KEY-----' 'synthetic-private-key' '-----END PRIVATE KEY-----'"]);
+      expect(result.status).toBe(0);
+      const log = await fs.readFile(path.join(fixture.executionRoot, executionId + '.log'), 'utf8');
+      expect(log).toContain('password=[REDACTED]');
+      expect(log).toContain('x-api-key: [REDACTED]');
+      expect(log).toContain('Authorization: Basic [REDACTED]');
+      expect(log).not.toContain('synthetic-password');
+      expect(log).not.toContain('synthetic-api-key');
+      expect(log).not.toContain('synthetic-basic');
+      expect(log).toContain('\"password\":\"[REDACTED]\"');
+      expect(log).toContain('\"api_key\":\"[REDACTED]\"');
+      expect(log).toContain('api_key');
+      expect(log).toContain('[REDACTED_PRIVATE_KEY]');
+      expect(log).not.toContain('json-password');
+      expect(log).not.toContain('json-api-key');
+      expect(log).not.toContain('synthetic-private-key');
     } finally {
       await fs.rm(fixture.root, { recursive: true, force: true });
     }
