@@ -27,7 +27,7 @@ if [[ -d "${PROJECT_ENV_ROOT}" ]] && [[ -n "$(find "${PROJECT_ENV_ROOT}" -mindep
   exit 2
 fi
 if [[ -d /var/lib/vps-sandbox/workloads ]]; then
-  project_records="$(find /var/lib/vps-sandbox/workloads -type f -name "record.json" -exec grep -lE '"workloadType"[[:space:]]*:[[:space:]]*"project-service"' {} +)"
+  project_records="$(find /var/lib/vps-sandbox/workloads -type f -name "record.json" -exec sh -c 'grep -lE '"'"'"workloadType"[[:space:]]*:[[:space:]]*"project-service"'"'"' "$@" || test "$?" -eq 1' sh {} +)"
   [[ -z "${project_records}" ]] || { echo "Project-service workload records already exist; refusing to orphan their mount metadata." >&2; exit 2; }
 fi
 
