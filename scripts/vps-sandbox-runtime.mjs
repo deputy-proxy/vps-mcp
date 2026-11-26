@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EXECUTION_POLICY, safeExecutionId, executionCommandMetadata, buildExecutionStartArgs, buildExecutionIdentityCheckScript, buildExecutionCancelScript, createExecutionRecord, executionRetentionActions, assertExecutionLogQuota, executionLogReadWindow } from './executions.mjs';
 import { promisify } from 'node:util';
 import { redactSensitiveText } from './secret-redaction.mjs';
-import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanupEligibility, withDurableLocks, auditSafeValue, diskPressureLevel, operationReplayDecision, orphanContainerEligibility, staleLockIsReapable, staleTemporaryFile, createWorkloadReplayDecision } from './resource-governance.mjs';
+import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanupEligibility, withDurableLocks, auditSafeValue, diskPressureLevel, operationReplayDecision, orphanContainerEligibility, staleLockIsReapable, staleTemporaryFile, createWorkloadReplayDecision, resourceReservationMatches } from './resource-governance.mjs';
 
 const execFileAsync = promisify(execFile);
 const SOCKET = '/run/vps-sandbox-runtime.sock';
@@ -592,6 +592,13 @@ async function reserveProjectResources(request) {
   await assertManagedContainerAccounting(records);
   await assertProjectContainersAccounted(request.repositoryId, records);
   const projectWorkloads = records.filter((item) => item.workloadType === 'project-service' && item.repositoryId === request.repositoryId && item.status !== 'removed');
+  const allReservations = await readReservations();
+  const currentReservation = allReservations.find((item) => item.repositoryId === request.repositoryId && item.status !== 'released');
+  // A repeated reservation request is a no-op even while its project service is
+  // running. This is required for safe retries of project-environment.register.
+  if (resourceReservationMatches(currentReservation, resources)) {
+    return { reservation: currentReservation, unchanged: true, capacity: await resourceStatus() };
+  }
   assert(!projectWorkloads.some((item) => ['creating', 'created', 'starting', 'running', 'stopping', 'removing', 'error', 'unknown'].includes(item.status)), 'Project resource reservation is already consumed by an active project-service workload');
   for (const workload of projectWorkloads) {
     const runtimeId = await resolveRuntimeId(workload);
@@ -599,7 +606,7 @@ async function reserveProjectResources(request) {
     const state = await inspectContainerState(runtimeId);
     assert(['missing', 'exited', 'created', 'configured', 'stopped'].includes(state), 'Cannot resize project reservation while a project-service container is running or in an unknown state');
   }
-  const reservations = (await readReservations()).filter((item) => item.repositoryId !== request.repositoryId);
+  const reservations = allReservations.filter((item) => item.repositoryId !== request.repositoryId);
   const disk = await diskStatus();
   const candidate = { workloadType: 'project-reservation', repositoryId: request.repositoryId, resources: { ...resources, diskMiB } };
   const decision = evaluateResourceRequest({ records, reservations, requested: candidate, budget: resourceBudget(), freeDiskBytes: disk.freeBytes });
