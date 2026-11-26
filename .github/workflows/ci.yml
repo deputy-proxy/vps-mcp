@@ -149,8 +149,8 @@ jobs:
           : "${VPS_PRODUCTION_KNOWN_HOSTS:?Set VPS_PRODUCTION_KNOWN_HOSTS in the production environment}"
           [[ "$VPS_PRODUCTION_PORT" =~ ^[0-9]+$ ]]
           (( VPS_PRODUCTION_PORT >= 1 && VPS_PRODUCTION_PORT <= 65535 ))
-          printf '%s\\n' "$VPS_PRODUCTION_KNOWN_HOSTS" > "$RUNNER_TEMP/vps-known-hosts"
-          printf '%s\\n' "$VPS_PRODUCTION_DEPLOY_KEY" > "$RUNNER_TEMP/vps-deploy-key"
+          printf '%s\n' "$VPS_PRODUCTION_KNOWN_HOSTS" > "$RUNNER_TEMP/vps-known-hosts"
+          printf '%s\n' "$VPS_PRODUCTION_DEPLOY_KEY" > "$RUNNER_TEMP/vps-deploy-key"
           chmod 600 "$RUNNER_TEMP/vps-known-hosts" "$RUNNER_TEMP/vps-deploy-key"
           ssh-keygen -y -f "$RUNNER_TEMP/vps-deploy-key" > /dev/null
       - name: Deploy the exact main commit
@@ -161,15 +161,15 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
-          ssh \\
-            -p "$VPS_PRODUCTION_PORT" \\
-            -i "$RUNNER_TEMP/vps-deploy-key" \\
-            -o BatchMode=yes \\
-            -o IdentitiesOnly=yes \\
-            -o StrictHostKeyChecking=yes \\
-            -o UserKnownHostsFile="$RUNNER_TEMP/vps-known-hosts" \\
-            -o ConnectTimeout=10 \\
-            "vps-mcp-deploy@${VPS_PRODUCTION_HOST}" \\
+          ssh \
+            -p "$VPS_PRODUCTION_PORT" \
+            -i "$RUNNER_TEMP/vps-deploy-key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/vps-known-hosts" \
+            -o ConnectTimeout=10 \
+            "vps-mcp-deploy@${VPS_PRODUCTION_HOST}" \
             "deploy ${DEPLOY_SHA}"
 
   deploy-development:
@@ -196,8 +196,8 @@ jobs:
           : "${VPS_DEVELOPMENT_KNOWN_HOSTS:?Set VPS_DEVELOPMENT_KNOWN_HOSTS in the development environment}"
           [[ "$VPS_DEVELOPMENT_PORT" =~ ^[0-9]+$ ]]
           (( VPS_DEVELOPMENT_PORT >= 1 && VPS_DEVELOPMENT_PORT <= 65535 ))
-          printf '%s\\n' "$VPS_DEVELOPMENT_KNOWN_HOSTS" > "$RUNNER_TEMP/vps-known-hosts"
-          printf '%s\\n' "$VPS_DEVELOPMENT_DEPLOY_KEY" > "$RUNNER_TEMP/vps-deploy-key"
+          printf '%s\n' "$VPS_DEVELOPMENT_KNOWN_HOSTS" > "$RUNNER_TEMP/vps-known-hosts"
+          printf '%s\n' "$VPS_DEVELOPMENT_DEPLOY_KEY" > "$RUNNER_TEMP/vps-deploy-key"
           chmod 600 "$RUNNER_TEMP/vps-known-hosts" "$RUNNER_TEMP/vps-deploy-key"
           ssh-keygen -y -f "$RUNNER_TEMP/vps-deploy-key" > /dev/null
       - name: Deploy the exact development commit
@@ -208,13 +208,13 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
-          ssh \\
-            -p "$VPS_DEVELOPMENT_PORT" \\
-            -i "$RUNNER_TEMP/vps-deploy-key" \\
-            -o BatchMode=yes \\
-            -o IdentitiesOnly=yes \\
-            -o StrictHostKeyChecking=yes \\
-            -o UserKnownHostsFile="$RUNNER_TEMP/vps-known-hosts" \\
-            -o ConnectTimeout=10 \\
-            "vps-mcp-development-deploy@${VPS_DEVELOPMENT_HOST}" \\
+          ssh \
+            -p "$VPS_DEVELOPMENT_PORT" \
+            -i "$RUNNER_TEMP/vps-deploy-key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/vps-known-hosts" \
+            -o ConnectTimeout=10 \
+            "vps-mcp-development-deploy@${VPS_DEVELOPMENT_HOST}" \
             "deploy-development ${DEPLOY_SHA}"
