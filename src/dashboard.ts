@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { listRepositoriesReadOnly, runManagedGit } from "./repositories.js";
 import { listTaskWorkspaces } from "./task-workspaces.js";
 import { createSandboxRuntimeAdapter, type DashboardRuntimeInventory } from "./sandbox-runtime.js";
+import { WorkspaceDiskScanner } from "./workspace-disk.js";
 import {
   calculateCpuUtilization,
   parseCgroupV2Snapshot,
@@ -20,6 +21,7 @@ const HISTORY_MAX_SAMPLES = 121;
 const MAX_SANDBOX_HISTORY = 32;
 const MAX_WORKSPACE_GIT_INSPECTIONS = 32;
 const runtime = createSandboxRuntimeAdapter();
+const workspaceDiskScanner = new WorkspaceDiskScanner();
 
 type CpuTimes = { idle: number; total: number };
 type PreviousCpuSample = { at: number; times: CpuTimes };
@@ -207,41 +209,6 @@ async function hostFilesystem() {
   }
 }
 
-async function measureWorkspaceDisk(worktreePath: string): Promise<{ bytes: number | null; status: 'available' | 'partial' | 'unavailable' }> {
-  const MAX_ENTRIES = 20_000;
-  const MAX_DURATION_MS = 2_000;
-  const startedAt = Date.now();
-  const pending = [worktreePath];
-  let entries = 0;
-  let totalBytes = 0;
-  try {
-    while (pending.length) {
-      if (entries >= MAX_ENTRIES || Date.now() - startedAt > MAX_DURATION_MS) return { bytes: totalBytes, status: 'partial' };
-      const directory = pending.pop()!;
-      const directoryStat = await fs.lstat(directory);
-      if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) continue;
-      const handle = await fs.opendir(directory);
-      for await (const child of handle) {
-        entries += 1;
-        if (entries > MAX_ENTRIES || Date.now() - startedAt > MAX_DURATION_MS) return { bytes: totalBytes, status: 'partial' };
-        if (child.isSymbolicLink()) continue;
-        const target = path.join(directory, child.name);
-        if (child.isDirectory()) {
-          const stat = await fs.lstat(target);
-          if (stat.isDirectory() && !stat.isSymbolicLink()) pending.push(target);
-        } else if (child.isFile()) {
-          const stat = await fs.lstat(target);
-          if (stat.isFile() && !stat.isSymbolicLink() && Number.isSafeInteger(stat.size) && stat.size >= 0) totalBytes += stat.size;
-          if (!Number.isSafeInteger(totalBytes)) return { bytes: null, status: 'unavailable' };
-        }
-      }
-    }
-    return { bytes: totalBytes, status: 'available' };
-  } catch {
-    return { bytes: null, status: 'unavailable' };
-  }
-}
-
 async function inspectWorkspace(workspace: Awaited<ReturnType<typeof listTaskWorkspaces>>[number]) {
   const expectedRoot = path.resolve(config.dataDir, "task-workspaces", "worktrees", workspace.repositoryId);
   const target = path.resolve(workspace.worktreePath);
@@ -255,7 +222,7 @@ async function inspectWorkspace(workspace: Awaited<ReturnType<typeof listTaskWor
       runManagedGit(["-C", target, "branch", "--show-current"], { timeoutMs: 5_000 }),
       runManagedGit(["-C", target, "rev-parse", "--verify", "HEAD"], { timeoutMs: 5_000 }),
       runManagedGit(["-C", target, "status", "--porcelain=v1", "--untracked-files=normal"], { timeoutMs: 5_000 }),
-      measureWorkspaceDisk(target),
+      workspaceDiskScanner.measure(target),
     ]);
     const lines = porcelain.split(/\r?\n/).filter(Boolean);
     return {
@@ -354,6 +321,7 @@ async function collectSnapshot(): Promise<DashboardSnapshot> {
   if ((inventory?.unmatchedContainers.length ?? 0) > 0) {
     warnings.push("One or more managed containers have no matching workload record.");
   }
+  workspaceDiskScanner.retainOnly(workspaceRecordsToInspect.map((workspace) => workspace.worktreePath));
   await mapWithConcurrency(workspaceRecordsToInspect, 4, async (workspace) => {
     workspaceMetadata.set(workspace.id, await inspectWorkspace(workspace));
     return undefined;
@@ -511,4 +479,5 @@ export function clearDashboardCacheForTests(): void {
   hostHistory.clear();
   try { if (existsSync(HISTORY_FILE)) writeFileSync(HISTORY_FILE, "[]", { mode: 0o600 }); } catch { /* test cleanup is best-effort */ }
   sandboxHistory.clear();
+  workspaceDiskScanner.clear();
 }
