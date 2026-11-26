@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
     id: "acme-demo-a1b2c3d4e5", fullName: "acme/demo", status: "cloned",
     persistentEnvironmentPaths: [] as string[],
   },
+  profileReady: false,
 }));
 vi.mock("./config.js", () => ({ config: { get dataDir() { return state.dataDir; } } }));
 vi.mock("./repositories.js", () => ({
@@ -19,10 +20,24 @@ vi.mock("./repositories.js", () => ({
   },
   withRepositoryLock: async (_id: string, operation: (repository: typeof state.repository) => Promise<unknown>) => operation(state.repository),
 }));
+vi.mock("./service-profiles.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./service-profiles.js")>();
+  return {
+    ...actual,
+    getServiceProfile: (profileId: string, version = 1) => {
+      const profile = actual.getServiceProfile(profileId, version);
+      return state.profileReady ? {
+        ...profile,
+        readiness: "deployable",
+        runtime: { ...profile.runtime, imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64) },
+      } : profile;
+    },
+  };
+});
 
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-project-environments-"));
 state.dataDir = path.join(temporaryDirectory, "data");
-const { inspectProjectEnvironment, listProjectEnvironments, registerProjectEnvironment, updateProjectEnvironment } = await import("./project-environments.js");
+const { deprovisionProjectEnvironment, inspectProjectEnvironment, listProjectEnvironments, prepareProjectEnvironmentMountAccess, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } = await import("./project-environments.js");
 
 beforeAll(async () => { await fs.mkdir(state.dataDir, { recursive: true }); });
 afterAll(async () => { await fs.rm(temporaryDirectory, { recursive: true, force: true }); });
@@ -98,4 +113,220 @@ it("enforces terminal deprovisioning and rejects invalid lifecycle transitions",
   await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   await updateProjectEnvironment({ repositoryId: state.repository.id, desiredState: "deprovisioned", observedState: "deprovisioned" });
   await expect(updateProjectEnvironment({ repositoryId: state.repository.id, desiredState: "running" })).rejects.toThrow("Invalid project environment state transition");
+});
+
+it("prepares only the canonical project release and declared writable mount directories", async () => {
+  const previousRepository = state.repository;
+  const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+  state.repository = {
+    id: "acme-project-mounts-aabbccddeeff", fullName: "acme/project-mounts", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const releaseId = "134e5321-b4d7-4d4f-be92-ce56a984adaa";
+    await updateProjectEnvironment({ repositoryId: state.repository.id, candidateReleaseId: releaseId });
+    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
+    await prepareProjectEnvironmentMountAccess(state.repository.id, releaseId);
+    for (const directory of [
+      path.join(environment.storagePath, "app"),
+      path.join(environment.storagePath, "framework", "cache"),
+      path.join(environment.storagePath, "framework", "sessions"),
+      path.join(environment.storagePath, "framework", "views"),
+      environment.cachePath,
+      environment.logsPath,
+    ]) expect((await fs.stat(directory)).isDirectory()).toBe(true);
+    await expect(fs.stat(environment.databasePath)).rejects.toThrow();
+    await expect(fs.stat(environment.backupsPath)).rejects.toThrow();
+  } finally {
+    state.repository = previousRepository;
+    if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+  }
+});
+
+it("provisions from an explicitly deployable digest and retries an interrupted create without changing workload identity", async () => {
+  const previousRepository = state.repository;
+  const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  state.repository = {
+    id: "acme-provision-retry-1234567890", fullName: "acme/provision-retry", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+  state.profileReady = true;
+  const runtime = {
+    pullImage: vi.fn().mockResolvedValue({ pulled: true }),
+    createProjectServiceWorkload: vi.fn()
+      .mockRejectedValueOnce(new Error("temporary runtime interruption"))
+      .mockResolvedValue({ workload: { id: "", status: "created" } }),
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const releaseId = "134e5321-b4d7-4d4f-be92-ce56a984adaa";
+    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
+    await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
+    runtime.createProjectServiceWorkload.mockResolvedValue({ workload: { id: environment.id, status: "created" } });
+    await expect(provisionProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("temporary runtime interruption");
+    const interrupted = (await inspectProjectEnvironment(state.repository.id)).environment;
+    expect(interrupted).toMatchObject({ observedState: "error", workloadIds: [environment.id], workloadReleaseId: releaseId });
+    const retried = await provisionProjectEnvironment(state.repository.id, runtime as never);
+    expect(retried.environment).toMatchObject({ observedState: "provisioned", workloadIds: [environment.id], workloadReleaseId: releaseId });
+    expect(runtime.pullImage).toHaveBeenCalledTimes(2);
+    expect(runtime.pullImage).toHaveBeenCalledWith("ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64));
+    expect(runtime.createProjectServiceWorkload).toHaveBeenCalledTimes(2);
+    expect(runtime.createProjectServiceWorkload).toHaveBeenLastCalledWith({
+      workloadId: environment.id,
+      repositoryId: state.repository.id,
+      releaseId,
+      image: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64),
+      resources: environment.resources,
+      restartPolicy: "unless-stopped",
+      command: ["--nodaemonize"],
+    });
+  } finally {
+    state.profileReady = false;
+    state.repository = previousRepository;
+    if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+  }
+});
+
+it("does not persist a workload identity when the approved image pull fails", async () => {
+  const previousRepository = state.repository;
+  const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  state.repository = {
+    id: "acme-image-pull-retry-1234567890", fullName: "acme/image-pull-retry", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+  state.profileReady = true;
+  const runtime = {
+    pullImage: vi.fn().mockRejectedValueOnce(new Error("registry unavailable")).mockResolvedValue({ pulled: true }),
+    createProjectServiceWorkload: vi.fn().mockResolvedValue({ workload: { id: "", status: "created" } }),
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const releaseId = "134e5321-b4d7-4d4f-be92-ce56a984adaa";
+    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
+    await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
+    await expect(provisionProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("registry unavailable");
+    expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ observedState: "error", workloadIds: [], workloadReleaseId: null });
+    runtime.createProjectServiceWorkload.mockResolvedValue({ workload: { id: environment.id, status: "created" } });
+    const retried = await provisionProjectEnvironment(state.repository.id, runtime as never);
+    expect(retried.environment).toMatchObject({ observedState: "provisioned", workloadIds: [environment.id], workloadReleaseId: releaseId });
+    expect(runtime.createProjectServiceWorkload).toHaveBeenCalledTimes(1);
+  } finally {
+    state.profileReady = false;
+    state.repository = previousRepository;
+    if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+  }
+});
+
+it("retains workload identity and reservation until interrupted start, stop and remove operations reconcile", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-lifecycle-retry-1234567890", fullName: "acme/lifecycle-retry", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  const runtime = {
+    startProjectServiceWorkload: vi.fn().mockRejectedValueOnce(new Error("start interrupted")).mockResolvedValue({ status: "running" }),
+    stopProjectServiceWorkload: vi.fn().mockRejectedValueOnce(new Error("stop interrupted")).mockResolvedValue({ status: "stopped" }),
+    removeProjectServiceWorkload: vi.fn().mockRejectedValueOnce(new Error("remove interrupted")).mockResolvedValue({ status: "removed" }),
+    releaseProjectResources: vi.fn().mockResolvedValue({ released: true }),
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa", workloadIds: [environment.id] });
+    await expect(startProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("start interrupted");
+    expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ desiredState: "running", observedState: "error", workloadIds: [environment.id] });
+    await startProjectEnvironment(state.repository.id, runtime as never);
+    await expect(stopProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("stop interrupted");
+    expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ desiredState: "stopped", observedState: "error", workloadIds: [environment.id] });
+    await stopProjectEnvironment(state.repository.id, runtime as never);
+    await expect(deprovisionProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("remove interrupted");
+    expect(runtime.releaseProjectResources).not.toHaveBeenCalled();
+    expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ desiredState: "deprovisioned", observedState: "error", workloadIds: [environment.id], workloadReleaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa" });
+    const removed = await deprovisionProjectEnvironment(state.repository.id, runtime as never);
+    expect(removed.environment).toMatchObject({ desiredState: "deprovisioned", observedState: "deprovisioned", workloadIds: [], workloadReleaseId: null });
+    expect(runtime.removeProjectServiceWorkload).toHaveBeenCalledTimes(2);
+    expect(runtime.releaseProjectResources).toHaveBeenCalledTimes(1);
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
+it("keeps provisioning blocked while the Laravel profile remains definition-only", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-profile-gate-112233445566", fullName: "acme/profile-gate", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  const runtime = { createProjectServiceWorkload: vi.fn() };
+  try {
+    await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    await expect(provisionProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("definition-only");
+    expect(runtime.createProjectServiceWorkload).not.toHaveBeenCalled();
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
+it("persists project-service start, stop and deprovision transitions around runtime actions", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-lifecycle-778899aabbcc", fullName: "acme/lifecycle", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  const runtime = {
+    startProjectServiceWorkload: vi.fn(async (id: string) => ({ workloadId: id, status: "running" })),
+    stopProjectServiceWorkload: vi.fn(async (id: string) => ({ workloadId: id, status: "stopped" })),
+    removeProjectServiceWorkload: vi.fn(async (input: { workloadId: string; repositoryId: string; releaseId: string }) => ({ workloadId: input.workloadId, status: "removed" })),
+    releaseProjectResources: vi.fn(async (id: string) => ({ repositoryId: id, released: true })),
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa", workloadIds: [environment.id] });
+    const started = await startProjectEnvironment(state.repository.id, runtime as never);
+    expect(started.environment).toMatchObject({ desiredState: "running", observedState: "running" });
+    expect(runtime.startProjectServiceWorkload).toHaveBeenCalledWith(environment.id);
+    const stopped = await stopProjectEnvironment(state.repository.id, runtime as never);
+    expect(stopped.environment).toMatchObject({ desiredState: "stopped", observedState: "stopped" });
+    expect(runtime.stopProjectServiceWorkload).toHaveBeenCalledWith(environment.id);
+    const removed = await deprovisionProjectEnvironment(state.repository.id, runtime as never);
+    expect(removed.environment).toMatchObject({ desiredState: "deprovisioned", observedState: "deprovisioned", workloadIds: [], workloadReleaseId: null });
+    expect(runtime.removeProjectServiceWorkload).toHaveBeenCalledWith({ workloadId: environment.id, repositoryId: state.repository.id, releaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa" });
+    expect(runtime.releaseProjectResources).toHaveBeenCalledWith(state.repository.id);
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
+
+it("selects only existing canonical releases and prevents changing the active release under a workload", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-release-select-1234567890", fullName: "acme/release-select", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const releaseId = "134e5321-b4d7-4d4f-be92-ce56a984adaa";
+    const nextReleaseId = "234e5321-b4d7-4d4f-be92-ce56a984adaa";
+    await expect(setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" })).rejects.toThrow("canonical real directory");
+    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
+    await fs.mkdir(path.join(environment.releasesPath, nextReleaseId), { recursive: true });
+    const candidate = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
+    expect(candidate.environment.candidateReleaseId).toBe(releaseId);
+    const active = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "active" });
+    expect(active.environment).toMatchObject({ activeReleaseId: releaseId, candidateReleaseId: null });
+    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: releaseId, workloadIds: [environment.id] });
+    await expect(setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId: nextReleaseId, channel: "active" }))
+      .rejects.toThrow("Cannot replace the active release while a project-service workload is registered");
+    const staged = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId: nextReleaseId, channel: "candidate" });
+    expect(staged.environment.candidateReleaseId).toBe(nextReleaseId);
+  } finally {
+    state.repository = previousRepository;
+  }
 });
