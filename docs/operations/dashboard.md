@@ -5,8 +5,8 @@ The dashboard is a read-only operator view served by the existing VPS-MCP Expres
 - URL: https://<public-vps-mcp-origin>/dashboard
 - API: /dashboard/api/overview, /dashboard/api/history, and /dashboard/api/sandboxes/:id
 - Refresh: 15 seconds in the browser; current snapshot cache is 15 seconds.
-- History: bounded in-memory host and per-sandbox samples, retained for up to 30 minutes.
-- No database, persistent metrics store, separate agent, or monitoring platform is introduced.
+- History: bounded host history (up to 121 samples) persisted in MCP_DATA_DIR/dashboard-history.json for a rolling 30-minute window; per-sandbox history remains process-local.
+- No database, separate agent, or monitoring platform is introduced.
 
 ## Authentication setup
 
@@ -43,7 +43,7 @@ Every dashboard page, asset and data endpoint requires a valid dashboard session
 
 The runtime integration uses the dedicated dashboard.inventory operation. It reads the durable workload registry, Podman inventory and cgroup v2 counters. It does not use the existing container.list reconciliation path because that operation may update workload records.
 
-The runtime agent must be updated to a version containing dashboard.inventory before live sandbox metrics become available. Until that runtime-agent version is installed, the dashboard reports runtime inventory as unavailable; it does not fall back to a mutating operation.
+The runtime agent must be updated to a version containing dashboard.inventory before live sandbox metrics become available. The runtime agent is installed separately from the Express application; after a release that changes scripts/vps-sandbox-runtime.mjs, run sudo bash scripts/install-vps-sandbox-runtime.sh from the updated release checkout to install the host-side helper. Until that runtime-agent version is installed, the dashboard reports runtime inventory as unavailable; it does not fall back to a mutating operation.
 
 ## Metric definitions and limitations
 
@@ -71,7 +71,7 @@ Unavailable or unsupported metrics remain unavailable. They are never represente
 
 ## Refresh, cache and history
 
-The browser refreshes every 15 seconds and supports manual refresh. The server keeps a disposable 15-second snapshot cache and a bounded rolling history of up to 121 samples per series for a 30-minute window. Concurrent refreshes share one in-flight collection. Git metadata inspection is limited to 32 worktrees per snapshot, prioritizes running/recent workloads, and runs at a maximum concurrency of four. Cache/history state is process-local and is discarded on restart.
+The browser refreshes every 15 seconds and supports manual refresh. The server keeps a disposable 15-second snapshot cache and a bounded rolling history of up to 121 host samples for a 30-minute window. Host CPU and memory samples are atomically persisted to MCP_DATA_DIR/dashboard-history.json and restored on restart; stale or malformed samples are discarded. Per-sandbox history remains process-local. Concurrent refreshes share one in-flight collection. Git metadata inspection is limited to 32 worktrees per snapshot, prioritizes running/recent workloads, and runs at a maximum concurrency of four. Cache/history state is process-local and is discarded on restart.
 
 ## Troubleshooting
 
@@ -79,7 +79,7 @@ The browser refreshes every 15 seconds and supports manual refresh. The server k
 - Sign-in fails: verify the registered callback URL exactly matches DASHBOARD_OIDC_REDIRECT_URI, the client secret is current, PKCE S256 is enabled, and the ID token contains a verified email in DASHBOARD_ALLOWED_EMAILS.
 - Runtime inventory unavailable: verify the installed /usr/local/libexec/vps-mcp/vps-sandbox-runtime.mjs includes dashboard.inventory, and that the runtime socket/service is healthy.
 - CPU or memory unavailable for one sandbox: inspect that container's cgroup v2 path and read permissions under /sys/fs/cgroup; container exit/removal races are expected to produce unavailable metrics for that sample.
-- Network counters unavailable: verify the runtime agent can read /proc/<container-pid>/net/dev for the running task container.
+- Network counters unavailable: verify the runtime agent parses the Podman inspect response and can read /proc/<container-pid>/net/dev for the running task container. After updating scripts/vps-sandbox-runtime.mjs, run sudo bash scripts/install-vps-sandbox-runtime.sh from the updated release checkout to install the host-side runtime agent.
 - Workspace disk is partial: the scan reached its 20,000-entry or two-second safety bound; the displayed value is a lower bound for that sample.
 - Repository or branch unknown: verify the workload's repository/worktree association and that the registered worktree still exists.
 - Disk unavailable: verify that MCP_DATA_DIR exists and the service account can call statfs() on it.

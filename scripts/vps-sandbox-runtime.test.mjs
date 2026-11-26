@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult } from './vps-sandbox-runtime.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -11,6 +11,14 @@ describe('dashboard runtime metric parsers', () => {
     expect(normalizePodmanTimestamp('2026-11-26 00:25:29.41056272 +0100 CET')).toBe('2026-11-25T23:25:29.410Z');
     expect(normalizePodmanTimestamp('0001-01-01 00:00:00 +0000 UTC')).toBe('0001-01-01T00:00:00.000Z');
     expect(normalizePodmanTimestamp('not-a-date')).toBeNull();
+  });
+
+  it('reads Podman inspect output in either object or array form', () => {
+    const state = { Running: true, Pid: 4321, StartedAt: '2026-11-26 00:25:29.41056272 +0100 CET' };
+    const expected = { startedAt: '2026-11-25T23:25:29.410Z', networkPid: 4321 };
+    expect(parsePodmanInspectResult([{ State: state }])).toEqual(expected);
+    expect(parsePodmanInspectResult({ State: state })).toEqual(expected);
+    expect(parsePodmanInspectResult({ State: { Running: false, Pid: 0 } })).toEqual({ startedAt: null, networkPid: null });
   });
 
   it('sums per-network-namespace byte counters and excludes loopback', () => {

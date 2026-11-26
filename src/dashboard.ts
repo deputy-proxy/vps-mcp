@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "./config.js";
@@ -112,6 +113,37 @@ let previousCpuSample: PreviousCpuSample | null = null;
 const previousCgroupSamples = new Map<string, PreviousCgroupSample>();
 const hostHistory = new RollingMetricHistory({ retentionMs: HISTORY_RETENTION_MS, maxSamples: HISTORY_MAX_SAMPLES });
 const sandboxHistory = new Map<string, RollingMetricHistory>();
+const HISTORY_FILE = path.join(config.dataDir, "dashboard-history.json");
+
+function restoreHostHistory(): void {
+  try {
+    if (!existsSync(HISTORY_FILE)) return;
+    const contents = readFileSync(HISTORY_FILE);
+    if (contents.byteLength > 64 * 1024) return;
+    const parsed = JSON.parse(contents.toString("utf8")) as unknown;
+    if (!Array.isArray(parsed)) return;
+    const now = Date.now();
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const sample = item as { sampledAt?: unknown; cpuPercent?: unknown; memoryBytes?: unknown };
+      if (!Number.isSafeInteger(sample.sampledAt) || Number(sample.sampledAt) > now || Number(sample.sampledAt) < now - HISTORY_RETENTION_MS) continue;
+      const cpuPercent = sample.cpuPercent === null || (typeof sample.cpuPercent === "number" && Number.isFinite(sample.cpuPercent) && sample.cpuPercent >= 0 && sample.cpuPercent <= 100) ? sample.cpuPercent as number | null : null;
+      const memoryBytes = typeof sample.memoryBytes === "number" && Number.isSafeInteger(sample.memoryBytes) && sample.memoryBytes >= 0 ? sample.memoryBytes : null;
+      hostHistory.add({ sampledAt: Number(sample.sampledAt), cpuPercent, memoryBytes });
+    }
+  } catch { /* Invalid history starts a fresh bounded window. */ }
+}
+
+function persistHostHistory(): void {
+  try {
+    mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+    const temporary = HISTORY_FILE + ".tmp";
+    writeFileSync(temporary, JSON.stringify(hostHistory.list()), { mode: 0o600 });
+    renameSync(temporary, HISTORY_FILE);
+  } catch { /* Persistence is best-effort; current metrics remain available. */ }
+}
+
+restoreHostHistory();
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -384,6 +416,7 @@ async function collectSnapshot(): Promise<DashboardSnapshot> {
   const availableMemoryBytes = os.freemem();
   const usedMemoryBytes = Math.max(0, totalMemoryBytes - availableMemoryBytes);
   hostHistory.add({ sampledAt, cpuPercent, memoryBytes: usedMemoryBytes });
+  persistHostHistory();
 
   for (const sandbox of sandboxes) {
     let history = sandboxHistory.get(sandbox.id);
@@ -476,5 +509,6 @@ export function clearDashboardCacheForTests(): void {
   previousCpuSample = null;
   previousCgroupSamples.clear();
   hostHistory.clear();
+  try { if (existsSync(HISTORY_FILE)) writeFileSync(HISTORY_FILE, "[]", { mode: 0o600 }); } catch { /* test cleanup is best-effort */ }
   sandboxHistory.clear();
 }
