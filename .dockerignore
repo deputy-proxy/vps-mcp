@@ -1,0 +1,13 @@
+.git/
+.github/
+node_modules/
+dist/
+coverage/
+storage/
+tmp/
+.env
+.env.*
+*.pem
+*.key
+secrets/
+*.log
