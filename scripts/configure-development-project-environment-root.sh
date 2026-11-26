@@ -30,7 +30,12 @@ if [[ -d /var/lib/vps-sandbox/workloads ]]; then
   project_records=""
   while IFS= read -r -d '' record; do
     if grep -qE '"workloadType"[[:space:]]*:[[:space:]]*"project-service"' "${record}"; then
-      project_records+="${record}"
+      project_records+="${record}"$'\n'
+    else
+      grep_status=$?
+      [[ "${grep_status}" -eq 1 ]] || exit "${grep_status}"
+    fi
+  done < <(find /var/lib/vps-sandbox/workloads -type f -name "record.json" -print0)
   [[ -z "${project_records}" ]] || { echo "Project-service workload records already exist; refusing to orphan their mount metadata." >&2; exit 2; }
 fi
 
