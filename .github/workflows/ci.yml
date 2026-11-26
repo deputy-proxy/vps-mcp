@@ -116,6 +116,26 @@ jobs:
             org.opencontainers.image.title=CR8OR Laravel PHP runtime
           sbom: true
           provenance: mode=max
+      - name: Smoke-test the exact published image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          IMAGE="ghcr.io/deputy-proxy/vps-mcp-laravel-php@$IMAGE_DIGEST"
+          docker pull "$IMAGE"
+          runtime/laravel-php/smoke-test.sh "$IMAGE"
+      - name: Scan the exact published image digest
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        with:
+          image-ref: ghcr.io/deputy-proxy/vps-mcp-laravel-php@${{ steps.build.outputs.digest }}
+          version: v0.76.2
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
       - name: Record immutable image reference
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
