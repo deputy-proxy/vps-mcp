@@ -102,14 +102,21 @@
     ];
     for (const [label, value, mono] of values) content.append(detailItem(label, value, mono));
   }
-  function renderHistory(id, values, maximum) {
+  function renderHistory(id, samples, metric, maximum, formatTooltip) {
     const chart = $(id); chart.replaceChildren();
-    for (const value of values.slice(-60)) {
-      const bar = document.createElement("span");
+    for (const sample of samples.slice(-60)) {
+      const value = sample[metric];
       const valid = value !== null && value !== undefined && Number.isFinite(value);
-      const level = valid ? Math.max(2, Math.min(100, Math.round((value / Math.max(1, maximum)) * 100))) : 0;
-      bar.className = valid ? "chart-bar chart-bar-v" + level : "chart-bar chart-bar-unavailable chart-bar-v0";
-      bar.title = valid ? number(value) : "Metric unavailable";
+      const level = valid ? Math.max(2, Math.min(100, (value / Math.max(1, maximum)) * 100)) : 0;
+      const bar = document.createElement("span");
+      bar.className = valid ? "chart-bar" : "chart-bar chart-bar-unavailable";
+      bar.style.height = (valid ? level : 2) + "%";
+      const timestamp = Number.isFinite(sample.sampledAt)
+        ? new Date(sample.sampledAt).toLocaleString()
+        : "Time unavailable";
+      const tooltip = valid ? formatTooltip(value) + " · " + timestamp : "Metric unavailable · " + timestamp;
+      bar.title = tooltip;
+      bar.setAttribute("aria-label", tooltip);
       chart.append(bar);
     }
   }
@@ -118,10 +125,10 @@
       const response = await fetch("/dashboard/api/history", { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) throw new Error("History request failed");
       const history = await response.json();
-      renderHistory("cpu-history", history.host.map((sample) => sample.cpuPercent), 100);
       const memoryValues = history.host.map((sample) => sample.memoryBytes);
       const maximum = Math.max(1, ...memoryValues.filter((value) => Number.isFinite(value)));
-      renderHistory("memory-history", memoryValues, maximum);
+      renderHistory("cpu-history", history.host, "cpuPercent", 100, (value) => number(value) + "% CPU");
+      renderHistory("memory-history", history.host, "memoryBytes", maximum, (value) => bytes(value) + " memory used");
       text("cpu-history-state", history.host.length < 2 ? "Collecting CPU baseline" : "Last 30 minutes");
       text("memory-history-state", history.host.length ? "Last 30 minutes" : "Collecting samples");
     } catch { text("cpu-history-state", "History unavailable"); text("memory-history-state", "History unavailable"); }
