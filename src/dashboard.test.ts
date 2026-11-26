@@ -44,7 +44,7 @@ const workload = {
   createdAt: "2026-11-25T20:00:00.000Z",
   updatedAt: "2026-11-25T20:00:00.000Z",
   runtimeCreatedAt: "2026-11-25T20:00:00.000Z",
-  runtimeStartedAt: "2026-11-25T20:30:00.000Z",
+  runtimeStartedAt: new Date(Date.now() - 60_000).toISOString(),
   networkRxBytes: 4096,
   networkTxBytes: 8192,
   networkStatus: "available" as const,
