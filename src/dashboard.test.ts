@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -115,6 +115,9 @@ describe("dashboard snapshot aggregation", () => {
     expect(snapshot.sandboxes[0]?.uptimeSeconds).toBeGreaterThan(0);
     expect(snapshot.sandboxes[0]?.uptimeSeconds).toBeLessThan(5 * 60 * 60);
     expect(getDashboardHistory().host).toHaveLength(1);
+    const persistedHistory = JSON.parse(readFileSync(path.join(dashboardTestDataDir, "dashboard-history.json"), "utf8"));
+    expect(persistedHistory).toHaveLength(1);
+    expect(persistedHistory[0].memoryBytes).toBeGreaterThan(0);
   });
 
   it("reads actual branch, commit and dirty state from a bounded managed worktree", async () => {
