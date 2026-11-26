@@ -1213,6 +1213,7 @@ async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RES
   const { stdout, stderr } = await execFileAsync(PODMAN, ['--cgroup-manager=cgroupfs', ...args], {
     encoding: 'utf8', timeout, maxBuffer,
     env: buildPodmanEnvironment(),
+  });
   return { stdout: stdout ?? '', stderr: stderr ?? '' };
 }
 export function assertWorkloadTypeMatch(record, expectedWorkloadType) {
