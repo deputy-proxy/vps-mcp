@@ -143,15 +143,22 @@
       state.snapshot = await response.json(); state.lastSuccess = new Date(); updateHost(state.snapshot.host); renderRows();
       await updateHistory();
       if (state.selectedId) selectSandbox(state.selectedId);
-      $("connection-state").className = "state-pill state-live";
-      $("connection-state").textContent = state.snapshot.warnings.length ? "Partial data" : state.snapshot.summary.runningSandboxCount + " running";
+      const partial = state.snapshot.warnings.length > 0;
+      const indicator = $("connection-state");
+      indicator.classList.toggle("hidden", !partial);
+      indicator.classList.remove("partial-indicator-error");
+      indicator.title = partial ? "Partial data" : "";
+      indicator.setAttribute("aria-label", partial ? "Partial data" : "Complete data");
       const statusDetails = $("data-status"); statusDetails.classList.toggle("hidden", !state.snapshot.warnings.length);
-      text("data-status-summary", state.snapshot.warnings.length + " data warning" + (state.snapshot.warnings.length === 1 ? "" : "s"));
+      $("data-status").setAttribute("aria-label", "Data warnings: " + state.snapshot.warnings.length);
       const warningList = $("data-status-list"); warningList.replaceChildren();
       for (const warning of state.snapshot.warnings) { const item = document.createElement("li"); item.textContent = warning; warningList.append(item); }
       text("last-updated", "Updated " + state.lastSuccess.toLocaleTimeString() + " · " + state.snapshot.summary.managedSandboxCount + " managed");
     } catch {
-      $("connection-state").className = "state-pill state-error"; text("connection-state", "Stale data");
+      $("connection-state").classList.remove("hidden");
+      $("connection-state").classList.add("partial-indicator-error");
+      $("connection-state").title = "Data unavailable";
+      $("connection-state").setAttribute("aria-label", "Data unavailable");
       text("last-updated", state.lastSuccess ? "Last successful update " + state.lastSuccess.toLocaleTimeString() : "Dashboard data unavailable");
     } finally { state.busy = false; $("refresh-button").disabled = false; }
   }
