@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+
+describe('Podman subprocess environment', () => {
+  it('preserves the runtime service temporary directory for image pulls', () => {
+    expect(buildPodmanEnvironment({ TMPDIR: '/var/lib/vps-sandbox/tmp' }).TMPDIR).toBe('/var/lib/vps-sandbox/tmp');
+  });
+
+  it('falls back to Podman default temporary directory when TMPDIR is unset', () => {
+    expect(buildPodmanEnvironment({}).TMPDIR).toBe('/var/tmp');
+  });
+});
 
 
 describe('project-service boot recovery policy', () => {
