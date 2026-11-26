@@ -25,7 +25,9 @@ ProtectHome=read-only
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=no
-RestrictSUIDSGID=yes
+# Podman must preserve setuid/setgid metadata while extracting rootless image layers.
+# The runtime runs as vps-sandbox; workload containers remain rootless and separately confined.
+RestrictSUIDSGID=no
 PrivateTmp=yes
 PrivateDevices=no
 DevicePolicy=closed
