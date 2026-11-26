@@ -11,6 +11,10 @@ process.env.MCP_AUTH_TOKEN = token;
 process.env.MCP_CORS_ORIGINS = "https://client.example";
 process.env.MCP_DATA_DIR = temporaryDirectory;
 process.env.MCP_ALLOWED_ROOTS = temporaryDirectory;
+delete process.env.DASHBOARD_OIDC_CLIENT_ID;
+delete process.env.DASHBOARD_OIDC_CLIENT_SECRET;
+delete process.env.DASHBOARD_OIDC_REDIRECT_URI;
+delete process.env.DASHBOARD_ALLOWED_EMAILS;
 
 const { createHttpServer } = await import("./server.js");
 const { VERSION } = await import("./version.js");

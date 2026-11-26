@@ -635,11 +635,66 @@ function parseContainerLabels(value) {
   return labels;
 }
 
-async function listManagedContainers() {
+export function normalizePodmanTimestamp(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const raw = value.trim();
+  const goTimestamp = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(?:\.(\d+))? ([+-]\d{2})(\d{2}) \S+$/.exec(raw);
+  const candidate = goTimestamp
+    ? goTimestamp[1] + 'T' + goTimestamp[2] + '.' + (goTimestamp[3] ?? '0').padEnd(3, '0').slice(0, 9) + goTimestamp[4] + ':' + goTimestamp[5]
+    : raw;
+  const parsed = Date.parse(candidate);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+export function parseNetworkNamespaceCounters(contents) {
+  if (typeof contents !== 'string' || contents.length > 64 * 1024) return null;
+  let rx = 0;
+  let tx = 0;
+  let interfaces = 0;
+  for (const line of contents.split(/\r?\n/).slice(2)) {
+    const separator = line.indexOf(':');
+    if (separator < 0) continue;
+    const name = line.slice(0, separator).trim();
+    if (!name || name === 'lo') continue;
+    const counters = line.slice(separator + 1).trim().split(/\s+/);
+    if (counters.length < 9 || !/^\d+$/.test(counters[0]) || !/^\d+$/.test(counters[8])) continue;
+    const received = Number(counters[0]);
+    const transmitted = Number(counters[8]);
+    if (!Number.isSafeInteger(received) || !Number.isSafeInteger(transmitted)) return null;
+    rx += received;
+    tx += transmitted;
+    interfaces += 1;
+  }
+  return interfaces > 0 && Number.isSafeInteger(rx) && Number.isSafeInteger(tx) ? { rxBytes: rx, txBytes: tx } : null;
+}
+
+async function inspectContainerRuntime(containerId) {
+  try {
+    const result = await runPodman(['inspect', '--format', 'json', containerId], 10_000, 256 * 1024);
+    const parsed = JSON.parse(result.stdout || '[]');
+    const state = Array.isArray(parsed) ? parsed[0]?.State : null;
+    if (!state || typeof state !== 'object') return { startedAt: null, network: null };
+    const pid = Number(state.Pid);
+    let network = null;
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      try {
+        network = parseNetworkNamespaceCounters(await fs.readFile('/proc/' + pid + '/net/dev', 'utf8'));
+      } catch { /* network namespace counters are optional when procfs denies access */ }
+    }
+    return {
+      startedAt: state.Running === true ? normalizePodmanTimestamp(state.StartedAt) : null,
+      network,
+    };
+  } catch {
+    return { startedAt: null, network: null };
+  }
+}
+
+async function listManagedContainers({ includeMetrics = false } = {}) {
   const result = await runPodman(['ps', '--all', '--filter', 'label=io.cr8or.vps-mcp.workload', '--format', 'json'], 15_000, 1024 * 1024);
   const parsed = JSON.parse(result.stdout || '[]');
   assert(Array.isArray(parsed), 'Podman container inventory returned an invalid response');
-  return parsed.map((item) => {
+  const containers = parsed.map((item) => {
     const labels = parseContainerLabels(item.Labels ?? item.Label ?? {});
     const state = String(item.State ?? item.Status ?? 'unknown').toLowerCase();
     return {
@@ -652,6 +707,22 @@ async function listManagedContainers() {
       createdAt: typeof (item.CreatedAt ?? item.Created) === 'number' ? new Date(Number(item.CreatedAt ?? item.Created) * 1000).toISOString() : String(item.CreatedAt ?? item.Created ?? ''),
     };
   }).filter((item) => /^[a-f0-9]{12,64}$/.test(item.containerId));
+  if (!includeMetrics) return containers;
+  const metricContainers = containers.filter((container) => container.workloadType === 'task' && container.state === 'running');
+  const metrics = new Map();
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(4, metricContainers.length) }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= metricContainers.length) return;
+      const container = metricContainers[index];
+      metrics.set(container.containerId, await inspectContainerRuntime(container.containerId));
+    }
+  }));
+  return containers.map((container) => ({
+    ...container,
+    ...(metrics.get(container.containerId) ?? { startedAt: null, network: null }),
+  }));
 }
 
 async function assertManagedContainerAccounting(records) {
@@ -1908,7 +1979,7 @@ async function readCgroupMetricFiles(runtimeId) {
 }
 
 async function dashboardInventory() {
-  const [records, containers] = await Promise.all([readWorkloadRecords({ ensureDirectory: false }), listManagedContainers()]);
+  const [records, containers] = await Promise.all([readWorkloadRecords({ ensureDirectory: false }), listManagedContainers({ includeMetrics: true })]);
   const containerByWorkload = new Map(containers.filter((item) => item.workloadId).map((item) => [item.workloadId, item]));
   const taskRecords = records.filter((record) => record.workloadType === 'task' && record.status !== 'removed');
   const recordIds = new Set(taskRecords.map((record) => record.id));
@@ -1919,12 +1990,20 @@ async function dashboardInventory() {
       const runtimeId = container?.containerId ?? null;
       let cgroup = null;
       let metricsStatus = 'unavailable';
+      let runtimeStartedAt = null;
+      let networkRxBytes = null;
+      let networkTxBytes = null;
+      let networkStatus = 'unavailable';
       if (runtimeState === 'running' && runtimeId) {
         try {
           const identityMatches = await verifyRuntimeContainerIdentity(record, runtimeId);
           if (identityMatches) {
             cgroup = await readCgroupMetricFiles(runtimeId);
             metricsStatus = cgroup ? 'available' : 'unavailable';
+            runtimeStartedAt = container?.startedAt ?? null;
+            networkRxBytes = container?.network?.rxBytes ?? null;
+            networkTxBytes = container?.network?.txBytes ?? null;
+            networkStatus = container?.network ? 'available' : 'unavailable';
           }
         } catch {
           metricsStatus = 'unavailable';
@@ -1944,6 +2023,10 @@ async function dashboardInventory() {
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
         runtimeCreatedAt: container?.createdAt ?? null,
+        runtimeStartedAt,
+        networkRxBytes,
+        networkTxBytes,
+        networkStatus,
         cgroup,
         metricsStatus,
       };
