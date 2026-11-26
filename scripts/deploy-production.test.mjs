@@ -21,6 +21,12 @@ function fixture(overrides = {}) {
   mkdirSync(repository);
   mkdirSync(path.join(repository, "node_modules"));
   mkdirSync(path.join(repository, "dist"));
+  mkdirSync(path.join(repository, "scripts"));
+  const runtimeHelperDirectory = path.join(directory, "libexec");
+  mkdirSync(runtimeHelperDirectory);
+  for (const name of ["vps-sandbox-runtime.mjs", "executions.mjs", "secret-redaction.mjs", "resource-governance.mjs", "vps-sandbox-quota-helper.mjs", "vps-sandbox-quota-broker.mjs"]) {
+    writeFileSync(path.join(repository, "scripts", name), `// ${name}\n`);
+  }
   const state = { currentSha: previousSha, remoteSha: releaseSha, origin: remoteUrl, dirty: "", branch: "main", buildFailures: 0, healthStatus: "401", healthFailures: 0, ancestryFailure: false, calls: [] };
   const run = vi.fn((command, args) => {
     state.calls.push([command, ...args]);
@@ -54,6 +60,7 @@ function fixture(overrides = {}) {
     deployer: createProductionDeployer({
       run,
       repository,
+      runtimeHelperDirectory,
       lockPath: path.join(directory, "deploy.lock"),
       sleep: async () => {},
       healthAttempts: 1,
@@ -91,7 +98,22 @@ describe("production deployment runner", () => {
     expect(gitCalls.length).toBeGreaterThan(0);
     expect(gitCalls.every(([, args]) => args.includes(`safe.directory=${path.resolve(repository)}`))).toBe(true);
     expect(run.mock.calls.filter(([command]) => command.endsWith("chown")).length).toBe(2);
+    const helperInstalls = run.mock.calls.filter(([command]) => command.endsWith("install"));
+    expect(helperInstalls).toHaveLength(6);
+    expect(helperInstalls.some(([, args]) => args.some((value) => value.endsWith("/secret-redaction.mjs")))).toBe(true);
+    for (const service of ["vps-sandbox-quota-broker.service", "vps-sandbox-runtime.service"]) {
+      expect(run.mock.calls.some(([command, args]) => command.endsWith("systemctl") && args[0] === "restart" && args[1] === service)).toBe(true);
+      expect(run.mock.calls.some(([command, args]) => command.endsWith("systemctl") && args[0] === "is-active" && args[2] === service)).toBe(true);
+    }
     expect(run.mock.calls.some(([command, args]) => command.endsWith("systemctl") && args[0] === "is-active")).toBe(true);
+  });
+
+  it("refuses a missing runtime helper source before advancing the production checkout", async () => {
+    const { deployer, state, repository } = fixture();
+    rmSync(path.join(repository, "scripts", "secret-redaction.mjs"));
+    await expect(deployer.deploy(releaseSha)).rejects.toThrow(/secret-redaction.mjs/);
+    expect(state.currentSha).toBe(previousSha);
+    expect(state.calls.some(([, ...args]) => args.includes("fetch"))).toBe(false);
   });
 
   it("skips a stale workflow SHA without changing the checkout", async () => {
@@ -155,7 +177,11 @@ describe("production deployment runner", () => {
     git(seed, ["config", "user.name", "Deployment test"]);
     git(seed, ["config", "user.email", "deployment-test@example.invalid"]);
     writeFileSync(path.join(seed, "version.txt"), "one\n");
-    git(seed, ["add", "version.txt"]);
+    mkdirSync(path.join(seed, "scripts"));
+    for (const name of ["vps-sandbox-runtime.mjs", "executions.mjs", "secret-redaction.mjs", "resource-governance.mjs", "vps-sandbox-quota-helper.mjs", "vps-sandbox-quota-broker.mjs"]) {
+      writeFileSync(path.join(seed, "scripts", name), `// ${name}\n`);
+    }
+    git(seed, ["add", "version.txt", "scripts"]);
     git(seed, ["commit", "-m", "initial"]);
     git(seed, ["push", "-u", "origin", "main"]);
     git(directory, ["clone", remote, production]);
@@ -165,6 +191,8 @@ describe("production deployment runner", () => {
     git(seed, ["commit", "-m", "release"]);
     git(seed, ["push", "origin", "main"]);
     const newSha = git(seed, ["rev-parse", "HEAD"]);
+    const runtimeHelperDirectory = path.join(directory, "libexec");
+    mkdirSync(runtimeHelperDirectory);
     const gitInvocations = [];
     const run = (command, args, options = {}) => {
       if (command === "/usr/bin/git") {
@@ -175,7 +203,7 @@ describe("production deployment runner", () => {
       if (command === "/usr/bin/curl") return { status: 0, stdout: "401", stderr: "" };
       return { status: 0, stdout: "", stderr: "" };
     };
-    const deployer = createProductionDeployer({ run, repository: production, lockPath: path.join(directory, "deploy.lock"), remoteUrl: remote, sleep: async () => {}, healthAttempts: 1 });
+    const deployer = createProductionDeployer({ run, repository: production, runtimeHelperDirectory, lockPath: path.join(directory, "deploy.lock"), remoteUrl: remote, sleep: async () => {}, healthAttempts: 1 });
     await expect(deployer.deploy(newSha)).resolves.toMatchObject({ status: "deployed", commit: newSha, previousCommit: oldSha });
     expect(git(production, ["rev-parse", "HEAD"])).toBe(newSha);
     expect(git(production, ["show", "HEAD:version.txt"])).toBe("two");

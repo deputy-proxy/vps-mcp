@@ -7,6 +7,19 @@ const DEFAULT_LOCK = "/var/lib/vps-mcp/deploy-production.lock";
 const DEFAULT_REMOTE = "https://github.com/deputy-proxy/vps-mcp.git";
 const DEFAULT_HEALTH_URL = "http://127.0.0.1:3000/mcp";
 const DEFAULT_SERVICE = "vps-mcp.service";
+const DEFAULT_RUNTIME_HELPER_DIRECTORY = "/usr/local/libexec/vps-mcp";
+const RUNTIME_HELPER_FILES = Object.freeze([
+  ["vps-sandbox-runtime.mjs", "0755"],
+  ["executions.mjs", "0644"],
+  ["secret-redaction.mjs", "0644"],
+  ["resource-governance.mjs", "0644"],
+  ["vps-sandbox-quota-helper.mjs", "0755"],
+  ["vps-sandbox-quota-broker.mjs", "0755"],
+]);
+const RUNTIME_SERVICES = Object.freeze([
+  "vps-sandbox-quota-broker.service",
+  "vps-sandbox-runtime.service",
+]);
 export const SAFE_DEPLOYMENT_ENV = Object.freeze({
   PATH: "/usr/local/bin:/usr/bin:/bin",
   HOME: "/var/lib/vps-mcp",
@@ -45,6 +58,7 @@ export function createProductionDeployer({
   remoteUrl = DEFAULT_REMOTE,
   healthUrl = DEFAULT_HEALTH_URL,
   serviceName = DEFAULT_SERVICE,
+  runtimeHelperDirectory = DEFAULT_RUNTIME_HELPER_DIRECTORY,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   healthAttempts = 15,
   healthIntervalMs = 2_000,
@@ -77,6 +91,36 @@ export function createProductionDeployer({
 
   function validateBuildDirectories() {
     for (const name of ["node_modules", "dist"]) getBuildDirectory(name);
+  }
+
+  function validateRuntimeHelperInstallation() {
+    const directory = lstatSync(runtimeHelperDirectory);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) {
+      throw new Error(`Refusing non-directory or symlink runtime helper path: ${runtimeHelperDirectory}`);
+    }
+    for (const [name] of RUNTIME_HELPER_FILES) {
+      const source = path.join(repository, "scripts", name);
+      const stats = lstatSync(source);
+      if (!stats.isFile() || stats.isSymbolicLink()) {
+        throw new Error(`Refusing non-regular or symlink runtime helper source: ${source}`);
+      }
+    }
+  }
+
+  function installRuntimeHelpers() {
+    for (const [name, mode] of RUNTIME_HELPER_FILES) {
+      const source = path.join(repository, "scripts", name);
+      const destination = path.join(runtimeHelperDirectory, name);
+      requireSuccess(run("/usr/bin/install", ["-o", "root", "-g", "root", "-m", mode, source, destination]),
+        `Install runtime helper ${name}`);
+    }
+  }
+
+  function restartRuntimeServices() {
+    for (const service of RUNTIME_SERVICES) {
+      requireSuccess(systemctl(["restart", service]), `Restart ${service}`);
+      requireSuccess(systemctl(["is-active", "--quiet", service]), `Verify ${service} status`);
+    }
   }
 
   function prepareBuildDirectories() {
@@ -113,6 +157,8 @@ export function createProductionDeployer({
       prepareBuildDirectories();
       requireSuccess(npm(["ci"]), "Rollback dependency installation");
       requireSuccess(npm(["run", "build"]), "Rollback build");
+      installRuntimeHelpers();
+      restartRuntimeServices();
       requireSuccess(systemctl(["restart", serviceName]), "Rollback service restart");
       requireSuccess(systemctl(["is-active", "--quiet", serviceName]), "Rollback service status");
       await waitForHealth();
@@ -140,6 +186,7 @@ export function createProductionDeployer({
       const dirty = requireSuccess(git(["status", "--porcelain", "--untracked-files=all"]), "Check production checkout");
       if (dirty) throw new Error("Production checkout is dirty; refusing to overwrite local changes");
       validateBuildDirectories();
+      validateRuntimeHelperInstallation();
       previousSha = requireSuccess(git(["rev-parse", "HEAD"]), "Read current production commit");
 
       requireSuccess(git(["fetch", "--prune", "origin", "main"], { timeoutMs: 120_000 }), "Fetch main");
@@ -158,6 +205,8 @@ export function createProductionDeployer({
         prepareBuildDirectories();
         requireSuccess(npm(["ci"]), "Install production dependencies");
         requireSuccess(npm(["run", "build"]), "Build production application");
+        installRuntimeHelpers();
+        restartRuntimeServices();
         requireSuccess(systemctl(["restart", serviceName]), "Restart production service");
         requireSuccess(systemctl(["is-active", "--quiet", serviceName]), "Verify production service status");
         await waitForHealth();
