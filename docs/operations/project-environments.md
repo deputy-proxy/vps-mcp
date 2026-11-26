@@ -13,7 +13,7 @@
 
 1. Register and validate the repository; fetch its bare cache.
 2. Select an approved, versioned service profile.
-3. Reserve project resources with `resource.reserve`.
+3. Register the environment. Registration automatically reserves its profile resource vector through `resource.reserve`; inspect the returned reservation and capacity decision. If admission fails, the metadata record remains visible with a reservation error. Retry after capacity is freed, or submit a smaller bounded resource vector; the stored plan can be adjusted only after a capacity/disk admission failure and before any project service is active.
 4. Provision isolated project directories and development-only database/cache credentials.
 5. Resolve the current remote `development` commit and prepare an immutable candidate release.
 6. Build and validate the candidate release without changing the active release.
@@ -38,6 +38,6 @@ Record the disposable repository identity, development commit SHA, profile versi
 
 Use project-environment.profile.list to inspect available versioned service profiles. The initial laravel-php version 1 profile describes PHP 8.4, Composer 2, Node 22, PHP-FPM, a queue worker, the scheduler, MySQL 8, optional Redis 7, health checks, project-owned mounts, resource defaults and backup scope.
 
-This profile is currently definition-only. It has no approved immutable runtime image digest, so it is not eligible for provisioning. project-environment.register validates that the requested profile ID and version exist and derives default resource values from the profile. Registration remains metadata-only and does not reserve capacity, build images, run migrations, create databases or start containers.
+This profile is currently definition-only. It has no approved immutable runtime image digest, so it is not eligible for provisioning. project-environment.register validates the profile ID and version, derives default resource values from the profile, and reserves those resources through the #36 resource-governance API. Registration does not build images, run migrations, create databases or start containers. Repeated registration is safe: an identical reservation is a no-op, including while its project service is running. A changed reservation is rejected while project-service workloads are active.
 
 Migrations are disabled by default and seeders are disabled with an empty allowlist. Do not enable either until the deployment path proves that the target database is the repository's isolated development database. Production credentials and endpoints must never be available to profile hooks.

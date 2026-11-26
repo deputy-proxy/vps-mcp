@@ -69,6 +69,31 @@ it("persists lifecycle observations and health without changing the source branc
 });
 
 
+it("allows a bounded resource-plan retry after capacity admission fails", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-capacity-retry-b2c3d4e5f6", fullName: "acme/capacity-retry", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    await updateProjectEnvironment({
+      repositoryId: state.repository.id,
+      lastError: "Resource reservation failed: SANDBOX_CAPACITY_EXCEEDED: global memory reservation budget would be exceeded",
+    });
+    const retried = await registerProjectEnvironment({
+      repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 },
+    });
+    expect(retried.created).toBe(false);
+    expect(retried.resourcesUpdated).toBe(true);
+    expect(retried.environment.id).toBe(first.environment.id);
+    expect(retried.environment.resources).toEqual({ cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 });
+    expect(retried.environment.lastError).toBeNull();
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
 it("enforces terminal deprovisioning and rejects invalid lifecycle transitions", async () => {
   await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   await updateProjectEnvironment({ repositoryId: state.repository.id, desiredState: "deprovisioned", observedState: "deprovisioned" });
