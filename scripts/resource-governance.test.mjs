@@ -132,6 +132,10 @@ describe('resource governance', () => {
     expect(auditSafeValue('Bearer super-secret-token')).toContain('Bearer [REDACTED]');
     expect(auditSafeValue('github_pat_123456789012345678901234567890')).toContain('[REDACTED_TOKEN]');
     expect(auditSafeValue('-----BEGIN PRIVATE KEY-----secret-----END PRIVATE KEY-----')).toContain('[REDACTED_PRIVATE_KEY]');
+    const structured = auditSafeValue(JSON.stringify({ password: 'synthetic-password', 'x-api-key': 'synthetic-api-key' }));
+    expect(structured).toContain('\"password\":\"[REDACTED]\"');
+    expect(structured).toContain('\"x-api-key\":\"[REDACTED]\"');
+    expect(structured).not.toContain('synthetic-');
   });
 
   it('reclaims locks whose owner process has exited', async () => {

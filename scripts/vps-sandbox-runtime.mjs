@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { EXECUTION_POLICY, safeExecutionId, executionCommandMetadata, buildExecutionStartArgs, buildExecutionIdentityCheckScript, buildExecutionCancelScript, createExecutionRecord, executionRetentionActions, assertExecutionLogQuota, executionLogReadWindow } from './executions.mjs';
 import { promisify } from 'node:util';
+import { redactSensitiveText } from './secret-redaction.mjs';
 import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanupEligibility, withDurableLocks, auditSafeValue, diskPressureLevel, operationReplayDecision, orphanContainerEligibility, staleLockIsReapable, staleTemporaryFile, createWorkloadReplayDecision } from './resource-governance.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -1542,13 +1543,6 @@ async function sandboxFilesystem(request) {
   const result = await runPodman(buildSandboxFilesystemArgs({ runtimeId, operation: request.operation, path: request.path }), 30_000, maxBuffer);
   if (request.operation === 'sandbox.fs.read') return { sandboxId: record.id, path: request.path, ...decodeSandboxFile(result.stdout.trim()) };
   return { sandboxId: record.id, path: request.path, entries: parseSandboxDirectoryListing(result.stdout) };
-}
-
-function redactSensitiveText(value) {
-  return String(value)
-    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]{16,}/gi, 'Bearer [REDACTED]')
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_TOKEN]')
-    .replace(/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]');
 }
 
 export function boundedSandboxOutput(stdout, stderr, maximumBytes) {

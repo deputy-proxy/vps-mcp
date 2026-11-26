@@ -51,6 +51,8 @@ After a restart:
 
 The log bind mount survives container stop/remove, so completed output remains available until retention expires.
 
+Execution output is redacted before it is written to the durable log mount. The shared redaction policy covers common password/passwd assignments, API-key and client-secret assignments, `x-api-key` headers, Basic/Bearer authorization values, recognized token formats, AWS access keys and private-key blocks. Synchronous results, durable log reads, command summaries and structured audit values use the same policy. Redaction is defense in depth and cannot recognize every possible secret format.
+
 ## Limits and capacity errors
 
 | Limit | Value |

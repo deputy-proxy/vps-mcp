@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { redactSensitiveText } from './secret-redaction.mjs';
 
 export const EXECUTION_POLICY = Object.freeze({
   defaultTimeoutMs: 30 * 60 * 1000,
@@ -51,11 +52,7 @@ export function executionCommandMetadata(command) {
       command.some((arg) => typeof arg !== 'string' || arg.length < 1 || arg.length > 4096 || arg.includes('\0'))) {
     throw new Error('Command must be a non-empty argument array of bounded strings');
   }
-  const executable = String(command[0])
-    .replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]')
-    .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_TOKEN]')
-    .slice(0, 128);
+  const executable = redactSensitiveText(String(command[0])).slice(0, 128);
   return {
     executable,
     argumentCount: command.length,
@@ -86,7 +83,7 @@ reason="$exec_root/$id.reason"
 [ ! -e "$log" ] && [ ! -e "$fifo" ] && [ ! -e "$cancel_fifo" ] && [ ! -e "$identity" ] && [ ! -e "$status" ] || { echo 'Execution ID already exists' >&2; exit 125; }
 mkfifo "$fifo" "$cancel_fifo"
 exec 4<>"$cancel_fifo"
-(ulimit -f "$(((max_log_bytes + 1 + 511) / 512))"; { head -c "$((max_log_bytes + 1))"; cat >/dev/null; } < "$fifo" > "$log") &
+(ulimit -f "$(((max_log_bytes + 1 + 511) / 512))"; { head -c "$((max_log_bytes + 1))"; cat >/dev/null; } < "$fifo" | awk 'BEGIN { private_key = 0 } { if (private_key) { if ($0 ~ /-----END (RSA |EC |OPENSSH )?PRIVATE KEY-----/) private_key = 0; next } if ($0 ~ /-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----/) { print "[REDACTED_PRIVATE_KEY]"; if ($0 !~ /-----END (RSA |EC |OPENSSH )?PRIVATE KEY-----/) private_key = 1; fflush(); next } gsub(/"[p]assword":"[^"]*"/, sprintf("%cpassword%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[p]asswd":"[^"]*"/, sprintf("%cpasswd%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[p]wd":"[^"]*"/, sprintf("%cpwd%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[a]pi[_-]?key":"[^"]*"/, sprintf("%capi_key%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[x]-api-key":"[^"]*"/, sprintf("%cx-api-key%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[c]lient[_-]?secret":"[^"]*"/, sprintf("%cclient_secret%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[s]ecret":"[^"]*"/, sprintf("%csecret%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[a]ccess[_-]?token":"[^"]*"/, sprintf("%caccess_token%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/"[r]efresh[_-]?token":"[^"]*"/, sprintf("%crefresh_token%c:%c[REDACTED]%c", 34, 34, 34, 34)); gsub(/password[[:space:]]*=[^[:space:],;}&]+/, "password=[REDACTED]"); gsub(/passwd[[:space:]]*=[^[:space:],;}&]+/, "passwd=[REDACTED]"); gsub(/pwd[[:space:]]*=[^[:space:],;}&]+/, "pwd=[REDACTED]"); gsub(/api[_-]?key[[:space:]]*=[^[:space:],;}&]+/, "api_key=[REDACTED]"); gsub(/x-api-key[[:space:]]*:[[:space:]]*[^[:space:],;}&]+/, "x-api-key: [REDACTED]"); gsub(/client[_-]?secret[[:space:]]*=[^[:space:],;}&]+/, "client_secret=[REDACTED]"); gsub(/access[_-]?token[[:space:]]*=[^[:space:],;}&]+/, "access_token=[REDACTED]"); gsub(/refresh[_-]?token[[:space:]]*=[^[:space:],;}&]+/, "refresh_token=[REDACTED]"); gsub(/[Aa]uthorization[[:space:]]*:[[:space:]]*[Bb]asic[[:space:]]+[^[:space:],;]+/, "Authorization: Basic [REDACTED]"); gsub(/[Aa]uthorization[[:space:]]*:[[:space:]]*[Bb]earer[[:space:]]+[^[:space:],;]+/, "Authorization: Bearer [REDACTED]"); gsub(/Bearer[[:space:]]+[^[:space:],;]+/, "Bearer [REDACTED]"); gsub(/AKIA[0-9A-Z]{16}/, "[REDACTED_AWS_KEY]"); gsub(/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}/, "[REDACTED_TOKEN]"); print; fflush() }' | head -c "$((max_log_bytes + 1))" > "$log") &
 reader=$!
 VPS_MCP_EXECUTION_ID="$id" setsid sh -c '
   set -eu
