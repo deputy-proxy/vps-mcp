@@ -3,7 +3,7 @@ export const DASHBOARD_HTML = [
 '<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
 '<meta name="robots" content="noindex,nofollow"><title>cr8or.sndbx</title>',
 '<link rel="stylesheet" href="/dashboard/assets/dashboard.css"><script src="/dashboard/assets/dashboard.js" defer></script></head>',
-'<body><main class="shell"><header class="topbar"><h1>cr8or.sndbx</h1>',
+'<body><main class="shell"><header class="topbar"><img class="brand-logo" src="/dashboard/assets/cr8or-logo.svg" alt="CR8OR" width="65" height="18">',
 '<div class="header-actions">',
 '<span id="connection-state" class="partial-indicator hidden" role="status" aria-label="Partial data" title="Partial data"></span>',
 '<details id="data-status" class="header-menu data-status hidden"><summary class="icon-button" aria-label="Data warnings" title="Data warnings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.8 19h18.4L12 3Z"></path><path d="M12 9v4m0 3h.01"></path></svg></summary><div class="dropdown-panel"><strong>Data warnings</strong><ul id="data-status-list"></ul></div></details>',
