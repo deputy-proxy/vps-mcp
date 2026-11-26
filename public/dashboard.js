@@ -17,10 +17,20 @@
   const text = (id, value) => { $(id).textContent = value; };
   const meter = (id, value) => {
     const el = $(id);
-    for (const name of [...el.classList]) if (name.startsWith("meter-fill-")) el.classList.remove(name);
-    const level = value == null ? 0 : Math.round(Math.max(0, Math.min(100, value)));
-    el.classList.add("meter-fill-" + level);
-    el.parentElement.classList.toggle("meter-unavailable", value == null);
+    const track = el.parentElement;
+    const available = value != null && Number.isFinite(value);
+    const level = available ? Math.round(Math.max(0, Math.min(100, value))) : 0;
+    el.style.width = level + "%";
+    track.classList.toggle("meter-unavailable", !available);
+    track.classList.toggle("meter-warning", available && level >= 70 && level < 90);
+    track.classList.toggle("meter-critical", available && level >= 90);
+    if (available) {
+      track.setAttribute("aria-valuenow", String(level));
+      track.removeAttribute("aria-valuetext");
+    } else {
+      track.removeAttribute("aria-valuenow");
+      track.setAttribute("aria-valuetext", "Metric unavailable");
+    }
   };
   function updateHost(h) {
     text("host-cpu", h.cpuPercent == null ? "Warming up" : number(h.cpuPercent) + "%");

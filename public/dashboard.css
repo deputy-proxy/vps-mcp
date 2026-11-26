@@ -154,13 +154,24 @@ h2 {
 }
 .metric-detail { display: block; margin-top: 4px; color: var(--subtle); font-size: 10px; }
 .meter {
-  height: 3px;
-  margin-top: 14px;
+  height: 8px;
+  margin-top: 13px;
   overflow: hidden;
-  border-radius: 2px;
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: 999px;
   background: #27272a;
 }
-.meter span { display: block; width: 0; height: 100%; background: #a1a1aa; }
+.meter span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #a1a1aa;
+  transition: width .35s ease, background-color .2s ease;
+}
+.meter-warning span { background: var(--status-amber); }
+.meter-critical span { background: var(--status-red); }
+.meter-unavailable { background: #18181b; }
 .meter-unavailable span { background: #52525b; }
 
 .history-grid {
