@@ -1,11 +1,12 @@
 [Unit]
-Description=Restricted root task workspace project-quota broker
+Description=Restricted root workspace and project-environment quota/mount broker
 Requires=vps-sandbox-quota-broker.socket
 After=vps-sandbox-quota-broker.socket
 [Service]
 Type=simple
 User=root
 Group=root
+EnvironmentFile=-/etc/vps-sandbox/runtime.env
 ExecStart=/usr/bin/node /usr/local/libexec/vps-mcp/vps-sandbox-quota-broker.mjs
 Restart=on-failure
 RestartSec=2

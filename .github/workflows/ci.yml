@@ -8,9 +8,11 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   quality:
+    name: Quality workflow
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,9 +28,12 @@ jobs:
       - run: node --check scripts/vps-sandboxctl.mjs
       - run: node --check scripts/vps-sandboxctl-broker.mjs
       - run: node --check scripts/rootless-runtime-acceptance.mjs
+      - run: node --check scripts/recover-project-services.mjs
       - run: bash -n scripts/deploy-gateway.sh
       - run: bash -n scripts/deploy-development-gateway.sh
       - run: bash -n scripts/provision-development-runtime.sh
+      - run: bash -n scripts/configure-development-runtime-access.sh
+      - run: bash -n scripts/configure-development-project-environment-root.sh
       - run: bash -n scripts/provision-development-deploy-access.sh
       - run: node --check scripts/deploy-development.mjs
       - run: bash -n scripts/provision-production-deploy-access.sh
@@ -38,6 +43,25 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Publish required quality commit status
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          QUALITY_RESULT: ${{ job.status }}
+          QUALITY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        with:
+          script: |
+            const result = process.env.QUALITY_RESULT;
+            const state = result === 'success' ? 'success' : result === 'cancelled' ? 'error' : 'failure';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.QUALITY_SHA,
+              state,
+              context: 'quality',
+              description: `Quality job ${result}`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
 
   laravel-runtime-image:
     name: Build, smoke-test and scan Laravel runtime image

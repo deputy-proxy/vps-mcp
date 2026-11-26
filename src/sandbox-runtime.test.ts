@@ -37,14 +37,16 @@ describe('sandbox runtime request contract', () => {
       operation: 'container.create', workloadId: id, workloadType: 'task', repositoryId: 'repo', worktreeId: id, image,
     })).toThrow('authorized managed worktree');
     expect(() => validateSandboxRuntimeRequest({
-      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', worktreeId: id, image, workspacePath: '/tmp/project',
-    })).toThrow('managed separately');
+      operation: 'container.create', workloadId: id, workloadType: 'project-service' as 'task', repositoryId: 'repo', image, network: 'none', readOnlyRootfs: true,
+    })).toThrow('reserved for task workloads');
     expect(() => validateSandboxRuntimeRequest({
-      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', image, network: 'none', readOnlyRootfs: true,
+      operation: 'project-service.create', workloadId: id, repositoryId: 'repo', releaseId: id, image,
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped',
     })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({
-      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', image, network: 'host' as unknown as 'none', readOnlyRootfs: true,
-    })).toThrow('network=none');
+      operation: 'project-service.create', workloadId: id, repositoryId: 'repo', releaseId: id, image: 'alpine:latest',
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped',
+    })).toThrow('sha256');
   });
 
   it('rejects mutable image tags, invalid IDs, raw flags and unsafe resource values', () => {
@@ -138,7 +140,7 @@ describe('sandbox runtime socket client', () => {
     await expect(requestSandboxRuntime<{ status: string }>({ operation: 'container.list' }, socketPath)).resolves.toEqual({ operation: 'container.list', status: 'ok' });
   });
 
-  it('sets the create operation for project-service workloads', async () => {
+  it('uses the dedicated project-service creation operation', async () => {
     socketPath = `/tmp/vps-runtime-create-${process.pid}-${Date.now()}.sock`;
     server = net.createServer((socket) => {
       sockets.push(socket);
@@ -153,16 +155,52 @@ describe('sandbox runtime socket client', () => {
     });
     await new Promise<void>((resolve) => server!.listen(socketPath, resolve));
     const adapter = createSandboxRuntimeAdapter(socketPath);
-    const result = await adapter.createWorkload({
+    const result = await adapter.createProjectServiceWorkload({
       workloadId: id,
-      workloadType: 'project-service',
       repositoryId: 'deputy-proxy-vps-mcp',
+      releaseId: id,
       image,
-      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64 },
-      network: 'none',
-      readOnlyRootfs: true,
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 },
+      restartPolicy: 'unless-stopped',
+      command: ['--nodaemonize'],
     });
-    expect(result).toMatchObject({ operation: 'container.create', workloadId: id, workloadType: 'project-service' });
+    expect(result).toMatchObject({ operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp' });
+  });
+
+  it('routes every project-service lifecycle operation through its dedicated broker operation', async () => {
+    socketPath = `/tmp/vps-runtime-project-lifecycle-${process.pid}-${Date.now()}.sock`;
+    const operations: Array<Record<string, unknown>> = [];
+    server = net.createServer((socket) => {
+      sockets.push(socket);
+      let input = '';
+      socket.on('data', (chunk) => {
+        input += chunk.toString();
+        if (!input.includes('\n')) return;
+        const request = JSON.parse(input.trim()) as Record<string, unknown>;
+        operations.push(request);
+        socket.end(JSON.stringify({ result: { operation: request.operation, workloadId: request.workloadId, status: 'ok' } }) + '\n');
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(socketPath, resolve));
+    const adapter = createSandboxRuntimeAdapter(socketPath);
+    await adapter.pullImage(image);
+    await adapter.createProjectServiceWorkload({ workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped' });
+    await adapter.inspectProjectServiceWorkload(id);
+    await adapter.startProjectServiceWorkload(id);
+    await adapter.stopProjectServiceWorkload(id);
+    await adapter.removeProjectServiceWorkload({ workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id });
+    await adapter.reserveProjectResources({ repositoryId: 'deputy-proxy-vps-mcp', resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 } });
+    await adapter.releaseProjectResources('deputy-proxy-vps-mcp');
+    expect(operations).toEqual([
+      { operation: 'image.pull', image },
+      { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped' },
+      { operation: 'project-service.inspect', workloadId: id },
+      { operation: 'project-service.start', workloadId: id },
+      { operation: 'project-service.stop', workloadId: id },
+      { operation: 'project-service.remove', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id },
+      { operation: 'resource.reserve', repositoryId: 'deputy-proxy-vps-mcp', resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 } },
+      { operation: 'resource.release', repositoryId: 'deputy-proxy-vps-mcp' },
+    ]);
   });
 
   it('surfaces a broker error without pretending the operation succeeded', async () => {

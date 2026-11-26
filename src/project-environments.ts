@@ -3,13 +3,15 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { getManagedRepository, updateRepository, withRepositoryLock } from "./repositories.js";
-import { getServiceProfile } from "./service-profiles.js";
+import { assertServiceProfileDeployable, getServiceProfile } from "./service-profiles.js";
+import type { SandboxRuntimeAdapter } from "./sandbox-runtime.js";
+import { formatSandboxRuntimeError } from "./sandbox-runtime.js";
 
 const SCHEMA_VERSION = 1;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
 const PROFILE_ID = /^[a-z][a-z0-9-]{1,63}$/;
 const STATES = ["provisioned", "running", "stopped", "deprovisioned"] as const;
-const OBSERVED_STATES = ["provisioned", "starting", "running", "stopping", "stopped", "degraded", "unknown", "error", "deprovisioned"] as const;
+const OBSERVED_STATES = ["provisioned", "provisioning", "starting", "running", "stopping", "stopped", "deprovisioning", "degraded", "unknown", "error", "deprovisioned"] as const;
 const DESIRED_TRANSITIONS: Record<ProjectEnvironmentDesiredState, ProjectEnvironmentDesiredState[]> = {
   provisioned: ["provisioned", "running", "stopped", "deprovisioned"],
   running: ["running", "stopped", "deprovisioned"],
@@ -17,7 +19,7 @@ const DESIRED_TRANSITIONS: Record<ProjectEnvironmentDesiredState, ProjectEnviron
   deprovisioned: ["deprovisioned"],
 };
 export type ProjectEnvironmentDesiredState = typeof STATES[number];
-export type ProjectEnvironmentObservedState = "provisioned" | "starting" | "running" | "stopping" | "stopped" | "degraded" | "unknown" | "error" | "deprovisioned";
+export type ProjectEnvironmentObservedState = "provisioned" | "provisioning" | "starting" | "running" | "stopping" | "stopped" | "deprovisioning" | "degraded" | "unknown" | "error" | "deprovisioned";
 
 export type ProjectEnvironment = {
   schemaVersion: number;
@@ -39,6 +41,7 @@ export type ProjectEnvironment = {
   observedState: ProjectEnvironmentObservedState;
   activeReleaseId: string | null;
   candidateReleaseId: string | null;
+  workloadReleaseId: string | null;
   workloadIds: string[];
   resources: { cpuMilli: number; memoryMiB: number; pids: number; diskMiB: number };
   health: { status: "unknown" | "healthy" | "unhealthy"; checkedAt: string | null; checks: string[] };
@@ -50,7 +53,7 @@ export type ProjectEnvironment = {
 
 type Registry = { schemaVersion: number; environments: ProjectEnvironment[] };
 
-const root = path.join(config.dataDir, "project-environments");
+const root = path.resolve(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ?? path.join(config.dataDir, "project-environments"));
 const registryFile = path.join(root, "registry.json");
 const lockRoot = path.join(root, ".locks");
 const LOCK_TIMEOUT_MS = 10_000;
@@ -96,7 +99,12 @@ function validateEnvironment(item: ProjectEnvironment): void {
       throw new Error(`Project environment ${key} is not canonical`);
     }
   }
-  if (!Array.isArray(item.workloadIds) || item.workloadIds.some((id) => typeof id !== "string" || id.length > 128)) throw new Error("Invalid project environment workload IDs");
+  const releaseIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (item.activeReleaseId !== null && !releaseIdPattern.test(item.activeReleaseId)) throw new Error("Invalid active project release ID");
+  if (item.candidateReleaseId !== null && !releaseIdPattern.test(item.candidateReleaseId)) throw new Error("Invalid candidate project release ID");
+  if (!Array.isArray(item.workloadIds) || item.workloadIds.some((id) => typeof id !== "string" || !releaseIdPattern.test(id))) throw new Error("Invalid project environment workload IDs");
+  if (item.workloadReleaseId !== null && !releaseIdPattern.test(item.workloadReleaseId)) throw new Error("Invalid project workload release ID");
+  if (item.workloadIds.length > 0 && item.workloadReleaseId === null) throw new Error("Project workload release identity is required when a workload is registered");
 }
 async function withLock<T>(repositoryId: string, operation: () => Promise<T>): Promise<T> {
   await fs.mkdir(lockRoot, { recursive: true, mode: 0o700 });
@@ -127,6 +135,9 @@ async function readRegistry(): Promise<Registry> {
     const ids = new Set<string>();
     const repositoryIds = new Set<string>();
     for (const item of parsed.environments) {
+      if (item.workloadReleaseId === undefined && Array.isArray(item.workloadIds) && item.workloadIds.length === 0) {
+        item.workloadReleaseId = null;
+      }
       validateEnvironment(item);
       if (ids.has(item.id) || repositoryIds.has(item.repositoryId)) throw new Error("Corrupt project environment registry: duplicate environment identity");
       ids.add(item.id);
@@ -221,7 +232,7 @@ export async function registerProjectEnvironment(input: {
       databasePath: path.join(base, "database"), storagePath: path.join(base, "storage"),
       cachePath: path.join(base, "cache"), logsPath: path.join(base, "logs"), backupsPath: path.join(base, "backups"),
       desiredState: "provisioned", observedState: "provisioned", activeReleaseId: null, candidateReleaseId: null,
-      workloadIds: [], resources, health: { status: "unknown", checkedAt: null, checks: [] },
+      workloadReleaseId: null, workloadIds: [], resources, health: { status: "unknown", checkedAt: null, checks: [] },
       createdAt: now, updatedAt: now, lastReconciledAt: null, lastError: null,
     };
     validateEnvironment(environment);
@@ -231,26 +242,26 @@ export async function registerProjectEnvironment(input: {
   }));
 }
 
-export async function updateProjectEnvironment(input: {
+async function updateEnvironmentRecord(input: {
   repositoryId: string;
   desiredState?: ProjectEnvironmentDesiredState;
   observedState?: ProjectEnvironmentObservedState;
   activeReleaseId?: string | null;
   candidateReleaseId?: string | null;
+  workloadReleaseId?: string | null;
   workloadIds?: string[];
   health?: ProjectEnvironment["health"];
   lastError?: string | null;
   reconciled?: boolean;
 }) {
-  assertRepositoryId(input.repositoryId);
-  return withRepositoryLock(input.repositoryId, async () => withLock("registry", async () => {
+  return withLock("registry", async () => {
     const registry = await readRegistry();
     const environment = registry.environments.find((item) => item.repositoryId === input.repositoryId);
-    if (!environment) throw new Error(`Project environment for repository '${input.repositoryId}' is not registered`);
+    if (!environment) throw new Error("Project environment for repository '" + input.repositoryId + "' is not registered");
     if (input.desiredState !== undefined) {
       if (!STATES.includes(input.desiredState)) throw new Error("Invalid desired project environment state");
       if (!DESIRED_TRANSITIONS[environment.desiredState].includes(input.desiredState)) {
-        throw new Error(`Invalid project environment state transition: ${environment.desiredState} -> ${input.desiredState}`);
+        throw new Error("Invalid project environment state transition: " + environment.desiredState + " -> " + input.desiredState);
       }
       environment.desiredState = input.desiredState;
     }
@@ -260,6 +271,7 @@ export async function updateProjectEnvironment(input: {
     }
     if (input.activeReleaseId !== undefined) environment.activeReleaseId = input.activeReleaseId;
     if (input.candidateReleaseId !== undefined) environment.candidateReleaseId = input.candidateReleaseId;
+    if (input.workloadReleaseId !== undefined) environment.workloadReleaseId = input.workloadReleaseId;
     if (input.workloadIds !== undefined) environment.workloadIds = [...new Set(input.workloadIds)];
     if (input.health !== undefined) environment.health = input.health;
     if (input.lastError !== undefined) environment.lastError = input.lastError;
@@ -268,5 +280,202 @@ export async function updateProjectEnvironment(input: {
     validateEnvironment(environment);
     await writeRegistry(registry);
     return { environment };
-  }));
+  });
+}
+async function canonicalDirectory(directory: string, label: string): Promise<void> {
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try { stat = await fs.lstat(directory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(label + " must exist as a canonical real directory");
+    throw error;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(directory) !== path.resolve(directory)) {
+    throw new Error(label + " must be a canonical real directory");
+  }
+}
+export async function prepareProjectEnvironmentMountAccess(repositoryId: string, releaseId: string): Promise<void> {
+  assertRepositoryId(repositoryId);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(releaseId)) {
+    throw new Error("Invalid project release ID");
+  }
+  const { environment } = await inspectProjectEnvironment(repositoryId);
+  if (environment.activeReleaseId !== releaseId && environment.candidateReleaseId !== releaseId) {
+    throw new Error("Project release is neither the active nor the approved candidate release");
+  }
+  const runtimeProjectRoot = path.resolve(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ?? "/var/lib/vps-mcp/project-environments");
+  if (path.resolve(root) !== runtimeProjectRoot) {
+    throw new Error("MCP project environment root must match VPS_SANDBOX_PROJECT_ENV_ROOT in the restricted quota broker configuration");
+  }
+  await canonicalDirectory(config.dataDir, "MCP data directory");
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  await canonicalDirectory(root, "Project environment registry root");
+  await fs.mkdir(environment.rootPath, { recursive: true, mode: 0o700 });
+  await canonicalDirectory(environment.rootPath, "Project environment root");
+  for (const directory of [environment.releasesPath, environment.storagePath, environment.cachePath, environment.logsPath]) {
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    await canonicalDirectory(directory, "Project environment mount source");
+  }
+  for (const directory of [
+    path.join(environment.storagePath, "app"),
+    path.join(environment.storagePath, "framework", "cache"),
+    path.join(environment.storagePath, "framework", "sessions"),
+    path.join(environment.storagePath, "framework", "views"),
+  ]) await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const releasePath = path.join(environment.releasesPath, releaseId);
+  await canonicalDirectory(releasePath, "Project release");
+}
+
+export async function setProjectEnvironmentRelease(input: {
+  repositoryId: string;
+  releaseId: string;
+  channel: "active" | "candidate";
+}) {
+  assertRepositoryId(input.repositoryId);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.releaseId)) {
+    throw new Error("Invalid project release ID");
+  }
+  const releaseId = input.releaseId.toLowerCase();
+  if (input.channel !== "active" && input.channel !== "candidate") throw new Error("Invalid project release channel");
+  return withRepositoryLock(input.repositoryId, async () => {
+    const { environment } = await inspectProjectEnvironment(input.repositoryId);
+    if (environment.desiredState === "deprovisioned") throw new Error("Deprovisioned project environments cannot accept releases");
+    await canonicalDirectory(environment.releasesPath, "Project releases directory");
+    await canonicalDirectory(path.join(environment.releasesPath, releaseId), "Project release");
+    if (input.channel === "active" && environment.workloadIds.length > 0 && environment.workloadReleaseId !== releaseId) {
+      throw new Error("Cannot replace the active release while a project-service workload is registered");
+    }
+    const updated = input.channel === "active"
+      ? await updateEnvironmentRecord({ repositoryId: input.repositoryId, activeReleaseId: releaseId, candidateReleaseId: null })
+      : await updateEnvironmentRecord({ repositoryId: input.repositoryId, candidateReleaseId: releaseId });
+    return { environment: updated.environment, channel: input.channel };
+  });
+}
+
+export async function updateProjectEnvironment(input: {
+  repositoryId: string;
+  desiredState?: ProjectEnvironmentDesiredState;
+  observedState?: ProjectEnvironmentObservedState;
+  activeReleaseId?: string | null;
+  candidateReleaseId?: string | null;
+  workloadReleaseId?: string | null;
+  workloadIds?: string[];
+  health?: ProjectEnvironment["health"];
+  lastError?: string | null;
+  reconciled?: boolean;
+}) {
+  assertRepositoryId(input.repositoryId);
+  return withRepositoryLock(input.repositoryId, async () => updateEnvironmentRecord(input));
+}
+
+export async function provisionProjectEnvironment(repositoryId: string, runtime: SandboxRuntimeAdapter) {
+  assertRepositoryId(repositoryId);
+  return withRepositoryLock(repositoryId, async () => {
+    const { environment } = await inspectProjectEnvironment(repositoryId);
+    if (environment.desiredState === "deprovisioned") throw new Error("Deprovisioned project environments cannot be provisioned again");
+    const profile = getServiceProfile(environment.profileId, environment.profileVersion);
+    assertServiceProfileDeployable(profile);
+    if (!profile.runtime.imageDigest) throw new Error("Project service profile has no approved immutable image reference");
+    const releaseId = environment.candidateReleaseId ?? environment.activeReleaseId;
+    if (!releaseId) throw new Error("Project environment has no active or candidate release to mount");
+    if (environment.workloadIds.length > 0 && environment.workloadReleaseId !== releaseId) {
+      throw new Error("A project-service workload is already bound to a different release; deprovision it before provisioning another release");
+    }
+    const workloadId = environment.id;
+    if (environment.desiredState === "running" && environment.workloadIds.length === 0) {
+      throw new Error("Provision the project service before requesting its running state");
+    }
+    try {
+      await prepareProjectEnvironmentMountAccess(repositoryId, releaseId);
+    } catch (error) {
+      await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
+      throw error;
+    }
+    await updateEnvironmentRecord({ repositoryId, observedState: "provisioning", lastError: null });
+    try {
+      await runtime.pullImage(profile.runtime.imageDigest);
+      await updateEnvironmentRecord({ repositoryId, observedState: "provisioning", workloadReleaseId: releaseId, workloadIds: [workloadId], lastError: null });
+      const result = await runtime.createProjectServiceWorkload({
+        workloadId, repositoryId, releaseId, image: profile.runtime.imageDigest,
+        resources: environment.resources,
+        restartPolicy: profile.restartPolicy,
+        command: profile.processes.web.command[0] === "php-fpm" ? profile.processes.web.command.slice(1) : profile.processes.web.command,
+      });
+      if (result.workload.status === "removed") throw new Error("The persistent project-service workload was already removed; deprovision and register a new environment before recreating it");
+      const observedState: ProjectEnvironmentObservedState = result.workload.status === "running" ? "running" : result.workload.status === "stopped" ? "stopped" : "provisioned";
+      await updateEnvironmentRecord({ repositoryId, observedState, workloadIds: [workloadId], lastError: null, reconciled: true });
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, workload: result.workload };
+    } catch (error) {
+      const message = formatSandboxRuntimeError(error).error.message.slice(0, 500);
+      await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: message });
+      throw error;
+    }
+  });
+}
+
+export async function startProjectEnvironment(repositoryId: string, runtime: SandboxRuntimeAdapter) {
+  assertRepositoryId(repositoryId);
+  return withRepositoryLock(repositoryId, async () => {
+    const { environment } = await inspectProjectEnvironment(repositoryId);
+    const workloadId = environment.workloadIds[0];
+    if (!workloadId) throw new Error("Project environment has not been provisioned");
+    if (environment.desiredState === "deprovisioned") throw new Error("Deprovisioned project environments cannot be started");
+    await updateEnvironmentRecord({ repositoryId, desiredState: "running", observedState: "starting", lastError: null });
+    try {
+      const result = await runtime.startProjectServiceWorkload(workloadId);
+      await updateEnvironmentRecord({ repositoryId, observedState: "running", reconciled: true });
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, result };
+    } catch (error) {
+      await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
+      throw error;
+    }
+  });
+}
+
+export async function stopProjectEnvironment(repositoryId: string, runtime: SandboxRuntimeAdapter) {
+  assertRepositoryId(repositoryId);
+  return withRepositoryLock(repositoryId, async () => {
+    const { environment } = await inspectProjectEnvironment(repositoryId);
+    if (environment.desiredState === "deprovisioned") throw new Error("Deprovisioned project environments cannot be stopped");
+    const workloadId = environment.workloadIds[0];
+    if (!workloadId) throw new Error("Project environment has not been provisioned");
+    await updateEnvironmentRecord({ repositoryId, desiredState: "stopped", observedState: "stopping", lastError: null });
+    try {
+      const result = await runtime.stopProjectServiceWorkload(workloadId);
+      await updateEnvironmentRecord({ repositoryId, observedState: "stopped", reconciled: true });
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, result };
+    } catch (error) {
+      await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
+      throw error;
+    }
+  });
+}
+
+export async function deprovisionProjectEnvironment(repositoryId: string, runtime: SandboxRuntimeAdapter) {
+  assertRepositoryId(repositoryId);
+  return withRepositoryLock(repositoryId, async () => {
+    const { environment } = await inspectProjectEnvironment(repositoryId);
+    const workloadId = environment.workloadIds[0] ?? environment.id;
+    await updateEnvironmentRecord({ repositoryId, desiredState: "deprovisioned", observedState: "deprovisioning", lastError: null });
+    try {
+      if (environment.workloadIds.length > 0) {
+        if (!environment.workloadReleaseId) throw new Error("Cannot deprovision a workload without its persisted release identity");
+        await runtime.removeProjectServiceWorkload({ workloadId, repositoryId, releaseId: environment.workloadReleaseId });
+      }
+      await runtime.releaseProjectResources(repositoryId);
+      await updateEnvironmentRecord({ repositoryId, observedState: "deprovisioned", workloadIds: [], workloadReleaseId: null, reconciled: true, lastError: null });
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, removedWorkloadId: environment.workloadIds[0] ?? null };
+    } catch (error) {
+      await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
+      throw error;
+    }
+  });
+}
+
+export async function inspectProjectEnvironmentRuntime(repositoryId: string, runtime: SandboxRuntimeAdapter) {
+  assertRepositoryId(repositoryId);
+  const { environment } = await inspectProjectEnvironment(repositoryId);
+  const workloadId = environment.workloadIds[0];
+  if (!workloadId) return { environment, workload: null, runtime: null };
+  const result = await runtime.inspectProjectServiceWorkload(workloadId);
+  return { environment, ...result };
 }

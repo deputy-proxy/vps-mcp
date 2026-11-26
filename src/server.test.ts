@@ -133,7 +133,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(55);
+    expect(tools.size).toBe(61);
 
     for (const name of [
       "system.health",
@@ -152,6 +152,7 @@ describe("Streamable HTTP endpoint", () => {
       "resource.capacity",
       "project-environment.list",
       "project-environment.inspect",
+      "project-environment.runtime.inspect",
       "sandbox.cleanup.preview",
       "sandbox.audit.list",
     ]) {
@@ -183,7 +184,11 @@ describe("Streamable HTTP endpoint", () => {
       });
     }
     expect(tools.get("project-environment.register")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
-    for (const name of ["project-environment.register", "project-environment.list", "project-environment.inspect", "sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull", "sandbox.execution.start", "sandbox.execution.list", "sandbox.execution.status", "sandbox.execution.logs", "sandbox.execution.cancel", "resource.capacity", "resource.reserve", "resource.release", "sandbox.cleanup.preview", "sandbox.cleanup.run", "sandbox.maintenance.pause", "sandbox.audit.list"]) {
+    expect(tools.get("project-environment.release.set")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    expect(tools.get("project-environment.provision")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    expect(tools.get("project-environment.stop")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
+    expect(tools.get("project-environment.deprovision")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
+    for (const name of ["project-environment.register", "project-environment.release.set", "project-environment.provision", "project-environment.runtime.inspect", "project-environment.start", "project-environment.stop", "project-environment.deprovision", "project-environment.list", "project-environment.inspect", "sandbox.create", "sandbox.start", "sandbox.inspect", "sandbox.list", "sandbox.stop", "sandbox.remove", "sandbox.logs", "sandbox.image.inspect", "sandbox.image.pull", "sandbox.execution.start", "sandbox.execution.list", "sandbox.execution.status", "sandbox.execution.logs", "sandbox.execution.cancel", "resource.capacity", "resource.reserve", "resource.release", "sandbox.cleanup.preview", "sandbox.cleanup.run", "sandbox.maintenance.pause", "sandbox.audit.list"]) {
       expect(tools.get(name)?.inputSchema).toBeDefined();
     }
     expect(tools.get("sandbox.execution.cancel")?.annotations).toMatchObject({
