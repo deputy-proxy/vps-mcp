@@ -57,17 +57,17 @@ The runtime agent must be updated to a version containing dashboard.inventory be
 
 ### Sandboxes
 
-- Runtime state and identity: durable workload records matched to the read-only Podman inventory.
+- Runtime state and identity: durable workload records matched to the read-only Podman inventory. Container uptime is based on the runtime State.StartedAt timestamp, normalized from Podman’s Go timestamp format; creation time is not used as a substitute.
 - Repository and worktree: managed repository and task-workspace registries. Repository metadata is read through a dedicated no-migration API; an older registry schema is reported unavailable rather than migrated by a dashboard read.
 - Branch and commit: local Git metadata read from the registered worktree.
 - Working-tree state: git status --porcelain for the registered worktree.
 - CPU: cgroup v2 cpu.stat deltas. Both host-wide percentage and percentage of the effective cgroup CPU quota are calculated. The quota percentage is only available when the effective cpu.max quota is known.
 - Memory: cgroup v2 memory.current and memory.max; configured workload memory is shown separately when useful.
 - PIDs: cgroup v2 pids.current and pids.max; configured PID limit is shown separately.
-- Workspace disk: not currently measured per sandbox. The host data-filesystem metric is not a substitute.
-- Network RX/TX: not currently exposed as reliable per-container counters and therefore not reported as zero.
+- Workspace disk: bounded recursive sum of regular-file sizes within the verified managed worktree. Symlinks are excluded; scanning stops after 20,000 entries or two seconds and is labelled partial rather than presented as complete.
+- Network RX/TX: cumulative receive/transmit bytes read from the running container process network namespace in /proc/<pid>/net/dev. Loopback is excluded. If the namespace counters cannot be read, the metric is unavailable rather than zero.
 
-Unavailable or unsupported metrics remain unavailable. They are never represented as zero. A failure for one container does not suppress metrics for other containers.
+Unavailable or unsupported metrics remain unavailable. They are never represented as zero. Workspace scans are bounded and explicitly report partial results. The detail panel shows the runtime sample time and metric availability; missing network or workspace metrics are also surfaced as dashboard warnings. A failure for one container does not suppress metrics for other containers.
 
 ## Refresh, cache and history
 
@@ -79,6 +79,8 @@ The browser refreshes every 15 seconds and supports manual refresh. The server k
 - Sign-in fails: verify the registered callback URL exactly matches DASHBOARD_OIDC_REDIRECT_URI, the client secret is current, PKCE S256 is enabled, and the ID token contains a verified email in DASHBOARD_ALLOWED_EMAILS.
 - Runtime inventory unavailable: verify the installed /usr/local/libexec/vps-mcp/vps-sandbox-runtime.mjs includes dashboard.inventory, and that the runtime socket/service is healthy.
 - CPU or memory unavailable for one sandbox: inspect that container's cgroup v2 path and read permissions under /sys/fs/cgroup; container exit/removal races are expected to produce unavailable metrics for that sample.
+- Network counters unavailable: verify the runtime agent can read /proc/<container-pid>/net/dev for the running task container.
+- Workspace disk is partial: the scan reached its 20,000-entry or two-second safety bound; the displayed value is a lower bound for that sample.
 - Repository or branch unknown: verify the workload's repository/worktree association and that the registered worktree still exists.
 - Disk unavailable: verify that MCP_DATA_DIR exists and the service account can call statfs() on it.
 

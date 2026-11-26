@@ -243,7 +243,8 @@ export type DashboardRuntimeInventory = {
     id: string; repositoryId: string; worktreeId: string | null; imageDigest: string;
     resources: RuntimeResources; networkPolicy: string | null; retained: boolean;
     lifecycleStatus: RuntimeWorkloadStatus; runtimeState: string; runtimeId: string | null;
-    createdAt: string; updatedAt: string; runtimeCreatedAt: string | null;
+    createdAt: string; updatedAt: string; runtimeCreatedAt: string | null; runtimeStartedAt: string | null;
+    networkRxBytes: number | null; networkTxBytes: number | null; networkStatus: 'available' | 'unavailable';
     cgroup: Record<string, string | null> | null; metricsStatus: 'available' | 'unavailable';
   }>;
   unmatchedContainers: Array<{ containerId: string; runtimeState: string; createdAt: string; associationStatus: 'unmatched' }>;
