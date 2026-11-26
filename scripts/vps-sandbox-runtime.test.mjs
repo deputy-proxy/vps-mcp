@@ -192,6 +192,10 @@ describe('rootless workload runtime request validation', () => {
     expect(boundedSandboxOutput('ghp_' + 'a'.repeat(30), 'Bearer ' + 'b'.repeat(30), 20)).toMatchObject({ truncated: true });
     const output = boundedSandboxOutput('Bearer ' + 'b'.repeat(30), '', 100);
     expect(output.stdout).toBe('Bearer [REDACTED]');
+    const credentials = boundedSandboxOutput('password=synthetic-password\nx-api-key: synthetic-api-key', '', 200);
+    expect(credentials.stdout).toContain('password=[REDACTED]');
+    expect(credentials.stdout).toContain('x-api-key: [REDACTED]');
+    expect(credentials.stdout).not.toContain('synthetic-');
   });
 
   it('always routes sandbox filesystem operations through the selected container', () => {

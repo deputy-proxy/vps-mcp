@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
+import { redactSensitiveText } from './secret-redaction.mjs';
 
 const ACTIVE_RESOURCE_STATES = new Set(['creating', 'created', 'starting', 'running', 'stopping', 'removing', 'error', 'unknown']);
 const CLEANUP_ELIGIBLE_STATES = new Set(['created', 'stopped', 'error']);
@@ -294,9 +295,5 @@ export function operationReplayDecision(existing, fingerprint) {
 }
 
 export function auditSafeValue(value) {
-  return String(value).replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_TOKEN]')
-    .replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]')
-    .replace(/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
-    .slice(0, 500);
+  return redactSensitiveText(value).slice(0, 500);
 }
