@@ -36,15 +36,14 @@ const PROFILES: ServiceProfile[] = [
     runtime: { imageDigest: null, toolchain: { php: "8.4", composer: "2", node: "22" }, user: "non-root" },
     processes: {
       web: { command: ["php-fpm", "--nodaemonize"], port: 9000, protocol: "tcp" },
-      workers: [{ name: "queue", command: ["php", "artisan", "queue:work", "--sleep=3", "--tries=3", "--timeout=90"], replicas: 1 }],
-      scheduler: { enabled: true, command: ["php", "artisan", "schedule:work"] },
+      workers: [],
+      scheduler: { enabled: false, command: null },
     },
     healthChecks: [
       { name: "php-fpm", type: "tcp", target: "127.0.0.1:9000", intervalSeconds: 15, timeoutSeconds: 3 },
-      { name: "queue-worker", type: "process", target: "queue", intervalSeconds: 30, timeoutSeconds: 5 },
     ],
     mounts: [
-      { name: "storage", source: "project-storage", target: "/app/storage/app", readOnly: false },
+      { name: "storage", source: "project-storage", target: "/app/storage", readOnly: false },
       { name: "cache", source: "project-cache", target: "/app/bootstrap/cache", readOnly: false },
       { name: "logs", source: "project-logs", target: "/app/storage/logs", readOnly: false },
     ],
@@ -86,7 +85,7 @@ export function getServiceProfile(profileId: string, version = 1): ServiceProfil
 }
 
 export function assertServiceProfileDeployable(profile: ServiceProfile): void {
-  if (profile.readiness !== "deployable" || !profile.runtime.imageDigest || !/^sha256:[a-f0-9]{64}$/.test(profile.runtime.imageDigest)) {
+  if (profile.readiness !== "deployable" || !profile.runtime.imageDigest || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(profile.runtime.imageDigest)) {
     throw new Error(`Project environment profile '${profile.id}' version ${profile.version} is definition-only and cannot be provisioned`);
   }
 }

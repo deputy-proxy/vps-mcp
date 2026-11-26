@@ -9,6 +9,20 @@ describe('workspace quota broker request validation',()=>{
   expect(parseQuotaBrokerRequest(JSON.stringify(request))).toEqual(request);
   expect(parseQuotaBrokerRequest(JSON.stringify({...request,operation:'unstage'})).operation).toBe('unstage');
  });
+ it('accepts project-environment disk quota requests with a stable environment identity',()=>{
+  const request={operation:'apply-project',repositoryId:valid.repositoryId,workloadId:'234e5321-b4d7-4d4f-be92-ce56a984adaa',diskMiB:10240};
+  expect(parseQuotaBrokerRequest(JSON.stringify(request))).toEqual(request);
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,diskMiB:0}))).toThrow('diskMiB');
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,environmentId:'../etc'}))).toThrow('Unsupported');
+ });
+ it('accepts canonical project-service mount staging requests only',()=>{
+  const request={operation:'stage-project',repositoryId:valid.repositoryId,workloadId:'234e5321-b4d7-4d4f-be92-ce56a984adaa',releaseId:'334e5321-b4d7-4d4f-be92-ce56a984adaa'};
+  expect(parseQuotaBrokerRequest(JSON.stringify(request))).toEqual(request);
+  expect(parseQuotaBrokerRequest(JSON.stringify({...request,operation:'unstage-project'})).operation).toBe('unstage-project');
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,releaseId:'../release'}))).toThrow('release ID');
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,hostPath:'/etc'}))).toThrow('Unsupported');
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,worktreeId:'../../etc'}))).toThrow('Unsupported');
+ });
  it('rejects unknown operations and extra properties',()=>{
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...valid,operation:'shell'}))).toThrow('Unsupported');
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...valid,command:'id'}))).toThrow('Unsupported');

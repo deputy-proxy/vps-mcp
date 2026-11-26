@@ -15,19 +15,20 @@ export function parseQuotaBrokerRequest(raw) {
   try { value = JSON.parse(raw); } catch { throw new Error('Request must be valid JSON'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Request must be an object');
   const keys = Object.keys(value).sort().join(',');
-  const expected = value.operation === 'apply' ? 'diskMiB,operation,repositoryId,worktreeId' : ['stage','unstage'].includes(value.operation) ? 'operation,repositoryId,workloadId,worktreeId' : '';
+  const expected = value.operation === 'apply' ? 'diskMiB,operation,repositoryId,worktreeId' : value.operation === 'apply-project' ? 'diskMiB,operation,repositoryId,workloadId' : ['stage','unstage'].includes(value.operation) ? 'operation,repositoryId,workloadId,worktreeId' : ['stage-project','unstage-project'].includes(value.operation) ? 'operation,releaseId,repositoryId,workloadId' : '';
   if (!expected || keys !== expected) throw new Error('Unsupported quota operation or properties');
   if (typeof value.repositoryId !== 'string' || !/^[a-z0-9][a-z0-9._-]{1,199}$/i.test(value.repositoryId)) throw new Error('Invalid repository ID');
-  if (typeof value.worktreeId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.worktreeId)) throw new Error('Invalid worktree ID');
-  if (value.operation === 'apply' && (!Number.isInteger(value.diskMiB) || value.diskMiB < 128 || value.diskMiB > 102400)) throw new Error('diskMiB must be between 128 and 102400');
+  if (['apply','stage','unstage'].includes(value.operation) && (typeof value.worktreeId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.worktreeId))) throw new Error('Invalid worktree ID');
+  if (['apply','apply-project'].includes(value.operation) && (!Number.isInteger(value.diskMiB) || value.diskMiB < 128 || value.diskMiB > 102400)) throw new Error('diskMiB must be between 128 and 102400');
   if (value.operation !== 'apply' && (typeof value.workloadId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.workloadId))) throw new Error('Invalid workload ID');
+  if (['stage-project','unstage-project'].includes(value.operation) && (typeof value.releaseId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.releaseId))) throw new Error('Invalid project release ID');
   return value;
 }
 
 export async function applyQuotaRequest(value) {
-  const args = value.operation === 'apply' ? ['apply', value.repositoryId, value.worktreeId, String(value.diskMiB)] : [value.operation, value.repositoryId, value.worktreeId, value.workloadId];
+  const args = value.operation === 'apply' ? ['apply', value.repositoryId, value.worktreeId, String(value.diskMiB)] : value.operation === 'apply-project' ? ['apply-project', value.repositoryId, value.workloadId, String(value.diskMiB)] : ['stage','unstage'].includes(value.operation) ? [value.operation, value.repositoryId, value.worktreeId, value.workloadId] : [value.operation, value.repositoryId, value.workloadId, value.releaseId];
   const result = await exec('/usr/bin/node', [HELPER, ...args], {
-    encoding: 'utf8', timeout: 45000, maxBuffer: 8192, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin' },
+    encoding: 'utf8', timeout: value.operation === 'apply-project' ? 130000 : 45000, maxBuffer: 8192, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', ...(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ? { VPS_SANDBOX_PROJECT_ENV_ROOT: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT } : {}), ...(process.env.VPS_SANDBOX_PROJECT_ENV_OWNER ? { VPS_SANDBOX_PROJECT_ENV_OWNER: process.env.VPS_SANDBOX_PROJECT_ENV_OWNER } : {}) },
   });
   return JSON.parse(result.stdout.trim());
 }

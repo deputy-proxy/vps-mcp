@@ -8,7 +8,7 @@ export type SandboxRuntimeRequest =
   | {
       operation: 'container.create';
       workloadId: string;
-      workloadType: WorkloadType;
+      workloadType: 'task';
       repositoryId: string;
       worktreeId?: string;
       image: string;
@@ -19,8 +19,11 @@ export type SandboxRuntimeRequest =
       workspaceAccess?: 'read-only' | 'read-write';
       command?: string[];
     }
+  | { operation: 'project-service.create'; workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }
+  | { operation: 'project-service.inspect' | 'project-service.start' | 'project-service.stop'; workloadId: string }
+  | { operation: 'project-service.remove'; workloadId: string; repositoryId: string; releaseId: string }
   | { operation: 'container.inspect' | 'container.logs'; workloadId: string }
-  | { operation: 'container.start' | 'container.stop' | 'container.remove'; workloadId: string; expectedWorkloadType: WorkloadType }
+  | { operation: 'container.start' | 'container.stop' | 'container.remove'; workloadId: string; expectedWorkloadType: 'task' }
   | { operation: 'container.list' }
   | { operation: 'dashboard.inventory' }
   | { operation: 'container.exec'; workloadId: string; command: string[]; timeoutMs?: number }
@@ -76,6 +79,31 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     if (request.limit !== undefined && (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 500)) throw new Error('limit must be between 1 and 500');
     return;
   }
+  if (request.operation === 'project-service.create') {
+    if (!UUID.test(request.workloadId)) throw new Error('Invalid project-service workload ID');
+    if (!REPOSITORY_ID.test(request.repositoryId)) throw new Error('Invalid project-service repository ID');
+    if (!UUID.test(request.releaseId)) throw new Error('Invalid project release ID');
+    if (!IMAGE_DIGEST.test(request.image)) throw new Error('Image must be pinned by sha256 digest');
+    validateResources(request.resources);
+    if (request.resources.diskMiB === undefined) throw new Error('Project-service disk reservation is required');
+    if (request.restartPolicy !== 'always' && request.restartPolicy !== 'unless-stopped') throw new Error('Unsupported project-service restart policy');
+    if (request.command !== undefined) {
+      validateArgv(request.command);
+      if (JSON.stringify(request.command) !== JSON.stringify(['--nodaemonize'])) throw new Error('Project-service command must match the pinned PHP-FPM entrypoint');
+    }
+    return;
+  }
+  if (request.operation === 'project-service.inspect' || request.operation === 'project-service.start'
+    || request.operation === 'project-service.stop') {
+    if (!UUID.test(request.workloadId)) throw new Error('Invalid project-service workload ID');
+    return;
+  }
+  if (request.operation === 'project-service.remove') {
+    if (!UUID.test(request.workloadId) || !REPOSITORY_ID.test(request.repositoryId) || !UUID.test(request.releaseId)) {
+      throw new Error('Invalid project-service removal identity');
+    }
+    return;
+  }
   if (request.operation === 'resource.reserve' || request.operation === 'resource.release') {
     if (!REPOSITORY_ID.test(request.repositoryId)) throw new Error('Invalid repository ID');
     if (request.operation === 'resource.reserve') validateResources(request.resources);
@@ -113,12 +141,11 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
   if (!('workloadId' in request)) throw new Error('Workload ID is required');
   if (!UUID.test(request.workloadId)) throw new Error('Invalid workload ID');
   if (request.operation === 'container.create') {
-    if (request.workloadType !== 'task' && request.workloadType !== 'project-service') throw new Error('Invalid workload type');
+    if (request.workloadType !== 'task') throw new Error('Generic container.create is reserved for task workloads');
     if (!REPOSITORY_ID.test(request.repositoryId)) throw new Error('Invalid repository ID');
     if (!IMAGE_DIGEST.test(request.image)) throw new Error('Image must be pinned by sha256 digest');
     if (request.worktreeId && !UUID.test(request.worktreeId)) throw new Error('Invalid worktree ID');
     if (request.workloadType === 'task' && (!request.worktreeId || !request.workspacePath)) throw new Error('Task workloads require an authorized managed worktree');
-    if (request.workloadType === 'project-service' && (request.workspacePath !== undefined || request.workspaceAccess !== undefined)) throw new Error('Project-service mounts are managed separately');
     if (request.command) validateArgv(request.command);
     if (request.workspacePath !== undefined && (!request.workspacePath.startsWith('/') || request.workspacePath.includes('\0'))) throw new Error('Workspace path must be an absolute path');
     if (request.workspaceAccess !== undefined && request.workspaceAccess !== 'read-only' && request.workspaceAccess !== 'read-write') throw new Error('Invalid workspace access mode');
@@ -128,7 +155,7 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     return;
   }
   if (request.operation === 'container.start' || request.operation === 'container.stop' || request.operation === 'container.remove') {
-    if (request.expectedWorkloadType !== 'task' && request.expectedWorkloadType !== 'project-service') throw new Error('Expected workload type is required');
+    if (request.expectedWorkloadType !== 'task') throw new Error('Generic container lifecycle is reserved for task workloads');
   }
   if (request.operation === 'container.exec') {
     validateArgv(request.command);
@@ -228,10 +255,13 @@ export type RuntimeWorkloadRecord = {
   worktreeId?: string;
   image: string;
   imageDigest: string;
+  restartPolicy?: 'no' | 'always' | 'unless-stopped';
   runtimeId: string | null;
   workspaceMount: { path: string; access: 'read-only' | 'read-write'; destination: '/workspace' } | null;
   executionMount?: { path: string; destination: '/run/vps-mcp-executions' } | null;
-  resources: { cpuMilli: number; memoryMiB: number; pids: number };
+  projectMounts?: { releaseId: string; release: string; storage: string; cache: string; logs: string };
+  releaseId?: string;
+  resources: { cpuMilli: number; memoryMiB: number; pids: number; diskMiB?: number };
   network: 'none';
   status: RuntimeWorkloadStatus;
   createdAt: string;
@@ -255,11 +285,16 @@ export interface SandboxRuntimeAdapter {
   inspectImage(image: string): Promise<{ image: string; imageId: string }>;
   pullImage(image: string): Promise<{ image: string; pulled: true; output: string }>;
   createWorkload(input: Omit<Extract<SandboxRuntimeRequest, { operation: 'container.create' }>, 'operation' | 'workspacePath'>): Promise<RuntimeWorkloadRecord>;
-  startWorkload(id: string, expectedType: WorkloadType): Promise<unknown>;
+  createProjectServiceWorkload(input: { workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }): Promise<{ workload: RuntimeWorkloadRecord }>;
+  inspectProjectServiceWorkload(workloadId: string): Promise<{ workload: RuntimeWorkloadRecord; runtime: Record<string, unknown> | null; reconciliation?: string }>;
+  startProjectServiceWorkload(workloadId: string): Promise<unknown>;
+  stopProjectServiceWorkload(workloadId: string): Promise<unknown>;
+  removeProjectServiceWorkload(input: { workloadId: string; repositoryId: string; releaseId: string }): Promise<unknown>;
+  startWorkload(id: string, expectedType: 'task'): Promise<unknown>;
   inspectWorkload(id: string): Promise<unknown>;
   listWorkloads(): Promise<{ workloads: RuntimeWorkloadRecord[] }>;
-  stopWorkload(id: string, expectedType: WorkloadType): Promise<unknown>;
-  removeWorkload(id: string, expectedType: WorkloadType): Promise<unknown>;
+  stopWorkload(id: string, expectedType: 'task'): Promise<unknown>;
+  removeWorkload(id: string, expectedType: 'task'): Promise<unknown>;
   executeInWorkload(id: string, command: string[], timeoutMs?: number): Promise<{ workloadId: string; exitCode: number; stdout: string; stderr: string }>;
   readWorkloadLogs(id: string): Promise<{ workloadId: string; logs: string }>;
   executeTaskSandbox(input: { sandboxId: string; operationId?: string; command: string[]; cwd?: string; timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }): Promise<{ sandboxId: string; cwd: string; exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; truncated: boolean }>;
@@ -311,8 +346,13 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
           workspaceAccess: input.workspaceAccess ?? 'read-write',
         }, socketPath);
       }
-      return requestSandboxRuntime({ ...input, operation: 'container.create' }, socketPath);
+      throw new Error('Generic workload creation is reserved for task sandboxes');
     },
+    createProjectServiceWorkload: (input) => requestSandboxRuntime({ operation: 'project-service.create', ...input }, socketPath),
+    inspectProjectServiceWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-service.inspect', workloadId }, socketPath),
+    startProjectServiceWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-service.start', workloadId }, socketPath),
+    stopProjectServiceWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-service.stop', workloadId }, socketPath),
+    removeProjectServiceWorkload: (input) => requestSandboxRuntime({ operation: 'project-service.remove', ...input }, socketPath),
     startWorkload: (workloadId, expectedWorkloadType) => requestSandboxRuntime({ operation: 'container.start', workloadId, expectedWorkloadType }, socketPath),
     inspectWorkload: (workloadId) => requestSandboxRuntime({ operation: 'container.inspect', workloadId }, socketPath),
     listWorkloads: () => requestSandboxRuntime({ operation: 'container.list' }, socketPath),

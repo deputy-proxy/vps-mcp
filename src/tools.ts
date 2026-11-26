@@ -13,7 +13,7 @@ import { validateTaskBranchCreation } from "./branch-policy.js";
 import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbox-runtime.js";
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 import { inspectManagedStorage } from "./storage-metrics.js";
-import { inspectProjectEnvironment, listProjectEnvironments, registerProjectEnvironment, updateProjectEnvironment } from "./project-environments.js";
+import { deprovisionProjectEnvironment, inspectProjectEnvironmentRuntime, inspectProjectEnvironment, listProjectEnvironments, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } from "./project-environments.js";
 import { registerProjectEnvironmentWithReservation } from "./project-environment-admission.js";
 import { listServiceProfiles } from "./service-profiles.js";
 import { resolveAllowedPath, managedTaskWorkspaceIdentity } from "./paths.js";
@@ -474,6 +474,51 @@ export function createMcpServer(): McpServer {
     reserve: (input) => sandboxRuntime.reserveProjectResources(input),
     update: updateProjectEnvironment,
   }))));
+
+  server.registerTool("project-environment.release.set", {
+    title: "Select persistent project release",
+    description: "Register an existing canonical release directory as the active or candidate project release. This does not build, copy or modify release files and does not change a running workload.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200), releaseId: z.string().uuid(), channel: z.enum(["active", "candidate"]) },
+  }, async ({ repositoryId, releaseId, channel }) => guarded(() => safelySandbox(() => setProjectEnvironmentRelease({ repositoryId, releaseId, channel }))));
+
+  server.registerTool("project-environment.provision", {
+    title: "Provision persistent project service",
+    description: "Create the repository's persistent project-service workload from its active or candidate release. Requires a deployable profile pinned to an administrator-approved immutable image digest and canonical project data mounts. Does not start the service.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200) },
+  }, async ({ repositoryId }) => guarded(() => safelySandbox(() => provisionProjectEnvironment(repositoryId, sandboxRuntime))));
+
+  server.registerTool("project-environment.runtime.inspect", {
+    title: "Inspect persistent project-service runtime",
+    description: "Inspect the project-service workload associated with a registered environment. Does not expose secrets or mutate the workload.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200) },
+  }, async ({ repositoryId }) => guarded(() => safelySandbox(() => inspectProjectEnvironmentRuntime(repositoryId, sandboxRuntime))));
+
+  server.registerTool("project-environment.start", {
+    title: "Start persistent project service",
+    description: "Start the registered project-service workload after verifying its workload identity. Task sandbox lifecycle tools cannot target project services.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200) },
+  }, async ({ repositoryId }) => guarded(() => safelySandbox(() => startProjectEnvironment(repositoryId, sandboxRuntime))));
+
+  server.registerTool("project-environment.stop", {
+    title: "Stop persistent project service",
+    description: "Stop the registered project-service workload without deleting its persistent project data or releasing its resource reservation.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200) },
+  }, async ({ repositoryId }) => guarded(() => safelySandbox(() => stopProjectEnvironment(repositoryId, sandboxRuntime))));
+
+  server.registerTool("project-environment.deprovision", {
+    title: "Deprovision persistent project service",
+    description: "Remove the project-service container, unstage its canonical mounts and release the repository resource reservation. Persistent project release and data directories are retained. Requires explicit confirmation.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200), confirm: z.boolean() },
+  }, async ({ repositoryId, confirm }) => guarded(() => safelySandbox(async () => {
+    if (!confirm) throw new Error("Deprovisioning requires confirm=true");
+    return deprovisionProjectEnvironment(repositoryId, sandboxRuntime);
+  })));
 
   server.registerTool("repository.register", {
     title: "Register repository",
