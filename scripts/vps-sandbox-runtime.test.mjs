@@ -1,11 +1,57 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+
+describe('project-service boot recovery policy', () => {
+  const project = (status) => ({ workloadType: 'project-service', status });
+  it.each([
+    [project('running'), 'running', 'start'],
+    [project('starting'), 'exited', 'start'],
+    [project('running'), 'missing', 'operator-review'],
+    [project('stopping'), 'running', 'stop'],
+    [project('stopping'), 'missing', 'operator-review'],
+    [project('removing'), 'missing', 'remove'],
+    [project('creating'), 'created', 'reconcile-create'],
+    [project('creating'), 'missing', 'operator-review'],
+    [project('created'), 'running', 'stop'],
+    [project('created'), 'exited', 'reconcile-create'],
+    [project('created'), 'created', 'skip'],
+    [project('stopped'), 'exited', 'skip'],
+    [project('stopped'), 'missing', 'operator-review'],
+    [project('removed'), 'missing', 'skip'],
+    [{ workloadType: 'task', status: 'running' }, 'running', 'skip'],
+  ])('chooses %s / %s -> %s', (record, runtimeState, expected) => {
+    expect(projectServiceBootRecoveryAction(record, runtimeState)).toBe(expected);
+  });
+});
+
+describe('project-service boot recovery policy', () => {
+  const project = (status) => ({ workloadType: 'project-service', status });
+  it.each([
+    [project('running'), 'running', 'start'],
+    [project('starting'), 'exited', 'start'],
+    [project('running'), 'missing', 'operator-review'],
+    [project('stopping'), 'running', 'stop'],
+    [project('stopping'), 'missing', 'operator-review'],
+    [project('removing'), 'missing', 'remove'],
+    [project('creating'), 'created', 'reconcile-create'],
+    [project('creating'), 'missing', 'operator-review'],
+    [project('created'), 'running', 'stop'],
+    [project('created'), 'exited', 'reconcile-create'],
+    [project('created'), 'created', 'skip'],
+    [project('stopped'), 'exited', 'skip'],
+    [project('stopped'), 'missing', 'operator-review'],
+    [project('removed'), 'missing', 'skip'],
+    [{ workloadType: 'task', status: 'running' }, 'running', 'skip'],
+  ])('chooses %s / %s -> %s', (record, runtimeState, expected) => {
+    expect(projectServiceBootRecoveryAction(record, runtimeState)).toBe(expected);
+  });
+});
 
 describe('dashboard runtime metric parsers', () => {
   it('normalizes Podman Go timestamps with timezone abbreviations', () => {
@@ -32,6 +78,23 @@ describe('dashboard runtime metric parsers', () => {
     ].join(String.fromCharCode(10));
     expect(parseNetworkNamespaceCounters(sample)).toEqual({ rxBytes: 2000, txBytes: 4000 });
     expect(parseNetworkNamespaceCounters('bad')).toBeNull();
+  });
+});
+
+describe('project-service effective cgroup limits', () => {
+  const resources = { cpuMilli: 500, memoryMiB: 1024, pids: 128 };
+  const valid = { memoryMax: String(1024 * 1024 * 1024), memorySwapMax: '0', cpuMax: '50000 100000', pidsMax: '128' };
+  it('accepts bounded effective CPU, memory, zero-swap and PID limits', () => {
+    expect(validateProjectServiceCgroupV2Limits(valid, resources)).toEqual({ memoryMax: valid.memoryMax, cpuMax: valid.cpuMax, pidsMax: valid.pidsMax });
+  });
+  it('rejects missing, unbounded, over-reserved and swap-enabled limits', () => {
+    expect(() => validateProjectServiceCgroupV2Limits({ ...valid, memoryMax: 'max' }, resources)).toThrow('memory.max');
+    expect(() => validateProjectServiceCgroupV2Limits({ ...valid, memoryMax: String(2 * 1024 * 1024 * 1024) }, resources)).toThrow('memory.max');
+    expect(() => validateProjectServiceCgroupV2Limits({ ...valid, memorySwapMax: '1' }, resources)).toThrow('memory.swap.max');
+    expect(() => validateProjectServiceCgroupV2Limits({ ...valid, cpuMax: 'max 100000' }, resources)).toThrow('cpu.max');
+    expect(() => validateProjectServiceCgroupV2Limits({ ...valid, cpuMax: '60000 100000' }, resources)).toThrow('CPU quota');
+    expect(() => validateProjectServiceCgroupV2Limits({ ...valid, pidsMax: 'max' }, resources)).toThrow('pids.max');
+    expect(() => validateProjectServiceCgroupV2Limits({ ...valid, pidsMax: '256' }, resources)).toThrow('pids.max');
   });
 });
 
@@ -69,6 +132,23 @@ describe('rootless workload runtime request validation', () => {
     expect(parseRuntimeRequest(JSON.stringify(request))).toEqual(request);
   });
 
+  it('accepts dedicated project-service lifecycle operations and rejects generic project-service container creation', () => {
+    const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+    const image = 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64);
+    const previous = process.env.VPS_SANDBOX_ALLOWED_IMAGES;
+    process.env.VPS_SANDBOX_ALLOWED_IMAGES = image;
+    const create = { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 }, restartPolicy: 'unless-stopped', command: ['--nodaemonize'] };
+    expect(parseRuntimeRequest(JSON.stringify(create))).toEqual(create);
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...create, restartPolicy: 'on-failure' }))).toThrow('restart policy');
+    if (previous === undefined) delete process.env.VPS_SANDBOX_ALLOWED_IMAGES; else process.env.VPS_SANDBOX_ALLOWED_IMAGES = previous;
+    for (const operation of ['project-service.inspect','project-service.start','project-service.stop','project-service.remove']) {
+      expect(parseRuntimeRequest(JSON.stringify(operation === 'project-service.remove'
+        ? { operation, workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id }
+        : { operation, workloadId: id }))).toMatchObject({ operation, workloadId: id });
+    }
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId: 'repo', image }))).toThrow('task workloads');
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'project-service.create', ...create, arbitraryHostPath: '/etc' }))).toThrow('unsupported properties');
+  });
   it('accepts dashboard inventory as a read-only operation with no caller-controlled arguments', () => {
     expect(parseRuntimeRequest(JSON.stringify({ operation: 'dashboard.inventory' })))
       .toEqual({ operation: 'dashboard.inventory' });
@@ -141,7 +221,7 @@ describe('rootless workload runtime request validation', () => {
     expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'resource.reserve', repositoryId: 'repo-123', resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, admin: true } }))).toThrow('unsupported properties');
     const create = { operation: 'container.create', workloadId: sandboxId, workloadType: 'task', repositoryId: 'repo-123', worktreeId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', image: `docker.io/library/node@sha256:${'a'.repeat(64)}`, network: 'host', readOnlyRootfs: true };
     expect(() => parseRuntimeRequest(JSON.stringify(create))).toThrow('Only network=none');
-    expect(parseRuntimeRequest(JSON.stringify({ ...create, workloadType: 'project-service', network: 'none' }))).toMatchObject({ operation: 'container.create', workloadType: 'project-service', network: 'none' });
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...create, workloadType: 'project-service', network: 'none' }))).toThrow('task workloads');
   });
 
   it('runs list/read/write operations within the workspace root and rejects escapes', async () => {
@@ -314,6 +394,7 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('--user');
     expect(args).toContain('--security-opt=seccomp=/usr/share/containers/seccomp.json');
     expect(args).toContain('--read-only');
+    expect(args).toContain('--memory-swap=1024m');
     expect(args).toContain('--cap-drop=ALL');
     expect(args).toContain('--security-opt=no-new-privileges');
     expect(args).toContain('--pids-limit');
@@ -335,6 +416,42 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args.some((arg) => arg.includes('/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/234e5321-b4d7-4d4f-be92-ce56a984adaa'))).toBe(false);
   });
 
+  it('builds project-service mounts from broker staging paths and maps the image app UID', () => {
+    const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+    const base = '/var/lib/vps-sandbox-mounts/projects/deputy-proxy-vps-mcp/' + id;
+    const args = buildContainerCreateArgs({
+      id, workloadType: 'project-service', repositoryId: 'deputy-proxy-vps-mcp',
+      image: 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64),
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' },
+      restartPolicy: 'unless-stopped', executionMount: null,
+    });
+    expect(args).toContain('--network=none');
+    expect(args).toContain('--read-only');
+    expect(args).toContain('--memory-swap=1024m');
+    expect(args).toContain('--restart=unless-stopped');
+    expect(args).toContain('--cap-drop=ALL');
+    expect(args).toContain('--security-opt=no-new-privileges');
+    expect(args).toContain('--security-opt=seccomp=/usr/share/containers/seccomp.json');
+    expect(args).toContain('--tmpfs');
+    expect(args).toContain('/tmp:rw,noexec,nosuid,nodev,size=64m');
+    expect(args.join(' ')).not.toMatch(/--device|--privileged|--pid=host|--ipc=host|--uts=host|\/dev|vps-sandbox-runtime\\.sock|vps-sandbox-quota\\.sock|task-workspaces|execution-logs/);
+    expect(args.join(' ')).not.toContain('/workspace');
+    expect(args.join(' ')).not.toContain('/run/vps-mcp-executions');
+    expect(args).toContain('--userns=keep-id:uid=10001,gid=10001');
+    expect(args).toContain('--label');
+    expect(args).toContain('io.cr8or.vps-mcp.release=234e5321-b4d7-4d4f-be92-ce56a984adaa');
+    expect(args).toContain('--user');
+    expect(args).toContain('10001:10001');
+    expect(args).toContain('type=bind,src=' + base + '/release,dst=/app,ro');
+    expect(args).toContain('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
+    expect(args).toContain('type=bind,src=' + base + '/cache,dst=/app/bootstrap/cache,rw');
+    expect(args).toContain('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    expect(args).not.toContain('--privileged');
+    expect(args).not.toContain('--device');
+    expect(args.join(' ')).not.toContain('/var/lib/vps-mcp/task-workspaces');
+    expect(args.join(' ')).not.toContain('/var/lib/vps-sandbox/execution-logs');
+  });
   it('allows task egress only through the administrator-pinned proxy network mode', () => {
     const image = 'docker.io/library/node@sha256:' + 'a'.repeat(64);
     const args = buildContainerCreateArgs({

@@ -12,6 +12,8 @@ it("lists the Laravel profile as definition-only with a bounded resource plan", 
     resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
     deployment: { migrations: "disabled", seeders: { enabled: false, allowlist: [] } },
   });
+  expect(result.profiles[0]!.processes.workers).toEqual([]);
+  expect(result.profiles[0]!.processes.scheduler).toEqual({ enabled: false, command: null });
 });
 
 it("omits definition-only profiles when callers request deployable profiles only", () => {
@@ -31,4 +33,13 @@ it("rejects unknown profile IDs and versions", () => {
 
 it("fails closed until an immutable image digest is configured and the profile is deployable", () => {
   expect(() => assertServiceProfileDeployable(getServiceProfile("laravel-php"))).toThrow("definition-only and cannot be provisioned");
+});
+
+it("requires a full immutable registry image reference before a profile can be marked deployable", () => {
+  const profile = getServiceProfile("laravel-php");
+  profile.readiness = "deployable";
+  profile.runtime.imageDigest = "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64);
+  expect(() => assertServiceProfileDeployable(profile)).not.toThrow();
+  profile.runtime.imageDigest = "sha256:" + "a".repeat(64);
+  expect(() => assertServiceProfileDeployable(profile)).toThrow("definition-only and cannot be provisioned");
 });

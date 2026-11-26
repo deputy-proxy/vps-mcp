@@ -1,0 +1,28 @@
+[Unit]
+Description=Recover persistent VPS project-service workloads after boot
+After=local-fs.target vps-sandbox-runtime.socket vps-sandbox-quota-broker.socket
+Wants=vps-sandbox-runtime.socket vps-sandbox-quota-broker.socket
+
+[Service]
+Type=oneshot
+User=vps-sandbox
+Group=vps-mcp
+SupplementaryGroups=vps-mcp
+EnvironmentFile=-/etc/vps-sandbox/runtime.env
+ExecStart=/usr/bin/node /usr/local/libexec/vps-mcp/recover-project-services.mjs
+TimeoutStartSec=5min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
