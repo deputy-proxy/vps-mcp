@@ -72,6 +72,42 @@ it("registers a development-only environment with canonical isolated paths and d
   expect((await inspectProjectEnvironment(state.repository.id)).environment.id).toBe(result.environment.id);
 });
 
+it("restricts the PHP-FPM acceptance profile to the dedicated disposable repository", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-unapproved-acceptance-1234567890", fullName: "acme/unapproved-acceptance", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    await expect(registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    })).rejects.toThrow("restricted to its disposable acceptance repository");
+
+    state.repository = {
+      id: "deputy-proxy-toti-invatam-org-44fadec4d6",
+      fullName: "deputy-proxy/toti-invatam-org",
+      status: "cloned",
+      persistentEnvironmentPaths: [],
+    };
+    const result = await registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    });
+    expect(result.created).toBe(true);
+    expect(result.environment).toMatchObject({
+      repositoryId: "deputy-proxy-toti-invatam-org-44fadec4d6",
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+    });
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
 it("is idempotent for an identical environment and rejects conflicting profile or resources", async () => {
   const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   const second = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
@@ -270,6 +306,65 @@ it("provisions from an explicitly deployable digest and retries an interrupted c
     state.repository = previousRepository;
     if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
     else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+  }
+});
+
+it("provisions the repository-restricted PHP-FPM acceptance profile with only the approved image", async () => {
+  const previousRepository = state.repository;
+  const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  const previousRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+  state.repository = {
+    id: "deputy-proxy-toti-invatam-org-44fadec4d6",
+    fullName: "deputy-proxy/toti-invatam-org",
+    status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+    { root: "/var/lib/vps-mcp/project-environments", owner: "vps-mcp" },
+    { root: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT, owner: "vps-mcp-development" },
+  ]);
+  const runtime = {
+    pullImage: vi.fn().mockResolvedValue({ pulled: true }),
+    createProjectServiceWorkload: vi.fn().mockResolvedValue({ workload: { id: "", status: "created" } }),
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    });
+    const releaseId = "234e5321-b4d7-4d4f-be92-ce56a984adaa";
+    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
+    await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
+
+    const provisioned = await provisionProjectEnvironment(state.repository.id, runtime as never);
+    expect(provisioned.environment).toMatchObject({
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+      observedState: "provisioned",
+      workloadIds: [environment.id],
+      workloadReleaseId: releaseId,
+    });
+    expect(runtime.pullImage).toHaveBeenCalledExactlyOnceWith(
+      "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
+    );
+    expect(runtime.createProjectServiceWorkload).toHaveBeenCalledExactlyOnceWith({
+      workloadId: environment.id,
+      repositoryId: state.repository.id,
+      releaseId,
+      image: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      reservationResources: environment.resources,
+      restartPolicy: "unless-stopped",
+      command: ["--nodaemonize"],
+    });
+  } finally {
+    state.repository = previousRepository;
+    if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+    if (previousRootsJson === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = previousRootsJson;
   }
 });
 

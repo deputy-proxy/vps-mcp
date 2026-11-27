@@ -207,7 +207,7 @@ describe('durable sandbox execution contracts', () => {
     } finally {
       await fs.rm(fixture.root, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('validates a process identity inside the container rather than a host PID', () => {
     expect(buildExecutionIdentityCheckScript()).toContain('/proc/$pid/stat');

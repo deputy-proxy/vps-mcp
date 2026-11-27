@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { getManagedRepository, updateRepository, withRepositoryLock } from "./repositories.js";
-import { assertServiceProfileDeployable, getServiceProfile, serviceProfileReservationResources } from "./service-profiles.js";
+import { assertServiceProfileDeployable, assertServiceProfileRepositoryAllowed, getServiceProfile, serviceProfileReservationResources } from "./service-profiles.js";
 import type { SandboxRuntimeAdapter } from "./sandbox-runtime.js";
 import { formatSandboxRuntimeError } from "./sandbox-runtime.js";
 
@@ -188,6 +188,7 @@ export async function registerProjectEnvironment(input: {
   const profile = getServiceProfile(input.profileId, profileVersion);
   const repository = await getManagedRepository(input.repositoryId);
   if (!repository.id || repository.status === "invalid") throw new Error("Repository must be registered and valid before creating a project environment");
+  assertServiceProfileRepositoryAllowed(profile, repository.id);
   const canonicalPath = environmentPath(repository.id);
   if (!repository.persistentEnvironmentPaths.includes(canonicalPath)) {
     await fs.mkdir(root, { recursive: true, mode: 0o700 });
@@ -407,6 +408,7 @@ export async function provisionProjectEnvironment(repositoryId: string, runtime:
     const { environment } = await inspectProjectEnvironment(repositoryId);
     if (environment.desiredState === "deprovisioned") throw new Error("Deprovisioned project environments cannot be provisioned again");
     const profile = getServiceProfile(environment.profileId, environment.profileVersion);
+    assertServiceProfileRepositoryAllowed(profile, repositoryId);
     assertServiceProfileDeployable(profile);
     if (!profile.runtime.imageDigest) throw new Error("Project service profile has no approved immutable image reference");
     const releaseId = environment.candidateReleaseId ?? environment.activeReleaseId;
