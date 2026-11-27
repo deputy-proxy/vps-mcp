@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth, configuredProjectEnvironmentRoots, expectedProjectServiceMountSources } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, projectServiceMissingWorkloadReconciliationAllowed, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth, configuredProjectEnvironmentRoots, expectedProjectServiceMountSources } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
 import { projectPodName } from './project-pod.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -95,6 +95,22 @@ describe('project-service boot recovery policy', () => {
     [{ workloadType: 'task', status: 'running' }, 'running', 'skip'],
   ])('chooses %s / %s -> %s', (record, runtimeState, expected) => {
     expect(projectServiceBootRecoveryAction(record, runtimeState)).toBe(expected);
+  });
+});
+
+describe('explicit project-service missing-record reconciliation', () => {
+  const record = { id: '134e5321-b4d7-4d4f-be92-ce56a984adaa', workloadType: 'project-service', status: 'unknown' };
+  it('allows reconciliation only for an unknown project service with no runtime identity or matching container', () => {
+    expect(projectServiceMissingWorkloadReconciliationAllowed(record, null, [])).toBe(true);
+  });
+  it.each([
+    [{ ...record, status: 'running' }, null, [], false],
+    [record, 'abcdef123456', [], false],
+    [record, null, [{ workloadId: record.id }], false],
+    [record, null, [], true],
+    [{ ...record, workloadType: 'task' }, null, [], false],
+  ])('rejects unsafe reconciliation evidence %#', (candidate, runtimeId, containers, namedContainerExists) => {
+    expect(projectServiceMissingWorkloadReconciliationAllowed(candidate, runtimeId, containers, namedContainerExists)).toBe(false);
   });
 });
 

@@ -35,7 +35,7 @@ After starting a Laravel project service, verify that the runtime reports health
 
 ## Recovery and retirement
 
-Inspect status and health before restart or restore. Preserve unknown workloads and data for operator review. Stop services before backup restore. Verify backup identity and checksums, restore into staging, and switch only after validation. Deprovisioning must stop/remove project-service workloads, preserve or explicitly retire backups and data, remove registered environment paths only after verification, and release resource reservations last.
+Inspect status and health before restart or restore. Preserve unknown workloads and data for operator review. An explicit provisioning retry may reconcile an `unknown` project-service record only after the runtime verifies that no container exists by workload identity or deterministic name and the repository-private pod is empty; it removes only the stale runtime record and broker-staged mounts, never the persistent project release or data directories. Boot recovery itself continues to leave unknown workloads for operator review. Stop services before backup restore. Verify backup identity and checksums, restore into staging, and switch only after validation. Deprovisioning must stop/remove project-service workloads, preserve or explicitly retire backups and data, remove registered environment paths only after verification, and release resource reservations last.
 
 ## Acceptance evidence
 
