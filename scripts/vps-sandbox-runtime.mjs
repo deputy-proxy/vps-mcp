@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EXECUTION_POLICY, safeExecutionId, executionCommandMetadata, buildExecutionStartArgs, buildExecutionIdentityCheckScript, buildExecutionCancelScript, createExecutionRecord, executionRetentionActions, assertExecutionLogQuota, executionLogReadWindow } from './executions.mjs';
 import { promisify } from 'node:util';
 import { redactSensitiveText } from './secret-redaction.mjs';
+import { buildProjectPodCreateArgs, buildProjectPodMemberArgs, projectPodName, validateProjectPodInspection, validateProjectPodInfraInspection, validateProjectPodMemberInspection } from './project-pod.mjs';
 import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanupEligibility, withDurableLocks, auditSafeValue, diskPressureLevel, operationReplayDecision, orphanContainerEligibility, staleLockIsReapable, staleTemporaryFile, createWorkloadReplayDecision, resourceReservationMatches } from './resource-governance.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -438,6 +439,7 @@ async function readWorkloadRecords(options = {}) {
         assert(expected.includes(path.resolve(record.workspaceMount.path)), 'Task workload workspace path does not match its registered identity');
       }
       if (record.workloadType === 'project-service') {
+        if (record.podName !== undefined) assert(record.podName === projectPodName(record.repositoryId), 'Project-service workload has an invalid repository-private pod identity');
         assert(record.projectMounts && UUID.test(record.projectMounts.releaseId), 'Project-service workload is missing its release identity');
         assert(record.releaseId === record.projectMounts.releaseId, 'Project-service release identity does not match its mounts');
         const mountRoot = '/var/lib/vps-sandbox-mounts/projects/' + record.repositoryId + '/' + record.id;
@@ -1261,16 +1263,16 @@ async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RES
 export function assertWorkloadTypeMatch(record, expectedWorkloadType) {
   assert(expectedWorkloadType === record.workloadType, 'Workload type mismatch; refusing cross-lifecycle operation');
 }
-export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, projectMounts, executionMount, command, network = 'none', proxyUrl, restartPolicy }) {
+export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, projectMounts, executionMount, command, network = 'none', podName, proxyUrl, restartPolicy }) {
   assert(workloadType !== 'task' || (executionMount?.destination === '/run/vps-mcp-executions' && path.isAbsolute(executionMount.path)), 'Task workloads require a dedicated execution log mount');
   assert(network === 'none' || (workloadType === 'task' && network === 'slirp4netns:allow_host_loopback=true' && proxyUrl === EGRESS_PROXY_CONTAINER), 'Unsupported workload network policy');
-  assert(workloadType !== 'project-service' || (executionMount == null && projectMounts && projectMounts.releaseId), 'Project-service workloads require broker-staged project mounts and cannot receive task execution mounts');
-  assert(workloadType !== 'task' || projectMounts == null, 'Task workloads cannot receive project-service mounts');
+  assert(workloadType !== 'project-service' || (executionMount == null && projectMounts && projectMounts.releaseId && podName === projectPodName(repositoryId)), 'Project-service workloads require broker-staged mounts and their repository-private pod');
+  assert(workloadType !== 'task' || (projectMounts == null && podName === undefined), 'Task workloads cannot join project pods or receive project-service mounts');
   return [
-    'create', '--pull=never', '--cgroup-parent', CGROUP_PARENT, '--name', `vps-wl-${id}`,
+    'create', '--pull=never', ...(workloadType === 'project-service' ? [] : ['--cgroup-parent', CGROUP_PARENT]), '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
-    ...(workloadType === 'project-service' ? ['--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId, '--restart=' + safeRestartPolicy(restartPolicy)] : []),
-    '--network=' + network, '--http-proxy=false', '--read-only', '--cap-drop=ALL',
+    ...(workloadType === 'project-service' ? ['--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId, '--label', 'io.cr8or.vps-mcp.pod=' + podName, '--restart=' + safeRestartPolicy(restartPolicy)] : []),
+    ...(workloadType === 'project-service' ? buildProjectPodMemberArgs(podName) : ['--network=' + network]), '--http-proxy=false', '--read-only', '--cap-drop=ALL',
     ...(workloadType === 'project-service' ? ['--userns=keep-id:uid=10001,gid=10001', '--user', '10001:10001'] : ['--userns=keep-id', '--user', String(process.getuid()) + ':' + String(process.getgid())]),
     '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json', '--pids-limit', String(resources.pids),
     '--memory', `${resources.memoryMiB}m`, `--memory-swap=${resources.memoryMiB * (workloadType === 'project-service' ? 1 : 2)}m`, '--cpus', String(resources.cpuMilli / 1000),
@@ -1359,6 +1361,8 @@ async function createWorkload(request) {
   const egressEnabled = workloadType === 'task' && restrictedTaskEgressEnabled();
   const network = egressEnabled ? 'slirp4netns:allow_host_loopback=true' : 'none';
   const networkPolicy = workloadType === 'task' ? (egressEnabled ? 'task-restricted-egress' : 'task-no-egress') : 'project-private-no-egress';
+  const podName = workloadType === 'project-service' ? request.podName : undefined;
+  if (workloadType === 'project-service') assert(podName === projectPodName(repositoryId), 'Project-service workload must join its repository-private pod');
   assert(request.network === undefined || request.network === 'none', 'Only network=none is supported by this runtime adapter');
   assert(request.readOnlyRootfs === undefined || request.readOnlyRootfs === true, 'Container root filesystem must be read-only');
   const restartPolicy = workloadType === 'project-service' ? safeRestartPolicy(request.restartPolicy) : 'no';
@@ -1375,6 +1379,7 @@ async function createWorkload(request) {
       JSON.stringify(existing.workspaceMount ?? null) === JSON.stringify(workspaceMount) &&
       JSON.stringify(existing.executionMount ?? null) === JSON.stringify(executionMount) &&
       JSON.stringify(existing.projectMounts ?? null) === JSON.stringify(request.projectMounts ?? null) &&
+      existing.podName === podName &&
       JSON.stringify({ ...existing.resources, diskMiB: existing.resources?.diskMiB ?? (workloadType === 'task' ? 2048 : 10240) }) === JSON.stringify(resources) &&
       existing.commandFingerprint === fingerprint,
       'Workload ID is already registered with different immutable attributes',
@@ -1412,7 +1417,7 @@ async function createWorkload(request) {
   assert(capacity.allowed, capacity.reasons.join('; '));
   if (workloadType === 'task') await applyWorkspaceDiskQuota(repositoryId, worktreeId, resources.diskMiB);
   let record = retryRecord ?? {
-    id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}),
+    id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}), ...(podName ? { podName } : {}),
     image, imageDigest: image.slice(image.lastIndexOf('@') + 1), restartPolicy,
     runtimeId: null, workspaceMount, executionMount, ...(request.projectMounts ? { projectMounts: request.projectMounts } : {}), ...(request.releaseId ? { releaseId: request.releaseId } : {}), resources, network, networkPolicy, commandFingerprint: fingerprint,
     status: 'creating', createdAt: new Date().toISOString(), expiresAt: workloadType === 'task' ? new Date(Date.now() + resourceBudget().taskRetentionMs).toISOString() : null, updatedAt: new Date().toISOString(),
@@ -1457,6 +1462,66 @@ async function verifyProjectServiceMounts(projectMounts, repositoryId, workloadI
     assert(options.includes('nosuid') && options.includes('nodev'), 'Project mounts must enforce nosuid and nodev');
   }
 }
+async function inspectProjectPod(repositoryId) {
+  const name = projectPodName(repositoryId);
+  const result = await runPodman(['pod', 'inspect', '--format', '{{json .}}', name]);
+  let raw;
+  try { raw = JSON.parse(result.stdout.trim()); } catch { throw new Error('Podman returned invalid project pod inspection JSON'); }
+  const pod = validateProjectPodInspection(raw, repositoryId);
+  const infraResult = await runPodman(['inspect', '--format', '{{json .}}', pod.infraContainerId]);
+  let infra;
+  try { infra = JSON.parse(infraResult.stdout.trim()); } catch { throw new Error('Podman returned invalid project pod infra inspection JSON'); }
+  validateProjectPodInfraInspection(infra, pod);
+  return pod;
+}
+
+async function projectPodExists(repositoryId) {
+  try {
+    await runPodman(['pod', 'exists', projectPodName(repositoryId)], 10_000, 8192);
+    return true;
+  } catch (error) {
+    if (error?.code === 1 || error?.code === '1') return false;
+    throw error;
+  }
+}
+
+async function ensureProjectPod(repositoryId) {
+  const name = projectPodName(repositoryId);
+  if (await projectPodExists(repositoryId)) return { ...(await inspectProjectPod(repositoryId)), created: false };
+  try {
+    await runPodman(buildProjectPodCreateArgs(repositoryId), 30_000);
+  } catch (createError) {
+    // If another operation won the create race, accept only a fully verified pod.
+    if (await projectPodExists(repositoryId)) return { ...(await inspectProjectPod(repositoryId)), created: false };
+    throw createError;
+  }
+  try { return { ...(await inspectProjectPod(repositoryId)), created: true }; }
+  catch (verifyError) {
+    await runPodman(['pod', 'rm', '--force', name], 30_000).catch(() => {});
+    throw verifyError;
+  }
+}
+
+async function verifyProjectServicePod(record, runtimeId) {
+  assert(record.podName === projectPodName(record.repositoryId), 'Project-service pod identity does not match its repository');
+  const pod = await inspectProjectPod(record.repositoryId);
+  const memberResult = await runPodman(['inspect', '--format', '{{json .}}', runtimeId]);
+  let member;
+  try { member = JSON.parse(memberResult.stdout.trim()); } catch { throw new Error('Podman returned invalid project-service pod member inspection JSON'); }
+  validateProjectPodMemberInspection(member, pod);
+  return pod;
+}
+
+async function removeProjectPodIfEmpty(repositoryId) {
+  const name = projectPodName(repositoryId);
+  if (!(await projectPodExists(repositoryId))) return { removed: false, notFound: true };
+  const pod = await inspectProjectPod(repositoryId);
+  const members = pod.containers.filter((container) => container.id && container.id !== pod.infraContainerId);
+  assert(members.length === 0, 'Project pod still contains workload containers; refusing to remove its private network namespace');
+  const result = await runPodman(['pod', 'rm', '--force', name], 30_000);
+  return { removed: true, output: result.stdout.trim() };
+}
+
 async function createProjectServiceWorkload(request) {
   const id = safeId(request.workloadId);
   const repositoryId = safeRepositoryId(request.repositoryId);
@@ -1478,20 +1543,26 @@ async function createProjectServiceWorkload(request) {
   assert(resourceReservationMatches(reservation, resources),
     'SANDBOX_PROJECT_RESERVATION_MISMATCH: project-service resources must exactly match the active repository reservation');
   let projectMounts = null;
+  let projectPod = null;
   try {
+    projectPod = await ensureProjectPod(repositoryId);
     await applyProjectEnvironmentDiskQuota(repositoryId, id, resources.diskMiB);
     projectMounts = await stageProjectServiceMounts(repositoryId, id, releaseId);
     await verifyProjectServiceMounts(projectMounts, repositoryId, id);
     const workload = await createWorkload({
       operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId,
-      releaseId, projectMounts, image, resources, restartPolicy, command: request.command, network: 'none', readOnlyRootfs: true,
+      releaseId, projectMounts, image, resources, restartPolicy, command: request.command, network: 'none', podName: projectPod.name, readOnlyRootfs: true,
     });
-    if (workload.runtimeId) await verifyProjectServiceRestartPolicy(workload, workload.runtimeId);
+    if (workload.runtimeId) {
+      await verifyProjectServiceRestartPolicy(workload, workload.runtimeId);
+      await verifyProjectServicePod(workload, workload.runtimeId);
+    }
     await appendAudit('project-service.created', { workloadId: id, repositoryId, releaseId, imageDigest: image.slice(image.lastIndexOf('@') + 1), resources });
     return { workload };
   } catch (error) {
     const persisted = await readRecord(id).catch((readError) => readError.code === 'ENOENT' ? null : Promise.reject(readError));
     if (!persisted && projectMounts) await unstageProjectServiceMounts(repositoryId, id, releaseId).catch(() => {});
+    if (!persisted && projectPod?.created) await removeProjectPodIfEmpty(repositoryId).catch(() => {});
     throw error;
   }
 }
@@ -1506,6 +1577,7 @@ async function inspectProjectServiceWorkload(workloadId) {
   const runtimeId = record.status === 'removed' ? null : await resolveRuntimeId(record);
   if (!runtimeId) return { workload: record, runtime: null, reconciliation: 'runtime container is missing; project-service record retained for operator review' };
   await verifyProjectServiceRestartPolicy(record, runtimeId);
+  await verifyProjectServicePod(record, runtimeId);
   const result = await runPodman(['inspect', '--format', '{{json .State}}', runtimeId]);
   let runtime;
   try { runtime = JSON.parse(result.stdout.trim()); } catch { throw new Error('Podman returned invalid inspect JSON'); }
@@ -1590,8 +1662,11 @@ async function startProjectServiceWorkload(workloadId) {
   assert(resourceReservationMatches(reservation, record.resources), 'Project-service resource reservation is missing or does not match the workload');
   const projectMounts = await stageProjectServiceMounts(record.repositoryId, record.id, record.releaseId);
   await verifyProjectServiceMounts(projectMounts, record.repositoryId, record.id);
+  const existingRuntimeId = record.runtimeId ?? await resolveRuntimeId(record);
+  assert(existingRuntimeId, 'Project-service runtime container is missing; operator review is required');
+  await verifyProjectServicePod(record, existingRuntimeId);
   const result = await mutate({ operation: 'container.start', workloadId, expectedWorkloadType: 'project-service' },
-    (current) => runPodman(['start', current.runtimeId]));
+    (current) => runPodman(['pod', 'start', current.podName]));
   const startedRecord = result.workload ?? await readRecord(workloadId);
   const runtimeId = startedRecord.runtimeId;
   assert(runtimeId, 'Project-service runtime container identity is unavailable after start');
@@ -1606,7 +1681,7 @@ async function startProjectServiceWorkload(workloadId) {
     return { ...result, health };
   } catch (error) {
     let stopFailure = null;
-    try { await runPodman(['stop', '--time', '1', runtimeId], 30_000); }
+    try { await runPodman(['pod', 'stop', '--time', '1', startedRecord.podName], 30_000); }
     catch (stopError) { stopFailure = stopError instanceof Error ? stopError.message : 'stop failed'; }
     const latest = await readRecord(workloadId);
     await writeRecord({
@@ -1627,6 +1702,7 @@ async function removeProjectServiceWorkload(request) {
     const containers = await listManagedContainers();
     assert(!containers.some((container) => container.workloadId === workloadId || container.name === 'vps-wl-' + workloadId),
       'Project-service workload record is missing but a container with its identity still exists; operator reconciliation is required');
+    await removeProjectPodIfEmpty(repositoryId);
     await unstageProjectServiceMounts(repositoryId, workloadId, releaseId);
     await appendAudit('project-service.removed-missing-record', { workloadId, repositoryId, releaseId });
     return { workload: null, removed: true, notFound: true };
@@ -1634,8 +1710,9 @@ async function removeProjectServiceWorkload(request) {
   assert(record.workloadType === 'project-service' && record.repositoryId === repositoryId && record.releaseId === releaseId,
     'Project-service removal identity does not match its persisted workload record');
   const result = await mutate({ operation: 'container.remove', workloadId, expectedWorkloadType: 'project-service' }, (current) => runPodman(['rm', '--force', current.runtimeId], 30_000));
+  const podRemoval = await removeProjectPodIfEmpty(repositoryId);
   await releaseProjectServiceMounts(result.workload);
-  await appendAudit('project-service.removed', { workloadId, repositoryId: record.repositoryId, releaseId });
+  await appendAudit('project-service.removed', { workloadId, repositoryId: record.repositoryId, releaseId, podRemoved: podRemoval.removed });
   return result;
 }
 
@@ -2415,6 +2492,7 @@ async function recoverProjectServiceWorkloads() {
       }
       if (action === 'reconcile-create') {
         await verifyProjectServiceRestartPolicy(record, runtimeId);
+        await verifyProjectServicePod(record, runtimeId);
         const status = runtimeState === 'running' ? 'running' : runtimeState === 'created' ? 'created' : runtimeState === 'exited' ? 'stopped' : 'unknown';
         const updated = { ...record, runtimeId, status, updatedAt: new Date().toISOString() };
         await writeRecord(updated);
@@ -2422,7 +2500,7 @@ async function recoverProjectServiceWorkloads() {
         return;
       }
       if (action === 'stop') {
-        const stopped = await mutate({ operation: 'container.stop', workloadId: record.id, expectedWorkloadType: 'project-service' }, (current) => runPodman(['stop', '--time', '10', current.runtimeId], 30_000));
+        const stopped = await mutate({ operation: 'container.stop', workloadId: record.id, expectedWorkloadType: 'project-service' }, (current) => runPodman(['pod', 'stop', '--time', '10', current.podName], 30_000));
         results.push({ workloadId: record.id, action, status: stopped.workload.status });
         return;
       }
@@ -2472,7 +2550,7 @@ async function execute(request) {
   if (request.operation === 'project-service.create') return createProjectServiceWorkload(request);
   if (request.operation === 'project-service.inspect') return inspectProjectServiceWorkload(request.workloadId);
   if (request.operation === 'project-service.start') return startProjectServiceWorkload(request.workloadId);
-  if (request.operation === 'project-service.stop') return mutate({ operation: 'container.stop', workloadId: request.workloadId, expectedWorkloadType: 'project-service' }, (record) => runPodman(['stop', '--time', '10', record.runtimeId], 30_000));
+  if (request.operation === 'project-service.stop') return mutate({ operation: 'container.stop', workloadId: request.workloadId, expectedWorkloadType: 'project-service' }, (record) => runPodman(['pod', 'stop', '--time', '10', record.podName], 30_000));
   if (request.operation === 'project-service.remove') return removeProjectServiceWorkload(request);
   if (request.operation === 'container.list') {
     const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });

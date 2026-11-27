@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth, configuredProjectEnvironmentRoots, expectedProjectServiceMountSources } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
+import { projectPodName } from './project-pod.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -468,9 +469,12 @@ describe('rootless workload lifecycle isolation', () => {
       image: 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64),
       resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
       projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' },
-      restartPolicy: 'unless-stopped', executionMount: null,
+      restartPolicy: 'unless-stopped', executionMount: null, podName: projectPodName('deputy-proxy-vps-mcp'),
     });
-    expect(args).toContain('--network=none');
+    expect(args).toContain('--pod');
+    expect(args).toContain(projectPodName('deputy-proxy-vps-mcp'));
+    expect(args).not.toContain('--cgroup-parent');
+    expect(args.some((arg) => arg.startsWith('--network='))).toBe(false);
     expect(args).toContain('--read-only');
     expect(args).toContain('--memory-swap=1024m');
     expect(args).toContain('--restart=unless-stopped');
