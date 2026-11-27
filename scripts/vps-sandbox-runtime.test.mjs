@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -16,6 +16,40 @@ describe('Podman subprocess environment', () => {
   });
 });
 
+
+describe('persistent project-service PHP-FPM health checks', () => {
+  it('probes the configured TCP listener as the non-root application user', () => {
+    expect(projectServiceHealthProbeCommand()).toEqual([
+      'php', '-r',
+      "$socket = @fsockopen('127.0.0.1', 9000, $errno, $errstr, 2); if (!is_resource($socket)) { fwrite(STDERR, 'PHP-FPM TCP health check failed'); exit(1); } fclose($socket);",
+    ]);
+  });
+
+  it('retries transient startup failures and returns verified health evidence', async () => {
+    let calls = 0;
+    const health = await waitForProjectServiceHealth(async () => {
+      calls += 1;
+      if (calls < 3) throw new Error('not ready');
+    }, { attempts: 4, intervalMs: 0 });
+    expect(calls).toBe(3);
+    expect(health).toMatchObject({ status: 'healthy', checks: ['php-fpm'], attempts: 3 });
+    expect(Number.isNaN(Date.parse(health.checkedAt))).toBe(false);
+  });
+
+  it('fails closed after the bounded health-check retry budget', async () => {
+    let calls = 0;
+    await expect(waitForProjectServiceHealth(async () => {
+      calls += 1;
+      throw new Error('not ready');
+    }, { attempts: 3, intervalMs: 0 })).rejects.toThrow('PHP-FPM health check failed after 3 attempts');
+    expect(calls).toBe(3);
+  });
+
+  it('rejects unbounded or invalid retry settings', async () => {
+    await expect(waitForProjectServiceHealth(async () => {}, { attempts: 100 })).rejects.toThrow('between 1 and 30');
+    await expect(waitForProjectServiceHealth(async () => {}, { attempts: 1, intervalMs: 6000 })).rejects.toThrow('between 0 and 5000ms');
+  });
+});
 
 describe('project-service boot recovery policy', () => {
   const project = (status) => ({ workloadType: 'project-service', status });

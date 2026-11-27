@@ -422,7 +422,10 @@ export async function startProjectEnvironment(repositoryId: string, runtime: San
     await updateEnvironmentRecord({ repositoryId, desiredState: "running", observedState: "starting", lastError: null });
     try {
       const result = await runtime.startProjectServiceWorkload(workloadId);
-      await updateEnvironmentRecord({ repositoryId, observedState: "running", reconciled: true });
+      const health = typeof result === "object" && result !== null && "health" in result
+        ? (result as { health?: ProjectEnvironment["health"] }).health
+        : undefined;
+      await updateEnvironmentRecord({ repositoryId, observedState: "running", ...(health ? { health } : {}), reconciled: true });
       return { environment: (await inspectProjectEnvironment(repositoryId)).environment, result };
     } catch (error) {
       await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
@@ -477,5 +480,9 @@ export async function inspectProjectEnvironmentRuntime(repositoryId: string, run
   const workloadId = environment.workloadIds[0];
   if (!workloadId) return { environment, workload: null, runtime: null };
   const result = await runtime.inspectProjectServiceWorkload(workloadId);
+  if (result.health) {
+    const updated = await updateEnvironmentRecord({ repositoryId, health: result.health });
+    return { environment: updated.environment, ...result };
+  }
   return { environment, ...result };
 }

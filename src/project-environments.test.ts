@@ -37,10 +37,16 @@ vi.mock("./service-profiles.js", async (importOriginal) => {
 
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-project-environments-"));
 state.dataDir = path.join(temporaryDirectory, "data");
+const previousProjectEnvironmentRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
 const { deprovisionProjectEnvironment, inspectProjectEnvironment, listProjectEnvironments, prepareProjectEnvironmentMountAccess, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } = await import("./project-environments.js");
 
 beforeAll(async () => { await fs.mkdir(state.dataDir, { recursive: true }); });
-afterAll(async () => { await fs.rm(temporaryDirectory, { recursive: true, force: true }); });
+afterAll(async () => {
+  await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  if (previousProjectEnvironmentRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectEnvironmentRoot;
+});
 
 it("registers a development-only environment with canonical isolated paths and durable permissions", async () => {
   const result = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
@@ -280,7 +286,7 @@ it("persists project-service start, stop and deprovision transitions around runt
     persistentEnvironmentPaths: [],
   };
   const runtime = {
-    startProjectServiceWorkload: vi.fn(async (id: string) => ({ workloadId: id, status: "running" })),
+    startProjectServiceWorkload: vi.fn(async (id: string) => ({ workloadId: id, status: "running", health: { status: "healthy" as const, checkedAt: new Date().toISOString(), checks: ["php-fpm"] } })),
     stopProjectServiceWorkload: vi.fn(async (id: string) => ({ workloadId: id, status: "stopped" })),
     removeProjectServiceWorkload: vi.fn(async (input: { workloadId: string; repositoryId: string; releaseId: string }) => ({ workloadId: input.workloadId, status: "removed" })),
     releaseProjectResources: vi.fn(async (id: string) => ({ repositoryId: id, released: true })),
@@ -289,7 +295,7 @@ it("persists project-service start, stop and deprovision transitions around runt
     const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
     await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa", workloadIds: [environment.id] });
     const started = await startProjectEnvironment(state.repository.id, runtime as never);
-    expect(started.environment).toMatchObject({ desiredState: "running", observedState: "running" });
+    expect(started.environment).toMatchObject({ desiredState: "running", observedState: "running", health: { status: "healthy", checks: ["php-fpm"] } });
     expect(runtime.startProjectServiceWorkload).toHaveBeenCalledWith(environment.id);
     const stopped = await stopProjectEnvironment(state.repository.id, runtime as never);
     expect(stopped.environment).toMatchObject({ desiredState: "stopped", observedState: "stopped" });

@@ -1472,7 +1472,38 @@ async function inspectProjectServiceWorkload(workloadId) {
   const status = runtime.Status === 'running' ? 'running' : runtime.Status === 'exited' ? 'stopped' : record.status;
   const updated = { ...record, runtimeId, status, updatedAt: new Date().toISOString() };
   await writeRecord(updated);
-  return { workload: updated, runtime };
+  let health = { status: 'unknown', checkedAt: new Date().toISOString(), checks: [] };
+  if (status === 'running') {
+    try {
+      const checked = await waitForProjectServiceHealth(
+        () => runPodman(['exec', '--user', '10001:10001', runtimeId, ...projectServiceHealthProbeCommand()], 5000, 8192),
+        { attempts: 1, intervalMs: 0 },
+      );
+      health = { status: checked.status, checkedAt: checked.checkedAt, checks: checked.checks };
+    } catch {
+      health = { status: 'unhealthy', checkedAt: new Date().toISOString(), checks: ['php-fpm'] };
+    }
+  }
+  return { workload: updated, runtime, health };
+}
+export function projectServiceHealthProbeCommand() {
+  return ['php', '-r', "$socket = @fsockopen('127.0.0.1', 9000, $errno, $errstr, 2); if (!is_resource($socket)) { fwrite(STDERR, 'PHP-FPM TCP health check failed'); exit(1); } fclose($socket);"];
+}
+
+export async function waitForProjectServiceHealth(probe, options = {}) {
+  const attempts = options.attempts ?? 10;
+  const intervalMs = options.intervalMs ?? 1000;
+  assert(Number.isInteger(attempts) && attempts >= 1 && attempts <= 30, 'Health-check attempts must be between 1 and 30');
+  assert(Number.isInteger(intervalMs) && intervalMs >= 0 && intervalMs <= 5000, 'Health-check interval must be between 0 and 5000ms');
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await probe();
+      return { status: 'healthy', checkedAt: new Date().toISOString(), checks: ['php-fpm'], attempts: attempt };
+    } catch {
+      if (attempt < attempts && intervalMs > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+  throw new Error('Project-service PHP-FPM health check failed after ' + attempts + ' attempts');
 }
 export function validateProjectServiceCgroupV2Limits(values, resources) {
   const memory = /^\d+$/.test(values.memoryMax) ? BigInt(values.memoryMax) : null;
@@ -1527,7 +1558,12 @@ async function startProjectServiceWorkload(workloadId) {
   try {
     const effectiveLimits = await verifyProjectServiceCgroupV2Limits(runtimeId, startedRecord.resources);
     await appendAudit('project-service.limits.verified', { workloadId, repositoryId: record.repositoryId, effectiveLimits });
-    return result;
+    const health = await waitForProjectServiceHealth(
+      () => runPodman(['exec', '--user', '10001:10001', runtimeId, ...projectServiceHealthProbeCommand()], 5000, 8192),
+      { attempts: 10, intervalMs: 1000 },
+    );
+    await appendAudit('project-service.health.verified', { workloadId, repositoryId: record.repositoryId, checks: health.checks, attempts: health.attempts });
+    return { ...result, health };
   } catch (error) {
     let stopFailure = null;
     try { await runPodman(['stop', '--time', '1', runtimeId], 30_000); }
