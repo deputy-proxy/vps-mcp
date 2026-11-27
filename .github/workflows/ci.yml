@@ -34,6 +34,8 @@ jobs:
       - run: bash -n scripts/provision-development-runtime.sh
       - run: bash -n scripts/configure-development-runtime-access.sh
       - run: bash -n scripts/configure-development-project-environment-root.sh
+      - run: bash -n scripts/install-vps-sandbox-runtime.sh
+      - run: node --check scripts/project-environment-root-config.mjs
       - run: bash -n scripts/provision-development-deploy-access.sh
       - run: node --check scripts/deploy-development.mjs
       - run: bash -n scripts/provision-production-deploy-access.sh

@@ -33,6 +33,15 @@ if [[ -f "${RUNTIME_ENV}" ]]; then
   configured_root="$(sed -n 's/^VPS_SANDBOX_PROJECT_ENV_ROOT=//p' "${RUNTIME_ENV}" | tail -n 1)"
   configured_owner="$(sed -n 's/^VPS_SANDBOX_PROJECT_ENV_OWNER=//p' "${RUNTIME_ENV}" | tail -n 1)"
   configured_roots_json="$(sed -n 's/^VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON=//p' "${RUNTIME_ENV}" | tail -n 1)"
+  if [[ "${configured_roots_json}" == '"'*'"' ]]; then
+    configured_roots_json="$(ROOTS_VALUE="${configured_roots_json}" node --input-type=module -e '
+      const raw = process.env.ROOTS_VALUE;
+      let value;
+      try { value = JSON.parse(raw); } catch { process.exit(2); }
+      if (typeof value !== "string") process.exit(2);
+      process.stdout.write(value);
+    ')" || { echo "VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON has invalid EnvironmentFile quoting." >&2; exit 2; }
+  fi
   [[ -z "${configured_root}" ]] || PROJECT_ENV_ROOT="${configured_root}"
   [[ -z "${configured_owner}" ]] || PROJECT_ENV_OWNER="${configured_owner}"
   [[ -z "${configured_roots_json}" ]] || VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON="${configured_roots_json}"
