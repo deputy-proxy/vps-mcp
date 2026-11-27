@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { JWTVerifyGetKey } from "jose";
 import { config } from "./config.js";
@@ -14,13 +15,17 @@ export type OAuthOptions = {
 type DiscoveryDocument = { issuer?: unknown; jwks_uri?: unknown };
 type JwksResolver = () => Promise<JWTVerifyGetKey>;
 
-export function hasRequiredScopes(payload: object, requiredScopes: string[]): boolean {
+export function extractGrantedScopes(payload: object): string[] {
   const claims = payload as Record<string, unknown>;
-  const grantedScopes = typeof claims.scope === "string"
+  return typeof claims.scope === "string"
     ? claims.scope.split(/\s+/).filter(Boolean)
     : Array.isArray(claims.scp)
       ? claims.scp.filter((scope): scope is string => typeof scope === "string")
       : [];
+}
+
+export function hasRequiredScopes(payload: object, requiredScopes: string[]): boolean {
+  const grantedScopes = extractGrantedScopes(payload);
   return requiredScopes.every((scope) => grantedScopes.includes(scope));
 }
 
@@ -83,6 +88,16 @@ export function createOAuthAuthenticator(options: OAuthOptions, resolveKeys: Jwk
         response.status(403).json({ error: "Insufficient scope" });
         return;
       }
+
+      const authInfo: AuthInfo = {
+        token: supplied,
+        clientId: typeof payload.client_id === "string"
+          ? payload.client_id
+          : typeof payload.azp === "string" ? payload.azp : "unknown",
+        scopes: extractGrantedScopes(payload),
+        ...(typeof payload.exp === "number" ? { expiresAt: payload.exp } : {}),
+      };
+      (request as Request & { auth?: AuthInfo }).auth = authInfo;
       next();
     } catch (error) {
       const reason = error instanceof Error ? error.name : "unknown_verification_error";
