@@ -75,7 +75,23 @@ it("requires a full immutable registry image reference before a profile can be m
   const profile = getServiceProfile("laravel-php");
   profile.readiness = "deployable";
   profile.runtime.imageDigest = "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64);
+  expect(() => assertServiceProfileDeployable(profile)).toThrow("dependency 'mysql' must pin an immutable image digest");
+  profile.dependencies[0]!.imageDigest = "docker.io/library/mysql@sha256:" + "b".repeat(64);
+  expect(() => assertServiceProfileDeployable(profile)).toThrow("dependency 'redis' must pin an immutable image digest");
+  profile.dependencies[1]!.imageDigest = "docker.io/library/redis@sha256:" + "c".repeat(64);
   expect(() => assertServiceProfileDeployable(profile)).not.toThrow();
   profile.runtime.imageDigest = "sha256:" + "a".repeat(64);
   expect(() => assertServiceProfileDeployable(profile)).toThrow("definition-only and cannot be provisioned");
+});
+
+
+it("keeps dependency images unpinned and the profile definition-only until reviewed immutable digests exist", () => {
+  const profile = getServiceProfile("laravel-php", 3);
+  expect(profile.dependencies).toEqual([
+    { name: "mysql", version: "8", required: true, imageDigest: null, resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
+    { name: "redis", version: "7", required: false, imageDigest: null, resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
+  ]);
+  const candidate = structuredClone(profile);
+  candidate.readiness = "deployable";
+  expect(() => assertServiceProfileDeployable(candidate)).toThrow("dependency 'mysql' must pin an immutable image digest");
 });
