@@ -112,7 +112,15 @@ const PROFILES: ServiceProfile[] = [
     },
     backup: { includes: ["project-database", "project-storage"], restoreRequiresIdentityMatch: true },
   },
-];
+ ];
+
+// Profile versions are immutable contracts. The newer published image is a
+// separate candidate version rather than an in-place rewrite of version 2.
+const laravelPhpV3 = structuredClone(PROFILES[1]!);
+laravelPhpV3.version = 3;
+laravelPhpV3.displayName = "Laravel / PHP 8.4 (candidate, image refresh)";
+laravelPhpV3.runtime.imageDigest = "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72";
+PROFILES.push(laravelPhpV3);
 
 const lifecycleRoot = path.join(config.dataDir, "service-profiles");
 const lifecycleFile = path.join(lifecycleRoot, "lifecycle.json");

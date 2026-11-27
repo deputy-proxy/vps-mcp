@@ -41,15 +41,15 @@ The project-service start operation now performs a bounded PHP-FPM TCP readiness
 
 ## Validation evidence and remaining approval gate
 
-Candidate digest:
+Candidate digest for immutable profile version 3 (version 2 is retained unchanged):
 
-`ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:07022280f3b8e1a1be9abed133870af82a85912d78e4300144b1a3e38933a9da`
+`ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72`
 
 Validated evidence:
 
-1. GitHub Actions run `45894579996`: image build, restricted smoke test, vulnerability scan, immutable publish, exact-digest smoke test and exact-digest scan all succeeded.
-2. The publish job generated SBOM and provenance attestations.
-3. The VPS pulled and inspected the exact digest successfully.
-4. VPS rootless runtime preflight and smoke passed; the full runtime acceptance suite passed 31/31 checks.
+1. PR #196 records the published immutable digest and the exact-digest image evidence.
+2. The GHCR artifact includes a BuildKit SBOM (SPDX 2.3) and SLSA provenance resolving to development commit `b947b4b1e7215afcda5779a3a5ca0eab375b6d3a`.
+3. The CI Trivy scan reported zero HIGH/CRITICAL findings.
+4. The digest is pullable from GHCR; the VPS rootless runtime acceptance baseline passed 31/31 checks. This baseline does not exercise project-service provisioning.
 
-This approves the image artifact for further project-service acceptance, not the profile for live provisioning. The profile remains `definition-only` until a disposable registered repository demonstrates broker-staged release/storage/cache/log mounts, project quota enforcement, PHP-FPM health, lifecycle/reboot recovery, and safe deprovisioning. Database provisioning/isolation, release build/migration orchestration, backup/restore and rollback also remain separate gates. Do not enable the profile or provision a project service until those checks pass. Never deploy by tag.
+This validates the image artifact for further review, not administrator approval of the digest or the profile for live provisioning. The profile remains `definition-only` until a disposable registered repository demonstrates broker-staged release/storage/cache/log mounts, project quota enforcement, PHP-FPM health, lifecycle/reboot recovery, and safe deprovisioning. Database provisioning/isolation, release build/migration orchestration, backup/restore and rollback also remain separate gates. Do not enable the profile or provision a project service until those checks pass. Never deploy by tag.
