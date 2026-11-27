@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+
+describe('Podman subprocess environment', () => {
+  it('preserves the runtime service temporary directory for image pulls', () => {
+    expect(buildPodmanEnvironment({ TMPDIR: '/var/lib/vps-sandbox/tmp' }).TMPDIR).toBe('/var/lib/vps-sandbox/tmp');
+  });
+
+  it('falls back to Podman default temporary directory when TMPDIR is unset', () => {
+    expect(buildPodmanEnvironment({}).TMPDIR).toBe('/var/tmp');
+  });
+});
 
 
 describe('project-service boot recovery policy', () => {
@@ -447,6 +457,13 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
     expect(args).toContain('type=bind,src=' + base + '/cache,dst=/app/bootstrap/cache,rw');
     expect(args).toContain('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    // The dedicated logs bind intentionally overlays the storage bind. Keep
+    // the parent mount first so the nested target exists before Podman applies it.
+    const storageMountIndex = args.indexOf('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
+    const logsMountIndex = args.indexOf('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    expect(storageMountIndex).toBeGreaterThan(-1);
+    expect(logsMountIndex).toBeGreaterThan(storageMountIndex);
+    expect(base + '/storage').not.toBe(base + '/logs');
     expect(args).not.toContain('--privileged');
     expect(args).not.toContain('--device');
     expect(args.join(' ')).not.toContain('/var/lib/vps-mcp/task-workspaces');

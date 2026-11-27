@@ -37,14 +37,17 @@ The smoke test runs without network access, with a read-only root filesystem, al
 
 CI also scans the built image for unfixed-excluded high and critical vulnerabilities. A successful push to `development` publishes a commit-tagged image to GHCR with BuildKit SBOM and provenance attestations. The workflow summary records the resulting immutable digest.
 
-## Approval and deployment gate
+## Validation evidence and remaining approval gate
 
-A published digest is evidence, not automatic approval. Do not add it to `src/service-profiles.ts`, allow it in the host runtime image allowlist, or enable the profile until:
+Candidate digest:
 
-1. The exact digest is captured from a successful CI publish.
-2. SBOM and provenance are retained and inspected.
-3. Vulnerability results are reviewed.
-4. The image passes the rootless runtime acceptance suite on the VPS.
-5. The project-service mount, dependency-network and resource-isolation contracts are accepted.
+`ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:07022280f3b8e1a1be9abed133870af82a85912d78e4300144b1a3e38933a9da`
 
-The profile therefore remains `definition-only` during this image-build milestone. Never deploy by tag.
+Validated evidence:
+
+1. GitHub Actions run `45894579996`: image build, restricted smoke test, vulnerability scan, immutable publish, exact-digest smoke test and exact-digest scan all succeeded.
+2. The publish job generated SBOM and provenance attestations.
+3. The VPS pulled and inspected the exact digest successfully.
+4. VPS rootless runtime preflight and smoke passed; the full runtime acceptance suite passed 31/31 checks.
+
+This approves the image artifact for further project-service acceptance, not the profile for live provisioning. The profile remains `definition-only` until a disposable registered repository demonstrates broker-staged release/storage/cache/log mounts, project quota enforcement, PHP-FPM health, lifecycle/reboot recovery, and safe deprovisioning. Database provisioning/isolation, release build/migration orchestration, backup/restore and rollback also remain separate gates. Do not enable the profile or provision a project service until those checks pass. Never deploy by tag.

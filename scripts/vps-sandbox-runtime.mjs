@@ -1198,16 +1198,21 @@ async function resolveRuntimeId(record) {
 function commandFingerprint(command) {
   return createHash('sha256').update(JSON.stringify(command ?? null)).digest('hex');
 }
+export function buildPodmanEnvironment(runtimeEnvironment = process.env) {
+  return {
+    PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    HOME: '/var/lib/vps-sandbox',
+    // Preserve the runtime service's writable temporary directory for image pulls.
+    TMPDIR: runtimeEnvironment.TMPDIR ?? '/var/tmp',
+    XDG_RUNTIME_DIR: runtimeEnvironment.XDG_RUNTIME_DIR ?? '',
+    DBUS_SESSION_BUS_ADDRESS: runtimeEnvironment.DBUS_SESSION_BUS_ADDRESS ?? '',
+    ...(restrictedTaskEgressEnabled() ? { HTTP_PROXY: EGRESS_PROXY_HOST, HTTPS_PROXY: EGRESS_PROXY_HOST, http_proxy: EGRESS_PROXY_HOST, https_proxy: EGRESS_PROXY_HOST, NO_PROXY: 'localhost,127.0.0.1,::1', no_proxy: 'localhost,127.0.0.1,::1' } : {}),
+  };
+}
 async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RESPONSE_BYTES) {
   const { stdout, stderr } = await execFileAsync(PODMAN, ['--cgroup-manager=cgroupfs', ...args], {
     encoding: 'utf8', timeout, maxBuffer,
-    env: {
-      PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-      HOME: '/var/lib/vps-sandbox',
-      XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '',
-      DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ?? '',
-      ...(restrictedTaskEgressEnabled() ? { HTTP_PROXY: EGRESS_PROXY_HOST, HTTPS_PROXY: EGRESS_PROXY_HOST, http_proxy: EGRESS_PROXY_HOST, https_proxy: EGRESS_PROXY_HOST, NO_PROXY: 'localhost,127.0.0.1,::1', no_proxy: 'localhost,127.0.0.1,::1' } : {}),
-    },
+    env: buildPodmanEnvironment(),
   });
   return { stdout: stdout ?? '', stderr: stderr ?? '' };
 }
