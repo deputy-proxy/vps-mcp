@@ -8,12 +8,15 @@ const repositoryId = 'deputy-proxy-vps-mcp';
 const releaseId = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
 let root = '';
 const previousRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+const previousRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
 
 afterEach(async () => {
   if (root) await fs.rm(root, { recursive: true, force: true });
   root = '';
   if (previousRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
   else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousRoot;
+  if (previousRootsJson === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+  else process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = previousRootsJson;
 });
 
 describe('isMountpoint', () => {
@@ -48,6 +51,50 @@ describe('canonical project-service mount source resolution', () => {
       readOnly: [paths.release],
       writable: [paths.storage, paths.cache, paths.logs],
     });
+  });
+
+  it('resolves a repository from its matching root in a multi-root configuration', async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'vps-project-roots-'));
+    const productionRoot = path.join(root, 'production');
+    const developmentRoot = path.join(root, 'development');
+    process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+      { root: productionRoot, owner: 'vps-mcp' },
+      { root: developmentRoot, owner: 'vps-mcp-development' },
+    ]);
+    const environment = path.join(developmentRoot, repositoryId);
+    const paths = {
+      release: path.join(environment, 'releases', releaseId),
+      storage: path.join(environment, 'storage'),
+      cache: path.join(environment, 'cache'),
+      logs: path.join(environment, 'logs'),
+    };
+    for (const directory of Object.values(paths)) await fs.mkdir(directory, { recursive: true });
+    expect(resolveProjectServicePaths(repositoryId, releaseId)).toEqual({ environment, ...paths });
+  });
+
+  it('fails closed when a repository exists under more than one approved root', async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'vps-project-roots-'));
+    const firstRoot = path.join(root, 'first');
+    const secondRoot = path.join(root, 'second');
+    process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+      { root: firstRoot, owner: 'vps-mcp' },
+      { root: secondRoot, owner: 'vps-mcp-development' },
+    ]);
+    for (const base of [firstRoot, secondRoot]) {
+      const environment = path.join(base, repositoryId);
+      for (const directory of ['releases/' + releaseId, 'storage', 'cache', 'logs']) {
+        await fs.mkdir(path.join(environment, directory), { recursive: true });
+      }
+    }
+    expect(() => resolveProjectServicePaths(repositoryId, releaseId)).toThrow('multiple approved roots');
+  });
+
+  it('rejects malformed or duplicate root configuration', async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'vps-project-roots-'));
+    process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+      { root, owner: 'vps-mcp' }, { root, owner: 'vps-mcp-development' },
+    ]);
+    expect(() => resolveProjectServicePaths(repositoryId, releaseId)).toThrow('must be unique');
   });
 
   it('rejects unsafe repository and release identities', () => {
