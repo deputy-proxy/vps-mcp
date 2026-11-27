@@ -1,5 +1,13 @@
-import { expect, it } from "vitest";
-import { assertServiceProfileDeployable, getServiceProfile, listServiceProfiles } from "./service-profiles.js";
+import { beforeAll, expect, it } from "vitest";
+
+let assertServiceProfileDeployable: typeof import("./service-profiles.js").assertServiceProfileDeployable;
+let getServiceProfile: typeof import("./service-profiles.js").getServiceProfile;
+let listServiceProfiles: typeof import("./service-profiles.js").listServiceProfiles;
+
+beforeAll(async () => {
+  process.env.MCP_AUTH_TOKEN ??= "test-only-token-that-is-long-enough-for-vps-mcp";
+  ({ assertServiceProfileDeployable, getServiceProfile, listServiceProfiles } = await import("./service-profiles.js"));
+});
 
 it("lists the Laravel profile as definition-only with a bounded resource plan", () => {
   const result = listServiceProfiles();
