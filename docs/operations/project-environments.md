@@ -19,7 +19,7 @@ Promotion changes profile readiness only. It does not provision, start, or deplo
 
 1. Register and validate the repository; fetch its bare cache.
 2. Select an approved, versioned service profile.
-3. Register the environment. Registration automatically reserves the aggregate profile resource vector, including application and declared dependency budgets, through `resource.reserve`; inspect the returned reservation and capacity decision. If admission fails, the metadata record remains visible with a reservation error. Retry after capacity is freed, or submit a smaller bounded resource vector; the stored plan can be adjusted only after a capacity/disk admission failure and before any project service is active.
+3. Register the environment. Registration automatically reserves the aggregate profile resource vector, including application and declared dependency budgets, through `resource.reserve`; inspect the returned reservation and capacity decision. If admission fails, the metadata record remains visible with a reservation error. Retry after capacity is freed, or retry with the profile's minimum aggregate vector or adjust the versioned component budgets; the stored plan can be adjusted only after a capacity/disk admission failure and before any project service is active.
 4. Provision isolated project directories and development-only database/cache credentials.
 5. Resolve the current remote `development` commit and prepare an immutable candidate release.
 6. Build and validate the candidate release without changing the active release.

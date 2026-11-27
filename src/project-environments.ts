@@ -201,6 +201,9 @@ export async function registerProjectEnvironment(input: {
     diskMiB: input.resources?.diskMiB ?? profileReservation.diskMiB,
   };
   assertResources(resources);
+  for (const key of ["cpuMilli", "memoryMiB", "pids", "diskMiB"] as const) {
+    if (resources[key] < profileReservation[key]) throw new Error(`Project environment ${key} reservation cannot be lower than the aggregate profile requirement`);
+  }
   return withRepositoryLock(repository.id, async () => withLock("registry", async () => {
     const registry = await readRegistry();
     const existing = registry.environments.find((item) => item.repositoryId === repository.id);

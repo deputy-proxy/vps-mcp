@@ -77,7 +77,7 @@ it("is idempotent for an identical environment and rejects conflicting profile o
   const second = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   expect(second.created).toBe(false);
   expect(second.environment.id).toBe(first.environment.id);
-  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 750 } })).rejects.toThrow("different profile or resource reservation");
+  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 1500 } })).rejects.toThrow("different profile or resource reservation");
 });
 
 it("allows an explicit full-vector resize only while the environment is idle", async () => {
@@ -104,6 +104,7 @@ it("validates repository identity, profile and bounded resource requests", async
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "../unsafe" })).rejects.toThrow("Invalid project environment profile ID");
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "unknown-profile" })).rejects.toThrow("Unknown project environment profile");
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 5000 } })).rejects.toThrow("cpuMilli must be between");
+  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 1000, memoryMiB: 2048, pids: 320, diskMiB: 21504 } })).rejects.toThrow("cannot be lower than the aggregate profile requirement");
 });
 
 it("persists lifecycle observations and health without changing the source branch", async () => {
@@ -124,18 +125,16 @@ it("allows a bounded resource-plan retry after capacity admission fails", async 
     persistentEnvironmentPaths: [],
   };
   try {
-    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 1500, memoryMiB: 3072, pids: 384, diskMiB: 24576 } });
     await updateProjectEnvironment({
       repositoryId: state.repository.id,
       lastError: "Resource reservation failed: SANDBOX_CAPACITY_EXCEEDED: global memory reservation budget would be exceeded",
     });
-    const retried = await registerProjectEnvironment({
-      repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 },
-    });
+    const retried = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
     expect(retried.created).toBe(false);
     expect(retried.resourcesUpdated).toBe(true);
     expect(retried.environment.id).toBe(first.environment.id);
-    expect(retried.environment.resources).toEqual({ cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 });
+    expect(retried.environment.resources).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
     expect(retried.environment.lastError).toBeNull();
   } finally {
     state.repository = previousRepository;
