@@ -253,6 +253,7 @@ export type RuntimeWorkloadRecord = {
   workloadType: WorkloadType;
   repositoryId: string;
   worktreeId?: string;
+  podName?: string;
   image: string;
   imageDigest: string;
   restartPolicy?: 'no' | 'always' | 'unless-stopped';

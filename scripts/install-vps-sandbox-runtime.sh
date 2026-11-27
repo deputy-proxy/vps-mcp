@@ -103,6 +103,7 @@ systemd-analyze verify "$REPO_DIR/systemd/vps-sandbox-runtime.socket" "$REPO_DIR
 install -d -o root -g root -m 0755 "${LIBEXEC}" "${ENV_DIR}"
 install -d -o root -g vps-sandbox -m 0750 /var/lib/vps-sandbox-mounts
 install -o root -g root -m 0755 "${SCRIPT_DIR}/vps-sandbox-runtime.mjs" "${LIBEXEC}/vps-sandbox-runtime.mjs"
+install -o root -g root -m 0644 "${SCRIPT_DIR}/project-pod.mjs" "${LIBEXEC}/project-pod.mjs"
 install -o root -g root -m 0644 "${SCRIPT_DIR}/executions.mjs" "${LIBEXEC}/executions.mjs"
 install -o root -g root -m 0644 "${SCRIPT_DIR}/secret-redaction.mjs" "${LIBEXEC}/secret-redaction.mjs"
 install -o root -g root -m 0644 "$SCRIPT_DIR/resource-governance.mjs" "$LIBEXEC/resource-governance.mjs"
