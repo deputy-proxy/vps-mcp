@@ -30,6 +30,10 @@ vi.mock("./service-profiles.js", async (importOriginal) => {
         ...profile,
         readiness: "deployable",
         runtime: { ...profile.runtime, imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64) },
+        dependencies: profile.dependencies.map((dependency) => ({
+          ...dependency,
+          imageDigest: `docker.io/library/${dependency.name}@sha256:${dependency.name === "mysql" ? "b" : "c"}`.repeat(1) + "0".repeat(63),
+        })),
       } : profile;
     },
   };
@@ -301,38 +305,4 @@ it("persists project-service start, stop and deprovision transitions around runt
     expect(stopped.environment).toMatchObject({ desiredState: "stopped", observedState: "stopped" });
     expect(runtime.stopProjectServiceWorkload).toHaveBeenCalledWith(environment.id);
     const removed = await deprovisionProjectEnvironment(state.repository.id, runtime as never);
-    expect(removed.environment).toMatchObject({ desiredState: "deprovisioned", observedState: "deprovisioned", workloadIds: [], workloadReleaseId: null });
-    expect(runtime.removeProjectServiceWorkload).toHaveBeenCalledWith({ workloadId: environment.id, repositoryId: state.repository.id, releaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa" });
-    expect(runtime.releaseProjectResources).toHaveBeenCalledWith(state.repository.id);
-  } finally {
-    state.repository = previousRepository;
-  }
-});
-
-
-it("selects only existing canonical releases and prevents changing the active release under a workload", async () => {
-  const previousRepository = state.repository;
-  state.repository = {
-    id: "acme-release-select-1234567890", fullName: "acme/release-select", status: "cloned",
-    persistentEnvironmentPaths: [],
-  };
-  try {
-    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
-    const releaseId = "134e5321-b4d7-4d4f-be92-ce56a984adaa";
-    const nextReleaseId = "234e5321-b4d7-4d4f-be92-ce56a984adaa";
-    await expect(setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" })).rejects.toThrow("canonical real directory");
-    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
-    await fs.mkdir(path.join(environment.releasesPath, nextReleaseId), { recursive: true });
-    const candidate = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
-    expect(candidate.environment.candidateReleaseId).toBe(releaseId);
-    const active = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "active" });
-    expect(active.environment).toMatchObject({ activeReleaseId: releaseId, candidateReleaseId: null });
-    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: releaseId, workloadIds: [environment.id] });
-    await expect(setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId: nextReleaseId, channel: "active" }))
-      .rejects.toThrow("Cannot replace the active release while a project-service workload is registered");
-    const staged = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId: nextReleaseId, channel: "candidate" });
-    expect(staged.environment.candidateReleaseId).toBe(nextReleaseId);
-  } finally {
-    state.repository = previousRepository;
-  }
-});
+    expect(removed.environment).toMatchObject({ desiredState: "deprovisioned", observedState: "deprovisioned", workloadIds: [], worklo
