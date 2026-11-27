@@ -158,8 +158,8 @@ describe("server-level OAuth boundary", () => {
       name: "project-environment.profile.promote",
       arguments: {
         profileId: "laravel-php",
-        version: 2,
-        imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:07022280f3b8e1a1be9abed133870af82a85912d78e4300144b1a3e38933a9da",
+        version: 3,
+        imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
         approvalReference: "issue-42-disposable-laravel-acceptance",
       },
     }, "integration-test-token");
@@ -176,8 +176,8 @@ describe("server-level OAuth boundary", () => {
       name: "project-environment.profile.promote",
       arguments: {
         profileId: "laravel-php",
-        version: 2,
-        imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:07022280f3b8e1a1be9abed133870af82a85912d78e4300144b1a3e38933a9da",
+        version: 3,
+        imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
         approvalReference: "issue-42-disposable-laravel-acceptance",
       },
     }, "integration-test-admin-token");
