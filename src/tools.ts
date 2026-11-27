@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { config } from "./config.js";
+import { hasRequiredScopes } from "./security.js";
 import { VERSION } from "./version.js";
 import { executeCommand } from "./executions.js";
 import { listDirectory, readFile, writeFile } from "./filesystem.js";
@@ -433,7 +434,7 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("project-environment.profile.promote", {
     title: "Promote an approved service profile",
-    description: "Persistently promote a digest-pinned service profile to deployable after an administrator approval. Requires VPS_SERVICE_PROFILE_PROMOTION_ENABLED=true; OAuth deployments additionally require the vps:admin scope. This changes profile readiness only and does not provision, start or deploy workloads.",
+    description: "Persistently promote a digest-pinned service profile to deployable after an administrator approval. Requires VPS_SERVICE_PROFILE_PROMOTION_ENABLED=true; OAuth callers must also have the vps:admin scope. This changes profile readiness only and does not provision, start or deploy workloads.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       profileId: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/),
@@ -441,9 +442,13 @@ export function createMcpServer(): McpServer {
       imageDigest: z.string().min(70).max(255),
       approvalReference: z.string().min(8).max(500),
     },
-  }, async ({ profileId, version, imageDigest, approvalReference }) => guarded(() => safely(async () =>
-    promoteServiceProfile({ profileId, version, imageDigest, approvalReference })
-  )));
+  }, async ({ profileId, version, imageDigest, approvalReference }, extra) => guarded(() => safely(async () => {
+    if (config.authMode === "oauth"
+      && !hasRequiredScopes({ scp: extra.authInfo?.scopes ?? [] }, ["vps:admin"])) {
+      throw new Error("Insufficient scope: vps:admin is required to promote service profiles");
+    }
+    return promoteServiceProfile({ profileId, version, imageDigest, approvalReference });
+  })));
 
   server.registerTool("project-environment.list", {
     title: "List persistent project environments",

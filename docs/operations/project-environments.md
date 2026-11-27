@@ -9,6 +9,12 @@
 - Do not expose a service publicly until its authenticated development route and network policy have been reviewed.
 - Never run a migration or seeder against production.
 
+## Promotion authorization
+
+The project-environment.profile.promote tool is gated independently from ordinary MCP access. Set VPS_SERVICE_PROFILE_PROMOTION_ENABLED=true to enable the operation. For OAuth authentication, the verified access token must also contain the exact vps:admin scope. After the authorization provider is configured to grant vps:admin only to administrators, advertise it through OAUTH_SUPPORTED_SCOPES. Do not add it to OAUTH_REQUIRED_SCOPES; ordinary MCP operations must not require administrator privileges. The MCP authentication middleware passes only verified token metadata to tool handlers. Never trust scope values supplied in tool arguments or unverified request headers.
+
+Promotion changes profile readiness only. It does not provision, start, or deploy a project workload. Keep the feature flag disabled until the disposable-project acceptance plan is ready.
+
 ## Intended lifecycle
 
 1. Register and validate the repository; fetch its bare cache.
