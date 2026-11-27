@@ -1269,7 +1269,7 @@ export function buildContainerCreateArgs({ id, workloadType, repositoryId, workt
   assert(workloadType !== 'project-service' || (executionMount == null && projectMounts && projectMounts.releaseId && podName === projectPodName(repositoryId)), 'Project-service workloads require broker-staged mounts and their repository-private pod');
   assert(workloadType !== 'task' || (projectMounts == null && podName === undefined), 'Task workloads cannot join project pods or receive project-service mounts');
   return [
-    'create', '--pull=never', '--cgroup-parent', CGROUP_PARENT, '--name', `vps-wl-${id}`,
+    'create', '--pull=never', ...(workloadType === 'project-service' ? [] : ['--cgroup-parent', CGROUP_PARENT]), '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
     ...(workloadType === 'project-service' ? ['--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId, '--label', 'io.cr8or.vps-mcp.pod=' + podName, '--restart=' + safeRestartPolicy(restartPolicy)] : []),
     ...(workloadType === 'project-service' ? buildProjectPodMemberArgs(podName) : ['--network=' + network]), '--http-proxy=false', '--read-only', '--cap-drop=ALL',

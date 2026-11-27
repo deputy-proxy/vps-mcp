@@ -473,6 +473,7 @@ describe('rootless workload lifecycle isolation', () => {
     });
     expect(args).toContain('--pod');
     expect(args).toContain(projectPodName('deputy-proxy-vps-mcp'));
+    expect(args).not.toContain('--cgroup-parent');
     expect(args.some((arg) => arg.startsWith('--network='))).toBe(false);
     expect(args).toContain('--read-only');
     expect(args).toContain('--memory-swap=1024m');
