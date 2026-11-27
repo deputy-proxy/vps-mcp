@@ -19,7 +19,7 @@ export type ServiceProfile = {
   };
   healthChecks: Array<{ name: string; type: "tcp" | "http" | "process"; target: string; intervalSeconds: number; timeoutSeconds: number }>;
   mounts: Array<{ name: string; source: "project-storage" | "project-cache" | "project-logs"; target: string; readOnly: boolean }>;
-  dependencies: Array<{ name: "mysql" | "redis"; version: string; required: boolean; isolation: "project-instance" | "project-credentials-and-namespace" }>;
+  dependencies: Array<{ name: "mysql" | "redis"; version: string; required: boolean; imageDigest: string | null; resources: ServiceProfileResourceVector; credentialMode: "mounted-secret-file"; isolation: "project-private-network-and-instance" }>;
   resources: ServiceProfileResourceVector;
   restartPolicy: "always" | "unless-stopped";
   deployment: {
@@ -53,8 +53,8 @@ const PROFILES: ServiceProfile[] = [
       { name: "logs", source: "project-logs", target: "/app/storage/logs", readOnly: false },
     ],
     dependencies: [
-      { name: "mysql", version: "8", required: true, isolation: "project-instance" },
-      { name: "redis", version: "7", required: false, isolation: "project-credentials-and-namespace" },
+      { name: "mysql", version: "8", required: true, imageDigest: null, resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
+      { name: "redis", version: "7", required: false, imageDigest: null, resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
     ],
     resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
     restartPolicy: "unless-stopped",
@@ -95,8 +95,8 @@ const PROFILES: ServiceProfile[] = [
       { name: "logs", source: "project-logs", target: "/app/storage/logs", readOnly: false },
     ],
     dependencies: [
-      { name: "mysql", version: "8", required: true, isolation: "project-instance" },
-      { name: "redis", version: "7", required: false, isolation: "project-credentials-and-namespace" },
+      { name: "mysql", version: "8", required: true, imageDigest: null, resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
+      { name: "redis", version: "7", required: false, imageDigest: null, resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
     ],
     resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
     restartPolicy: "unless-stopped",
@@ -112,7 +112,15 @@ const PROFILES: ServiceProfile[] = [
     },
     backup: { includes: ["project-database", "project-storage"], restoreRequiresIdentityMatch: true },
   },
-];
+ ];
+
+// Profile versions are immutable contracts. The newer published image is a
+// separate candidate version rather than an in-place rewrite of version 2.
+const laravelPhpV3 = structuredClone(PROFILES[1]!);
+laravelPhpV3.version = 3;
+laravelPhpV3.displayName = "Laravel / PHP 8.4 (candidate, image refresh)";
+laravelPhpV3.runtime.imageDigest = "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72";
+PROFILES.push(laravelPhpV3);
 
 const lifecycleRoot = path.join(config.dataDir, "service-profiles");
 const lifecycleFile = path.join(lifecycleRoot, "lifecycle.json");
@@ -215,5 +223,13 @@ export function assertServiceProfileDeployable(profile: ServiceProfile): void {
   assertProfileMountLayout(profile);
   if (profile.readiness !== "deployable" || !profile.runtime.imageDigest || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(profile.runtime.imageDigest)) {
     throw new Error(`Project environment profile '${profile.id}' version ${profile.version} is definition-only and cannot be provisioned`);
+  }
+  for (const dependency of profile.dependencies) {
+    if (!dependency.imageDigest || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(dependency.imageDigest)) {
+      throw new Error(`Project environment dependency '${dependency.name}' must pin an immutable image digest before provisioning`);
+    }
+    if (dependency.credentialMode !== "mounted-secret-file" || dependency.isolation !== "project-private-network-and-instance") {
+      throw new Error(`Project environment dependency '${dependency.name}' does not satisfy the isolation contract`);
+    }
   }
 }

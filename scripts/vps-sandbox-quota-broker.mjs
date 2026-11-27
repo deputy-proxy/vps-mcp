@@ -28,7 +28,7 @@ export function parseQuotaBrokerRequest(raw) {
 export async function applyQuotaRequest(value) {
   const args = value.operation === 'apply' ? ['apply', value.repositoryId, value.worktreeId, String(value.diskMiB)] : value.operation === 'apply-project' ? ['apply-project', value.repositoryId, value.workloadId, String(value.diskMiB)] : ['stage','unstage'].includes(value.operation) ? [value.operation, value.repositoryId, value.worktreeId, value.workloadId] : [value.operation, value.repositoryId, value.workloadId, value.releaseId];
   const result = await exec('/usr/bin/node', [HELPER, ...args], {
-    encoding: 'utf8', timeout: value.operation === 'apply-project' ? 130000 : 45000, maxBuffer: 8192, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', ...(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ? { VPS_SANDBOX_PROJECT_ENV_ROOT: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT } : {}), ...(process.env.VPS_SANDBOX_PROJECT_ENV_OWNER ? { VPS_SANDBOX_PROJECT_ENV_OWNER: process.env.VPS_SANDBOX_PROJECT_ENV_OWNER } : {}) },
+    encoding: 'utf8', timeout: value.operation === 'apply-project' ? 130000 : 45000, maxBuffer: 8192, env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', ...(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ? { VPS_SANDBOX_PROJECT_ENV_ROOT: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT } : {}), ...(process.env.VPS_SANDBOX_PROJECT_ENV_OWNER ? { VPS_SANDBOX_PROJECT_ENV_OWNER: process.env.VPS_SANDBOX_PROJECT_ENV_OWNER } : {}), ...(process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON ? { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON } : {}) },
   });
   return JSON.parse(result.stdout.trim());
 }

@@ -11,7 +11,7 @@ beforeAll(async () => {
 
 it("lists the Laravel profile as definition-only with a bounded resource plan", () => {
   const result = listServiceProfiles();
-  expect(result.count).toBe(2);
+  expect(result.count).toBe(3);
   expect(result.profiles[0]).toMatchObject({
     id: "laravel-php",
     version: 1,
@@ -24,13 +24,15 @@ it("lists the Laravel profile as definition-only with a bounded resource plan", 
   expect(result.profiles[0]!.processes.scheduler).toEqual({ enabled: false, command: null });
 });
 
-it("adds a digest-pinned candidate profile without enabling provisioning", () => {
-  const profile = getServiceProfile("laravel-php", 2);
+it("preserves the original immutable candidate and adds the refreshed digest as version 3", () => {
+  const original = getServiceProfile("laravel-php", 2);
+  expect(original.runtime.imageDigest).toBe("ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:07022280f3b8e1a1be9abed133870af82a85912d78e4300144b1a3e38933a9da");
+  const profile = getServiceProfile("laravel-php", 3);
   expect(profile).toMatchObject({
-    version: 2,
+    version: 3,
     readiness: "definition-only",
     runtime: {
-      imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:07022280f3b8e1a1be9abed133870af82a85912d78e4300144b1a3e38933a9da",
+      imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
       toolchain: { php: "8.4.28", composer: "2.9.2", node: "22.23.0" },
     },
     processes: { workers: [], scheduler: { enabled: false, command: null } },
@@ -39,7 +41,7 @@ it("adds a digest-pinned candidate profile without enabling provisioning", () =>
 });
 
 it("documents and validates the intentional storage-then-logs nested mount", () => {
-  const profile = getServiceProfile("laravel-php", 2);
+  const profile = getServiceProfile("laravel-php", 3);
   expect(profile.mounts.map(({ name, target }) => [name, target])).toEqual([
     ["storage", "/app/storage"],
     ["cache", "/app/bootstrap/cache"],
@@ -62,7 +64,7 @@ it("returns isolated profile copies so callers cannot mutate the catalog", () =>
 
 it("rejects unknown profile IDs and versions", () => {
   expect(() => getServiceProfile("unknown-profile")).toThrow("Unknown project environment profile");
-  expect(() => getServiceProfile("laravel-php", 3)).toThrow("Unknown project environment profile");
+  expect(() => getServiceProfile("laravel-php", 4)).toThrow("Unknown project environment profile");
 });
 
 it("fails closed until an immutable image digest is configured and the profile is deployable", () => {
@@ -73,7 +75,23 @@ it("requires a full immutable registry image reference before a profile can be m
   const profile = getServiceProfile("laravel-php");
   profile.readiness = "deployable";
   profile.runtime.imageDigest = "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64);
+  expect(() => assertServiceProfileDeployable(profile)).toThrow("dependency 'mysql' must pin an immutable image digest");
+  profile.dependencies[0]!.imageDigest = "docker.io/library/mysql@sha256:" + "b".repeat(64);
+  expect(() => assertServiceProfileDeployable(profile)).toThrow("dependency 'redis' must pin an immutable image digest");
+  profile.dependencies[1]!.imageDigest = "docker.io/library/redis@sha256:" + "c".repeat(64);
   expect(() => assertServiceProfileDeployable(profile)).not.toThrow();
   profile.runtime.imageDigest = "sha256:" + "a".repeat(64);
   expect(() => assertServiceProfileDeployable(profile)).toThrow("definition-only and cannot be provisioned");
+});
+
+
+it("keeps dependency images unpinned and the profile definition-only until reviewed immutable digests exist", () => {
+  const profile = getServiceProfile("laravel-php", 3);
+  expect(profile.dependencies).toEqual([
+    { name: "mysql", version: "8", required: true, imageDigest: null, resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
+    { name: "redis", version: "7", required: false, imageDigest: null, resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance" },
+  ]);
+  const candidate = structuredClone(profile);
+  candidate.readiness = "deployable";
+  expect(() => assertServiceProfileDeployable(candidate)).toThrow("dependency 'mysql' must pin an immutable image digest");
 });

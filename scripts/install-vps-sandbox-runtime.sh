@@ -20,6 +20,7 @@ QUOTA_DEVICE_ALLOW=()
 declare -A SEEN_QUOTA_DEVICES=()
 PROJECT_ENV_ROOT=/var/lib/vps-mcp/project-environments
 PROJECT_ENV_OWNER=vps-mcp
+PROJECT_ENV_ROOTS=()
 UID_VALUE="$(id -u vps-sandbox)"
 RUNTIME_ENV="${ENV_DIR}/runtime.env"
 RUNTIME_SERVICE_DROPIN_DIR="${SYSTEMD_DIR}/vps-sandbox-runtime.service.d"
@@ -31,13 +32,39 @@ systemctl start "user@${UID_VALUE}.service"
 if [[ -f "${RUNTIME_ENV}" ]]; then
   configured_root="$(sed -n 's/^VPS_SANDBOX_PROJECT_ENV_ROOT=//p' "${RUNTIME_ENV}" | tail -n 1)"
   configured_owner="$(sed -n 's/^VPS_SANDBOX_PROJECT_ENV_OWNER=//p' "${RUNTIME_ENV}" | tail -n 1)"
+  configured_roots_json="$(sed -n 's/^VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON=//p' "${RUNTIME_ENV}" | tail -n 1)"
   [[ -z "${configured_root}" ]] || PROJECT_ENV_ROOT="${configured_root}"
   [[ -z "${configured_owner}" ]] || PROJECT_ENV_OWNER="${configured_owner}"
+  [[ -z "${configured_roots_json}" ]] || VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON="${configured_roots_json}"
 fi
-[[ "${PROJECT_ENV_ROOT}" == /* && "${PROJECT_ENV_ROOT}" != *','* ]] || { echo "VPS_SANDBOX_PROJECT_ENV_ROOT must be an absolute path without commas." >&2; exit 2; }
-[[ "${PROJECT_ENV_OWNER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "VPS_SANDBOX_PROJECT_ENV_OWNER is invalid." >&2; exit 2; }
-getent passwd "${PROJECT_ENV_OWNER}" >/dev/null || { echo "Missing project environment owner account: ${PROJECT_ENV_OWNER}." >&2; exit 2; }
-install -d -o "${PROJECT_ENV_OWNER}" -g "${PROJECT_ENV_OWNER}" -m 0700 "${PROJECT_ENV_ROOT}"
+if [[ -n "${VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON:-}" ]]; then
+  ROOT_CONFIG="$(node --input-type=module -e '
+    import path from "node:path";
+    let roots;
+    try { roots = JSON.parse(process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON); } catch { process.exit(2); }
+    if (!Array.isArray(roots) || roots.length < 1 || roots.length > 8) process.exit(2);
+    const seen = new Set();
+    for (const entry of roots) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.root !== "string" ||
+          !path.isAbsolute(entry.root) || path.resolve(entry.root) !== entry.root || entry.root.includes(",") ||
+          typeof entry.owner !== "string" || !/^[a-z_][a-z0-9_-]{0,31}$/.test(entry.owner) || seen.has(entry.root)) process.exit(2);
+      seen.add(entry.root);
+      process.stdout.write(entry.root + "\t" + entry.owner + "\n");
+    }
+  ' )" || { echo "VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON is invalid." >&2; exit 2; }
+  while IFS=$'\t' read -r configured_root configured_owner; do
+    [[ -n "${configured_root}" && -n "${configured_owner}" ]] || { echo "Invalid project environment root entry." >&2; exit 2; }
+    getent passwd "${configured_owner}" >/dev/null || { echo "Missing project environment owner account: ${configured_owner}." >&2; exit 2; }
+    install -d -o "${configured_owner}" -g "${configured_owner}" -m 0700 "${configured_root}"
+    PROJECT_ENV_ROOTS+=("${configured_root}")
+  done <<< "${ROOT_CONFIG}"
+else
+  [[ "${PROJECT_ENV_ROOT}" == /* && "${PROJECT_ENV_ROOT}" != *','* ]] || { echo "VPS_SANDBOX_PROJECT_ENV_ROOT must be an absolute path without commas." >&2; exit 2; }
+  [[ "${PROJECT_ENV_OWNER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "VPS_SANDBOX_PROJECT_ENV_OWNER is invalid." >&2; exit 2; }
+  getent passwd "${PROJECT_ENV_OWNER}" >/dev/null || { echo "Missing project environment owner account: ${PROJECT_ENV_OWNER}." >&2; exit 2; }
+  install -d -o "${PROJECT_ENV_OWNER}" -g "${PROJECT_ENV_OWNER}" -m 0700 "${PROJECT_ENV_ROOT}"
+  PROJECT_ENV_ROOTS+=("${PROJECT_ENV_ROOT}")
+fi
 [[ -d "/run/user/${UID_VALUE}" ]] || { echo "Missing /run/user/${UID_VALUE}; enable lingering and the vps-sandbox user manager first." >&2; exit 2; }
 [[ -S "/run/user/${UID_VALUE}/bus" ]] || { echo "Missing vps-sandbox user D-Bus socket." >&2; exit 2; }
 command -v systemd-analyze >/dev/null || { echo "systemd-analyze is required." >&2; exit 2; }
@@ -46,7 +73,7 @@ command -v find >/dev/null || { echo "find is required for inherited worktree AC
 
 # Resolve the block devices backing approved workspace roots. The quota broker
 # uses DevicePolicy=closed and receives access only to these devices.
-for workspace_root in /var/lib/vps-mcp/task-workspaces/worktrees /srv/vps-mcp-workspaces "${PROJECT_ENV_ROOT}"; do
+for workspace_root in /var/lib/vps-mcp/task-workspaces/worktrees /srv/vps-mcp-workspaces "${PROJECT_ENV_ROOTS[@]}"; do
   [[ -d "$workspace_root" ]] || continue
 
   source_device="$(findmnt -n -o SOURCE -T "$workspace_root")"

@@ -33,6 +33,7 @@ RUN npm install --global npm@12.2.3 && npm cache clean --force
 FROM docker.io/library/php:8.4.28-fpm-bookworm@sha256:1472c4a0440979669c27e93c6f60f80107cf49e285d326780f29bedd5393501b AS runtime
 
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
       libfreetype6 \
       libicu72 \
