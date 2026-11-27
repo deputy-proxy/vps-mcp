@@ -1286,10 +1286,10 @@ export function buildContainerCreateArgs({ id, workloadType, repositoryId, workt
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',
     ...(workspaceMount ? ['--mount', 'type=bind,src=' + (workspaceMount.stagedPath ?? workspaceMount.path) + ',dst=/workspace,' + (workspaceMount.access === 'read-only' ? 'ro' : 'rw')] : []),
     ...(projectMounts ? [
-      '--mount', 'type=bind,src=' + projectMounts.release + ',dst=/app,ro',
-      '--mount', 'type=bind,src=' + projectMounts.storage + ',dst=/app/storage,rw',
-      '--mount', 'type=bind,src=' + projectMounts.cache + ',dst=/app/bootstrap/cache,rw',
-      '--mount', 'type=bind,src=' + projectMounts.logs + ',dst=/app/storage/logs,rw',
+      '--mount', 'type=bind,src=' + projectMounts.release + ',dst=/app,ro,nosuid,nodev',
+      '--mount', 'type=bind,src=' + projectMounts.storage + ',dst=/app/storage,rw,nosuid,nodev',
+      '--mount', 'type=bind,src=' + projectMounts.cache + ',dst=/app/bootstrap/cache,rw,nosuid,nodev',
+      '--mount', 'type=bind,src=' + projectMounts.logs + ',dst=/app/storage/logs,rw,nosuid,nodev',
     ] : []),
     ...(executionMount ? ['--mount', `type=bind,src=${executionMount.path},dst=/run/vps-mcp-executions,rw`] : []),
     ...(proxyUrl ? [
@@ -1454,8 +1454,8 @@ async function createWorkload(request) {
 async function verifyProjectServiceMounts(projectMounts, repositoryId, workloadId) {
   const base = '/var/lib/vps-sandbox-mounts/projects/' + repositoryId + '/' + workloadId;
   const expectedSources = expectedProjectServiceMountSources(repositoryId, projectMounts.releaseId);
-  for (const [key, suffix, readOnly] of [
-    ['release', 'release', true], ['storage', 'storage', false], ['cache', 'cache', false], ['logs', 'logs', false],
+  for (const [key, suffix] of [
+    ['release', 'release'], ['storage', 'storage'], ['cache', 'cache'], ['logs', 'logs'],
   ]) {
     const target = base + '/' + suffix;
     assert(projectMounts[key] === target, 'Project-service mount path is not canonical');
@@ -1465,10 +1465,12 @@ async function verifyProjectServiceMounts(projectMounts, repositoryId, workloadI
     const stat = await fs.lstat(target);
     assert(stat.isDirectory() && !stat.isSymbolicLink() && await fs.realpath(target) === target, 'Project-service mount target is not a canonical directory');
     await execFileAsync('/usr/bin/mountpoint', ['-q', target], { encoding: 'utf8', timeout: 5000, maxBuffer: 8192 });
-    const mountResult = await execFileAsync('/usr/bin/findmnt', ['-n', '-o', 'OPTIONS', '--mountpoint', target], { encoding: 'utf8', timeout: 5000, maxBuffer: 8192 });
-    const options = mountResult.stdout.trim().split(',');
-    assert(readOnly ? options.includes('ro') : !options.includes('ro'), readOnly ? 'Project release mount must be read-only' : 'Project data mount must be writable');
-    assert(options.includes('nosuid') && options.includes('nodev'), 'Project mounts must enforce nosuid and nodev');
+    // Mount attributes are per-mount and a later remount in the host namespace
+    // is not propagated into an already-existing private service mount namespace.
+    // The privileged broker validates ro/rw,nosuid,nodev on the host mount before
+    // returning these paths. Enforce the same attributes again on each container
+    // bind mount in buildContainerCreateArgs; do not misread the service's older
+    // propagated mount clone as the broker's authoritative mount.
   }
 }
 async function inspectProjectPod(repositoryId) {
