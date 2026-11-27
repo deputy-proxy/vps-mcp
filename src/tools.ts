@@ -15,7 +15,7 @@ import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskW
 import { inspectManagedStorage } from "./storage-metrics.js";
 import { deprovisionProjectEnvironment, inspectProjectEnvironmentRuntime, inspectProjectEnvironment, listProjectEnvironments, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } from "./project-environments.js";
 import { registerProjectEnvironmentWithReservation } from "./project-environment-admission.js";
-import { listServiceProfiles } from "./service-profiles.js";
+import { listServiceProfiles, promoteServiceProfile } from "./service-profiles.js";
 import { resolveAllowedPath, managedTaskWorkspaceIdentity } from "./paths.js";
 
 type ToolResult = {
@@ -430,6 +430,20 @@ export function createMcpServer(): McpServer {
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { includeDefinitionOnly: z.boolean().default(true) },
   }, async ({ includeDefinitionOnly }) => guarded(() => safely(async () => listServiceProfiles({ includeDefinitionOnly }))));
+
+  server.registerTool("project-environment.profile.promote", {
+    title: "Promote an approved service profile",
+    description: "Persistently promote a digest-pinned service profile to deployable after an administrator approval. Requires VPS_SERVICE_PROFILE_PROMOTION_ENABLED=true; OAuth deployments additionally require the vps:admin scope. This changes profile readiness only and does not provision, start or deploy workloads.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      profileId: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/),
+      version: z.number().int().min(1).max(1000),
+      imageDigest: z.string().min(70).max(255),
+      approvalReference: z.string().min(8).max(500),
+    },
+  }, async ({ profileId, version, imageDigest, approvalReference }) => guarded(() => safely(async () =>
+    promoteServiceProfile({ profileId, version, imageDigest, approvalReference })
+  )));
 
   server.registerTool("project-environment.list", {
     title: "List persistent project environments",

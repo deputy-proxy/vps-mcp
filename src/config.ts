@@ -109,4 +109,6 @@ export const config = {
   },
   repositoryGitHubToken,
   repositoryRequiredStatusChecks,
+  serviceProfilePromotionEnabled: process.env.VPS_SERVICE_PROFILE_PROMOTION_ENABLED === "true"
+    && (authMode !== "oauth" || oauthScopes.includes("vps:admin")),
 };
