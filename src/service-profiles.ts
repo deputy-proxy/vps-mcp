@@ -20,6 +20,8 @@ export type ServiceProfile = {
   displayName: string;
   family: string;
   readiness: ServiceProfileReadiness;
+  /** Restricts temporary acceptance profiles to one registered disposable repository. */
+  acceptanceRepositoryId?: string;
   runtime: { imageDigest: string | null; toolchain: Record<string, string>; user: "non-root" };
   processes: {
     web: { command: string[]; port: number; protocol: "tcp" };
@@ -131,6 +133,46 @@ laravelPhpV3.displayName = "Laravel / PHP 8.4 (candidate, image refresh)";
 laravelPhpV3.runtime.imageDigest = "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72";
 PROFILES.push(laravelPhpV3);
 
+// This profile exercises the persistent project-service runtime without
+// enabling Laravel's MySQL/Redis dependency contract. It is intentionally
+// restricted to the disposable VPS acceptance repository.
+PROFILES.push({
+  id: "project-service-acceptance",
+  version: 1,
+  displayName: "Project-service acceptance (PHP-FPM only)",
+  family: "php",
+  readiness: "deployable",
+  acceptanceRepositoryId: "deputy-proxy-toti-invatam-org-44fadec4d6",
+  runtime: {
+    imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
+    toolchain: { php: "8.4.28", composer: "2.9.2", node: "22.23.0" },
+    user: "non-root",
+  },
+  processes: {
+    web: { command: ["php-fpm", "--nodaemonize"], port: 9000, protocol: "tcp" },
+    workers: [],
+    scheduler: { enabled: false, command: null },
+  },
+  healthChecks: [
+    { name: "php-fpm", type: "tcp", target: "127.0.0.1:9000", intervalSeconds: 15, timeoutSeconds: 3 },
+  ],
+  mounts: [
+    { name: "storage", source: "project-storage", target: "/app/storage", readOnly: false },
+    { name: "cache", source: "project-cache", target: "/app/bootstrap/cache", readOnly: false },
+    { name: "logs", source: "project-logs", target: "/app/storage/logs", readOnly: false },
+  ],
+  dependencies: [],
+  resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+  restartPolicy: "unless-stopped",
+  deployment: {
+    buildCommands: [],
+    migrationCommand: [],
+    migrations: "disabled",
+    seeders: { enabled: false, allowlist: [] },
+  },
+  backup: { includes: ["project-storage"], restoreRequiresIdentityMatch: true },
+});
+
 const lifecycleRoot = path.join(config.dataDir, "service-profiles");
 const lifecycleFile = path.join(lifecycleRoot, "lifecycle.json");
 
@@ -226,6 +268,12 @@ export function getServiceProfile(profileId: string, version = 1): ServiceProfil
   const resolved = applyLifecycle(cloneProfile(profile));
   assertProfileMountLayout(resolved);
   return resolved;
+}
+
+export function assertServiceProfileRepositoryAllowed(profile: ServiceProfile, repositoryId: string): void {
+  if (profile.acceptanceRepositoryId && profile.acceptanceRepositoryId !== repositoryId) {
+    throw new Error("Project service profile '" + profile.id + "' is restricted to its disposable acceptance repository");
+  }
 }
 
 export function assertServiceProfileDeployable(profile: ServiceProfile): void {

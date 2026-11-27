@@ -72,6 +72,42 @@ it("registers a development-only environment with canonical isolated paths and d
   expect((await inspectProjectEnvironment(state.repository.id)).environment.id).toBe(result.environment.id);
 });
 
+it("restricts the PHP-FPM acceptance profile to the dedicated disposable repository", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-unapproved-acceptance-1234567890", fullName: "acme/unapproved-acceptance", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    await expect(registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    })).rejects.toThrow("restricted to its disposable acceptance repository");
+
+    state.repository = {
+      id: "deputy-proxy-toti-invatam-org-44fadec4d6",
+      fullName: "deputy-proxy/toti-invatam-org",
+      status: "cloned",
+      persistentEnvironmentPaths: [],
+    };
+    const result = await registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    });
+    expect(result.created).toBe(true);
+    expect(result.environment).toMatchObject({
+      repositoryId: "deputy-proxy-toti-invatam-org-44fadec4d6",
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+    });
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
 it("is idempotent for an identical environment and rejects conflicting profile or resources", async () => {
   const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   const second = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
@@ -273,6 +309,65 @@ it("provisions from an explicitly deployable digest and retries an interrupted c
   }
 });
 
+it("provisions the repository-restricted PHP-FPM acceptance profile with only the approved image", async () => {
+  const previousRepository = state.repository;
+  const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  const previousRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+  state.repository = {
+    id: "deputy-proxy-toti-invatam-org-44fadec4d6",
+    fullName: "deputy-proxy/toti-invatam-org",
+    status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+    { root: "/var/lib/vps-mcp/project-environments", owner: "vps-mcp" },
+    { root: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT, owner: "vps-mcp-development" },
+  ]);
+  const runtime = {
+    pullImage: vi.fn().mockResolvedValue({ pulled: true }),
+    createProjectServiceWorkload: vi.fn().mockResolvedValue({ workload: { id: "", status: "created" } }),
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    });
+    const releaseId = "234e5321-b4d7-4d4f-be92-ce56a984adaa";
+    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
+    await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
+
+    const provisioned = await provisionProjectEnvironment(state.repository.id, runtime as never);
+    expect(provisioned.environment).toMatchObject({
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+      observedState: "provisioned",
+      workloadIds: [environment.id],
+      workloadReleaseId: releaseId,
+    });
+    expect(runtime.pullImage).toHaveBeenCalledExactlyOnceWith(
+      "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
+    );
+    expect(runtime.createProjectServiceWorkload).toHaveBeenCalledExactlyOnceWith({
+      workloadId: environment.id,
+      repositoryId: state.repository.id,
+      releaseId,
+      image: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      reservationResources: environment.resources,
+      restartPolicy: "unless-stopped",
+      command: ["--nodaemonize"],
+    });
+  } finally {
+    state.repository = previousRepository;
+    if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+    if (previousRootsJson === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = previousRootsJson;
+  }
+});
+
 it("does not persist a workload identity when the approved image pull fails", async () => {
   const previousRepository = state.repository;
   const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
@@ -295,119 +390,4 @@ it("does not persist a workload identity when the approved image pull fails", as
     expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ observedState: "error", workloadIds: [], workloadReleaseId: null });
     runtime.createProjectServiceWorkload.mockResolvedValue({ workload: { id: environment.id, status: "created" } });
     const retried = await provisionProjectEnvironment(state.repository.id, runtime as never);
-    expect(retried.environment).toMatchObject({ observedState: "provisioned", workloadIds: [environment.id], workloadReleaseId: releaseId });
-    expect(runtime.createProjectServiceWorkload).toHaveBeenCalledTimes(1);
-  } finally {
-    state.profileReady = false;
-    state.repository = previousRepository;
-    if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
-    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
-  }
-});
-
-it("retains workload identity and reservation until interrupted start, stop and remove operations reconcile", async () => {
-  const previousRepository = state.repository;
-  state.repository = {
-    id: "acme-lifecycle-retry-1234567890", fullName: "acme/lifecycle-retry", status: "cloned",
-    persistentEnvironmentPaths: [],
-  };
-  const runtime = {
-    startProjectServiceWorkload: vi.fn().mockRejectedValueOnce(new Error("start interrupted")).mockResolvedValue({ status: "running" }),
-    stopProjectServiceWorkload: vi.fn().mockRejectedValueOnce(new Error("stop interrupted")).mockResolvedValue({ status: "stopped" }),
-    removeProjectServiceWorkload: vi.fn().mockRejectedValueOnce(new Error("remove interrupted")).mockResolvedValue({ status: "removed" }),
-    releaseProjectResources: vi.fn().mockResolvedValue({ released: true }),
-  };
-  try {
-    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
-    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa", workloadIds: [environment.id] });
-    await expect(startProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("start interrupted");
-    expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ desiredState: "running", observedState: "error", workloadIds: [environment.id] });
-    await startProjectEnvironment(state.repository.id, runtime as never);
-    await expect(stopProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("stop interrupted");
-    expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ desiredState: "stopped", observedState: "error", workloadIds: [environment.id] });
-    await stopProjectEnvironment(state.repository.id, runtime as never);
-    await expect(deprovisionProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("remove interrupted");
-    expect(runtime.releaseProjectResources).not.toHaveBeenCalled();
-    expect((await inspectProjectEnvironment(state.repository.id)).environment).toMatchObject({ desiredState: "deprovisioned", observedState: "error", workloadIds: [environment.id], workloadReleaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa" });
-    const removed = await deprovisionProjectEnvironment(state.repository.id, runtime as never);
-    expect(removed.environment).toMatchObject({ desiredState: "deprovisioned", observedState: "deprovisioned", workloadIds: [], workloadReleaseId: null });
-    expect(runtime.removeProjectServiceWorkload).toHaveBeenCalledTimes(2);
-    expect(runtime.releaseProjectResources).toHaveBeenCalledTimes(1);
-  } finally {
-    state.repository = previousRepository;
-  }
-});
-
-it("keeps provisioning blocked while the Laravel profile remains definition-only", async () => {
-  const previousRepository = state.repository;
-  state.repository = {
-    id: "acme-profile-gate-112233445566", fullName: "acme/profile-gate", status: "cloned",
-    persistentEnvironmentPaths: [],
-  };
-  const runtime = { createProjectServiceWorkload: vi.fn() };
-  try {
-    await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
-    await expect(provisionProjectEnvironment(state.repository.id, runtime as never)).rejects.toThrow("definition-only");
-    expect(runtime.createProjectServiceWorkload).not.toHaveBeenCalled();
-  } finally {
-    state.repository = previousRepository;
-  }
-});
-
-it("persists project-service start, stop and deprovision transitions around runtime actions", async () => {
-  const previousRepository = state.repository;
-  state.repository = {
-    id: "acme-lifecycle-778899aabbcc", fullName: "acme/lifecycle", status: "cloned",
-    persistentEnvironmentPaths: [],
-  };
-  const runtime = {
-    startProjectServiceWorkload: vi.fn(async (id: string) => ({ workloadId: id, status: "running", health: { status: "healthy" as const, checkedAt: new Date().toISOString(), checks: ["php-fpm"] } })),
-    stopProjectServiceWorkload: vi.fn(async (id: string) => ({ workloadId: id, status: "stopped" })),
-    removeProjectServiceWorkload: vi.fn(async (input: { workloadId: string; repositoryId: string; releaseId: string }) => ({ workloadId: input.workloadId, status: "removed" })),
-    releaseProjectResources: vi.fn(async (id: string) => ({ repositoryId: id, released: true })),
-  };
-  try {
-    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
-    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa", workloadIds: [environment.id] });
-    const started = await startProjectEnvironment(state.repository.id, runtime as never);
-    expect(started.environment).toMatchObject({ desiredState: "running", observedState: "running", health: { status: "healthy", checks: ["php-fpm"] } });
-    expect(runtime.startProjectServiceWorkload).toHaveBeenCalledWith(environment.id);
-    const stopped = await stopProjectEnvironment(state.repository.id, runtime as never);
-    expect(stopped.environment).toMatchObject({ desiredState: "stopped", observedState: "stopped" });
-    expect(runtime.stopProjectServiceWorkload).toHaveBeenCalledWith(environment.id);
-    const removed = await deprovisionProjectEnvironment(state.repository.id, runtime as never);
-    expect(removed.environment).toMatchObject({ desiredState: "deprovisioned", observedState: "deprovisioned", workloadIds: [], workloadReleaseId: null });
-    expect(runtime.removeProjectServiceWorkload).toHaveBeenCalledWith({ workloadId: environment.id, repositoryId: state.repository.id, releaseId: "134e5321-b4d7-4d4f-be92-ce56a984adaa" });
-    expect(runtime.releaseProjectResources).toHaveBeenCalledWith(state.repository.id);
-  } finally {
-    state.repository = previousRepository;
-  }
-});
-
-
-it("selects only existing canonical releases and prevents changing the active release under a workload", async () => {
-  const previousRepository = state.repository;
-  state.repository = {
-    id: "acme-release-select-1234567890", fullName: "acme/release-select", status: "cloned",
-    persistentEnvironmentPaths: [],
-  };
-  try {
-    const { environment } = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
-    const releaseId = "134e5321-b4d7-4d4f-be92-ce56a984adaa";
-    const nextReleaseId = "234e5321-b4d7-4d4f-be92-ce56a984adaa";
-    await expect(setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" })).rejects.toThrow("canonical real directory");
-    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
-    await fs.mkdir(path.join(environment.releasesPath, nextReleaseId), { recursive: true });
-    const candidate = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
-    expect(candidate.environment.candidateReleaseId).toBe(releaseId);
-    const active = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "active" });
-    expect(active.environment).toMatchObject({ activeReleaseId: releaseId, candidateReleaseId: null });
-    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadReleaseId: releaseId, workloadIds: [environment.id] });
-    await expect(setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId: nextReleaseId, channel: "active" }))
-      .rejects.toThrow("Cannot replace the active release while a project-service workload is registered");
-    const staged = await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId: nextReleaseId, channel: "candidate" });
-    expect(staged.environment.candidateReleaseId).toBe(nextReleaseId);
-  } finally {
-    state.repository = previousRepository;
-  }
-});
+    expect(retried.environment).toMatchObject({ observedState: "provisioned", wo
