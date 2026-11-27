@@ -48,10 +48,11 @@ export function applyProjectEnvironmentQuota(repositoryId,environmentId,diskMiB)
  if(process.getuid()!==0)throw Error('Quota helper must run as root');
  if(!repoRe.test(repositoryId)||!uuidRe.test(environmentId))throw Error('Invalid project environment identity');
  if(!Number.isInteger(diskMiB)||diskMiB<128||diskMiB>102400)throw Error('diskMiB must be between 128 and 102400');
- const environment=path.join(projectEnvRoot(),repositoryId);
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const environment=path.join(configured.root,repositoryId);
  const st=fs.lstatSync(environment);
  if(!st.isDirectory()||st.isSymbolicLink()||fs.realpathSync(environment)!==environment)throw Error('Project environment must be a canonical directory under the approved project root');
- if(st.uid!==Number(run('/usr/bin/id',['-u',projectEnvOwner()]))||(st.mode&0o002)!==0)throw Error('Project environment root has unexpected ownership or world-writable permissions');
+ if(st.uid!==Number(run('/usr/bin/id',['-u',configured.owner]))||(st.mode&0o002)!==0)throw Error('Project environment root has unexpected ownership or world-writable permissions');
  const workspaceMount=run('/usr/bin/findmnt',['-n','-o','TARGET','-T',environment]);
  const type=run('/usr/bin/findmnt',['-n','-o','FSTYPE','-T',environment]);
  const opts=run('/usr/bin/findmnt',['-n','-o','OPTIONS','-T',environment]).split(',');
@@ -116,12 +117,31 @@ function resolveWorkspace(repositoryId,worktreeId){
 }
 
 
-const projectEnvRoot = () => path.resolve(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT || '/var/lib/vps-mcp/project-environments');
-const projectEnvOwner = () => {
- const owner=process.env.VPS_SANDBOX_PROJECT_ENV_OWNER || 'vps-mcp';
- if(!/^[a-z_][a-z0-9_-]{0,31}$/.test(owner))throw Error('Project environment owner is invalid');
- return owner;
-};
+export function configuredProjectEnvironmentRoots(env=process.env){
+ let entries;
+ if(env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON){
+  try{entries=JSON.parse(env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON);}catch{throw Error('Project environment roots configuration must be valid JSON');}
+  if(!Array.isArray(entries)||entries.length<1||entries.length>8)throw Error('Project environment roots configuration must contain between one and eight roots');
+ }else entries=[{root:env.VPS_SANDBOX_PROJECT_ENV_ROOT||'/var/lib/vps-mcp/project-environments',owner:env.VPS_SANDBOX_PROJECT_ENV_OWNER||'vps-mcp'}];
+ const seen=new Set();
+ return entries.map(entry=>{
+  if(!entry||typeof entry!=='object'||Array.isArray(entry)||typeof entry.root!=='string'||typeof entry.owner!=='string')throw Error('Project environment root entry is invalid');
+  const root=path.resolve(entry.root),owner=entry.owner;
+  if(!path.isAbsolute(entry.root)||entry.root.includes(',')||!/^\/[A-Za-z0-9._/-]+$/.test(entry.root)||!/^([a-z_][a-z0-9_-]{0,31})$/.test(owner))throw Error('Project environment root or owner is invalid');
+  if(seen.has(root))throw Error('Project environment roots must be unique');seen.add(root);
+  return {root,owner};
+ });
+}
+function projectEnvironmentRootForRepository(repositoryId){
+ const matches=[];
+ for(const entry of configuredProjectEnvironmentRoots()){
+  const candidate=path.join(entry.root,repositoryId);
+  try{const st=fs.lstatSync(candidate);if(st.isDirectory()&&!st.isSymbolicLink()&&fs.realpathSync(candidate)===candidate)matches.push(entry);}catch(e){if(e.code!=='ENOENT')throw e;}
+ }
+ if(matches.length===0)throw Error('Project environment must exist under an approved project root');
+ if(matches.length!==1)throw Error('Project environment repository exists under multiple approved roots; refusing ambiguous ownership');
+ return matches[0];
+}
 function safeReleaseId(value){if(typeof value!=='string'||!uuidRe.test(value))throw Error('Invalid project release identity');return value.toLowerCase();}
 function canonicalDirectory(value,label){
  const st=fs.lstatSync(value);
@@ -131,7 +151,8 @@ function canonicalDirectory(value,label){
 export function resolveProjectServicePaths(repositoryId,releaseId){
  if(!repoRe.test(repositoryId))throw Error('Invalid repository ID');
  safeReleaseId(releaseId);
- const root=projectEnvRoot();
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const root=configured.root;
  if(!path.isAbsolute(root)||root.includes(','))throw Error('Project environment root is invalid');
  canonicalDirectory(root,'Project environment root');
  const environment=canonicalDirectory(path.join(root,repositoryId),'Project environment');
@@ -142,10 +163,11 @@ export function resolveProjectServicePaths(repositoryId,releaseId){
  const logs=canonicalDirectory(path.join(environment,'logs'),'Project logs directory');
  return {environment,release,storage,cache,logs};
 }
-function assertProjectEnvironmentOwnership(sources){
- const expectedUid=Number(run('/usr/bin/id',['-u',projectEnvOwner()]));
+function assertProjectEnvironmentOwnership(sources,repositoryId){
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const expectedUid=Number(run('/usr/bin/id',['-u',configured.owner]));
  for(const [label,directory] of [
-  ['project environment root',projectEnvRoot()],['repository environment',sources.environment],
+  ['project environment root',configured.root],['repository environment',sources.environment],
   ['project release',sources.release],['project storage',sources.storage],['project cache',sources.cache],['project logs',sources.logs],
  ]){
   const stat=fs.lstatSync(directory);
@@ -221,7 +243,7 @@ export function stageProjectServiceMounts(repositoryId,workloadId,releaseId){
  if(process.getuid()!==0)throw Error('Quota helper must run as root');
  if(!repoRe.test(repositoryId)||!uuidRe.test(workloadId))throw Error('Invalid project staging identity');
  const sources=resolveProjectServicePaths(repositoryId,releaseId);
- assertProjectEnvironmentOwnership(sources);
+ assertProjectEnvironmentOwnership(sources,repositoryId);
  const sandboxGid=Number(run('/usr/bin/id',['-g','vps-sandbox']));
  const base=path.join(stagingRoot,'projects',repositoryId,workloadId);
  ensureProjectStagingDirectory(path.join(stagingRoot,'projects'),sandboxGid);

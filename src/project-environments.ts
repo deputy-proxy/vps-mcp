@@ -302,9 +302,22 @@ export async function prepareProjectEnvironmentMountAccess(repositoryId: string,
   if (environment.activeReleaseId !== releaseId && environment.candidateReleaseId !== releaseId) {
     throw new Error("Project release is neither the active nor the approved candidate release");
   }
-  const runtimeProjectRoot = path.resolve(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ?? "/var/lib/vps-mcp/project-environments");
-  if (path.resolve(root) !== runtimeProjectRoot) {
-    throw new Error("MCP project environment root must match VPS_SANDBOX_PROJECT_ENV_ROOT in the restricted quota broker configuration");
+  let approvedRoots: string[];
+  if (process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON) {
+    let configured: unknown;
+    try { configured = JSON.parse(process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON); }
+    catch { throw new Error("Project environment roots configuration must be valid JSON"); }
+    if (!Array.isArray(configured) || configured.length < 1 || configured.length > 8 || configured.some((entry) =>
+      !entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.root !== "string" ||
+      !path.isAbsolute(entry.root) || typeof entry.owner !== "string" || !/^[a-z_][a-z0-9_-]{0,31}$/.test(entry.owner)
+    )) throw new Error("Project environment roots configuration is invalid");
+    approvedRoots = configured.map((entry: { root: string }) => path.resolve(entry.root));
+    if (new Set(approvedRoots).size !== approvedRoots.length) throw new Error("Project environment roots must be unique");
+  } else {
+    approvedRoots = [path.resolve(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ?? "/var/lib/vps-mcp/project-environments")];
+  }
+  if (!approvedRoots.includes(path.resolve(root))) {
+    throw new Error("MCP project environment root must be listed in VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON shared with the restricted quota broker");
   }
   await canonicalDirectory(config.dataDir, "MCP data directory");
   await fs.mkdir(root, { recursive: true, mode: 0o700 });

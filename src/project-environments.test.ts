@@ -30,6 +30,10 @@ vi.mock("./service-profiles.js", async (importOriginal) => {
         ...profile,
         readiness: "deployable",
         runtime: { ...profile.runtime, imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64) },
+        dependencies: profile.dependencies.map((dependency) => ({
+          ...dependency,
+          imageDigest: `docker.io/library/${dependency.name}@sha256:${dependency.name === "mysql" ? "b" : "c"}` + "0".repeat(63),
+        })),
       } : profile;
     },
   };
@@ -38,7 +42,11 @@ vi.mock("./service-profiles.js", async (importOriginal) => {
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-project-environments-"));
 state.dataDir = path.join(temporaryDirectory, "data");
 const previousProjectEnvironmentRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+const previousProjectEnvironmentRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
 process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+  { root: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT, owner: "vps-mcp-development" },
+]);
 const { deprovisionProjectEnvironment, inspectProjectEnvironment, listProjectEnvironments, prepareProjectEnvironmentMountAccess, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } = await import("./project-environments.js");
 
 beforeAll(async () => { await fs.mkdir(state.dataDir, { recursive: true }); });
@@ -46,6 +54,8 @@ afterAll(async () => {
   await fs.rm(temporaryDirectory, { recursive: true, force: true });
   if (previousProjectEnvironmentRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
   else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectEnvironmentRoot;
+  if (previousProjectEnvironmentRootsJson === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+  else process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = previousProjectEnvironmentRootsJson;
 });
 
 it("registers a development-only environment with canonical isolated paths and durable permissions", async () => {
@@ -124,7 +134,12 @@ it("enforces terminal deprovisioning and rejects invalid lifecycle transitions",
 it("prepares only the canonical project release and declared writable mount directories", async () => {
   const previousRepository = state.repository;
   const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  const previousRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
   process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+    { root: "/var/lib/vps-mcp/project-environments", owner: "vps-mcp" },
+    { root: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT, owner: "vps-mcp-development" },
+  ]);
   state.repository = {
     id: "acme-project-mounts-aabbccddeeff", fullName: "acme/project-mounts", status: "cloned",
     persistentEnvironmentPaths: [],
@@ -149,6 +164,8 @@ it("prepares only the canonical project release and declared writable mount dire
     state.repository = previousRepository;
     if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
     else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+    if (previousRootsJson === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = previousRootsJson;
   }
 });
 
