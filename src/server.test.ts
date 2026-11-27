@@ -133,7 +133,7 @@ describe("Streamable HTTP endpoint", () => {
       result: { tools: Array<{ name: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> }> };
     };
     const tools = new Map(message.result.tools.map((tool) => [tool.name, tool]));
-    expect(tools.size).toBe(61);
+    expect(tools.size).toBe(62);
 
     for (const name of [
       "system.health",

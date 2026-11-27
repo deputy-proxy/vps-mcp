@@ -1,3 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { config } from "./config.js";
+
 export type ServiceProfileReadiness = "definition-only" | "deployable";
 export type ServiceProfileResourceVector = { cpuMilli: number; memoryMiB: number; pids: number; diskMiB: number };
 export type ServiceProfile = {
@@ -109,6 +114,60 @@ const PROFILES: ServiceProfile[] = [
   },
 ];
 
+const lifecycleRoot = path.join(config.dataDir, "service-profiles");
+const lifecycleFile = path.join(lifecycleRoot, "lifecycle.json");
+
+type ProfileLifecycle = { schemaVersion: 1; promotions: Array<{ profileId: string; version: number; imageDigest: string; approvedAt: string; approvalReference: string }> };
+function readLifecycle(): ProfileLifecycle {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lifecycleFile, "utf8")) as ProfileLifecycle;
+    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.promotions)) throw new Error("Corrupt service profile lifecycle registry");
+    for (const item of parsed.promotions) {
+      if (!item || typeof item.profileId !== "string" || !Number.isSafeInteger(item.version) || item.version < 1
+        || typeof item.imageDigest !== "string" || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(item.imageDigest)
+        || typeof item.approvedAt !== "string" || typeof item.approvalReference !== "string") throw new Error("Corrupt service profile lifecycle entry");
+    }
+    return parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 1, promotions: [] };
+    throw error;
+  }
+}
+function applyLifecycle(profile: ServiceProfile): ServiceProfile {
+  const promotion = readLifecycle().promotions.find((item) => item.profileId === profile.id && item.version === profile.version);
+  if (!promotion) return profile;
+  if (profile.runtime.imageDigest !== promotion.imageDigest) throw new Error("Approved service profile digest no longer matches its immutable definition");
+  profile.readiness = "deployable";
+  return profile;
+}
+
+export function promoteServiceProfile(input: { profileId: string; version: number; imageDigest: string; approvalReference: string }) {
+  if (!config.serviceProfilePromotionEnabled) throw new Error("Service profile promotion is disabled by server configuration");
+  if (!/^[a-z][a-z0-9-]{1,63}$/.test(input.profileId)) throw new Error("Invalid service profile ID");
+  if (!Number.isSafeInteger(input.version) || input.version < 1) throw new Error("Profile version must be a positive integer");
+  if (input.approvalReference.trim().length < 8 || input.approvalReference.length > 500) throw new Error("An approval reference of 8 to 500 characters is required");
+  const profile = getServiceProfile(input.profileId, input.version);
+  if (!profile.runtime.imageDigest || profile.runtime.imageDigest !== input.imageDigest) throw new Error("Promotion digest must exactly match the profile's immutable image digest");
+  profile.readiness = "deployable";
+  assertServiceProfileDeployable(profile);
+  const registry = readLifecycle();
+  const existing = registry.promotions.find((item) => item.profileId === input.profileId && item.version === input.version);
+  if (existing) {
+    if (existing.imageDigest !== input.imageDigest) throw new Error("A profile version cannot be promoted to a different image digest");
+    return { promoted: false, alreadyPromoted: true, profile, approval: existing };
+  }
+  const approval = { profileId: input.profileId, version: input.version, imageDigest: input.imageDigest, approvedAt: new Date().toISOString(), approvalReference: input.approvalReference.trim() };
+  registry.promotions.push(approval);
+  fs.mkdirSync(lifecycleRoot, { recursive: true, mode: 0o700 });
+  const temporary = `${lifecycleFile}.${randomUUID()}.tmp`;
+  const descriptor = fs.openSync(temporary, "wx", 0o600);
+  try { fs.writeFileSync(descriptor, JSON.stringify(registry, null, 2) + "\n"); fs.fsyncSync(descriptor); }
+  finally { fs.closeSync(descriptor); }
+  fs.renameSync(temporary, lifecycleFile);
+  fs.chmodSync(lifecycleFile, 0o600);
+  return { promoted: true, profile, approval };
+}
+
 function assertProfileMountLayout(profile: ServiceProfile): void {
   const names = new Set<string>();
   const targets = new Set<string>();
@@ -138,8 +197,8 @@ function cloneProfile(profile: ServiceProfile): ServiceProfile {
 }
 
 export function listServiceProfiles(input: { includeDefinitionOnly?: boolean } = {}) {
-  const profiles = PROFILES.filter((profile) => input.includeDefinitionOnly !== false || profile.readiness === "deployable");
-  return { count: profiles.length, profiles: profiles.map(cloneProfile) };
+  const profiles = PROFILES.map((item) => applyLifecycle(cloneProfile(item))).filter((profile) => input.includeDefinitionOnly !== false || profile.readiness === "deployable");
+  return { count: profiles.length, profiles };
 }
 
 export function getServiceProfile(profileId: string, version = 1): ServiceProfile {
@@ -147,8 +206,9 @@ export function getServiceProfile(profileId: string, version = 1): ServiceProfil
   if (!Number.isSafeInteger(version) || version < 1) throw new Error("Profile version must be a positive integer");
   const profile = PROFILES.find((item) => item.id === profileId && item.version === version);
   if (!profile) throw new Error(`Unknown project environment profile '${profileId}' version ${version}`);
-  assertProfileMountLayout(profile);
-  return cloneProfile(profile);
+  const resolved = applyLifecycle(cloneProfile(profile));
+  assertProfileMountLayout(resolved);
+  return resolved;
 }
 
 export function assertServiceProfileDeployable(profile: ServiceProfile): void {
