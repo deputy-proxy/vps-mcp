@@ -182,8 +182,10 @@ describe('rootless workload runtime request validation', () => {
     const image = 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64);
     const previous = process.env.VPS_SANDBOX_ALLOWED_IMAGES;
     process.env.VPS_SANDBOX_ALLOWED_IMAGES = image;
-    const create = { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 }, restartPolicy: 'unless-stopped', command: ['--nodaemonize'] };
+    const create = { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped', command: ['--nodaemonize'] };
     expect(parseRuntimeRequest(JSON.stringify(create))).toEqual(create);
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...create, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320 } }))).toThrow('Aggregate project reservation must define all four resource dimensions');
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...create, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128 } }))).toThrow('Project-service resources must define all four resource dimensions');
     expect(() => parseRuntimeRequest(JSON.stringify({ ...create, restartPolicy: 'on-failure' }))).toThrow('restart policy');
     if (previous === undefined) delete process.env.VPS_SANDBOX_ALLOWED_IMAGES; else process.env.VPS_SANDBOX_ALLOWED_IMAGES = previous;
     for (const operation of ['project-service.inspect','project-service.start','project-service.stop','project-service.remove']) {

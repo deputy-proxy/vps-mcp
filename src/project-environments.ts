@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { getManagedRepository, updateRepository, withRepositoryLock } from "./repositories.js";
-import { assertServiceProfileDeployable, getServiceProfile } from "./service-profiles.js";
+import { assertServiceProfileDeployable, getServiceProfile, serviceProfileReservationResources } from "./service-profiles.js";
 import type { SandboxRuntimeAdapter } from "./sandbox-runtime.js";
 import { formatSandboxRuntimeError } from "./sandbox-runtime.js";
 
@@ -193,27 +193,48 @@ export async function registerProjectEnvironment(input: {
     await fs.mkdir(root, { recursive: true, mode: 0o700 });
     await updateRepository({ id: repository.id, persistentEnvironmentPaths: [...repository.persistentEnvironmentPaths, canonicalPath] });
   }
+  const profileReservation = serviceProfileReservationResources(profile);
   const resources = {
-    cpuMilli: input.resources?.cpuMilli ?? profile.resources.cpuMilli,
-    memoryMiB: input.resources?.memoryMiB ?? profile.resources.memoryMiB,
-    pids: input.resources?.pids ?? profile.resources.pids,
-    diskMiB: input.resources?.diskMiB ?? profile.resources.diskMiB,
+    cpuMilli: input.resources?.cpuMilli ?? profileReservation.cpuMilli,
+    memoryMiB: input.resources?.memoryMiB ?? profileReservation.memoryMiB,
+    pids: input.resources?.pids ?? profileReservation.pids,
+    diskMiB: input.resources?.diskMiB ?? profileReservation.diskMiB,
   };
   assertResources(resources);
+  for (const key of ["cpuMilli", "memoryMiB", "pids", "diskMiB"] as const) {
+    if (resources[key] < profileReservation[key]) throw new Error(`Project environment ${key} reservation cannot be lower than the aggregate profile requirement`);
+  }
   return withRepositoryLock(repository.id, async () => withLock("registry", async () => {
     const registry = await readRegistry();
     const existing = registry.environments.find((item) => item.repositoryId === repository.id);
     if (existing) {
       if (existing.desiredState === "deprovisioned") throw new Error("Deprovisioned environment records cannot be silently reused; explicitly retire the record first");
-      if (existing.profileId !== input.profileId || existing.profileVersion !== profileVersion) {
-        throw new Error("Project environment already exists with a different profile or resource reservation");
+      const profileChanged = existing.profileId !== input.profileId || existing.profileVersion !== profileVersion;
+      if (profileChanged) {
+        const completeExplicitResources = input.resources !== undefined
+          && ["cpuMilli", "memoryMiB", "pids", "diskMiB"].every((key) => Number.isInteger(input.resources?.[key as keyof typeof input.resources]));
+        const explicitIdleProfileUpgrade = existing.profileId === input.profileId && input.profileVersion !== undefined
+          && completeExplicitResources && existing.workloadIds.length === 0
+          && ["provisioned", "stopped"].includes(existing.desiredState)
+          && existing.observedState !== "deprovisioning" && existing.observedState !== "deprovisioned";
+        if (!explicitIdleProfileUpgrade) throw new Error("Project environment already exists with a different profile or resource reservation");
+        existing.profileVersion = profileVersion;
+        existing.resources = resources;
+        existing.lastError = null;
+        existing.updatedAt = new Date().toISOString();
+        validateEnvironment(existing);
+        await writeRegistry(registry);
+        return { created: false, environment: existing, profileUpdated: true, resourcesUpdated: true };
       }
       if (JSON.stringify(existing.resources) !== JSON.stringify(resources)) {
         const retryableAdmissionFailure = /^Resource reservation failed: SANDBOX_(CAPACITY_EXCEEDED|DISK_PRESSURE)/.test(existing.lastError ?? "");
-        if (!retryableAdmissionFailure) throw new Error("Project environment already exists with a different profile or resource reservation");
-        // A failed capacity admission has no matching reservation. Permit the
-        // operator to adjust the plan and retry; runtime admission remains the
-        // authority and will reject unsafe changes if a project workload exists.
+        const explicitIdleResize = input.resources !== undefined
+          && ["cpuMilli", "memoryMiB", "pids", "diskMiB"].every((key) => Number.isInteger(input.resources?.[key as keyof typeof input.resources]))
+          && existing.workloadIds.length === 0 && ["provisioned", "stopped"].includes(existing.desiredState)
+          && existing.observedState !== "deprovisioning" && existing.observedState !== "deprovisioned";
+        if (!retryableAdmissionFailure && !explicitIdleResize) throw new Error("Project environment already exists with a different profile or resource reservation");
+        // A resize is accepted only for an idle environment and only when the
+        // operator explicitly supplies the new aggregate vector.
         existing.resources = resources;
         existing.lastError = null;
         existing.updatedAt = new Date().toISOString();
@@ -409,7 +430,8 @@ export async function provisionProjectEnvironment(repositoryId: string, runtime:
       await updateEnvironmentRecord({ repositoryId, observedState: "provisioning", workloadReleaseId: releaseId, workloadIds: [workloadId], lastError: null });
       const result = await runtime.createProjectServiceWorkload({
         workloadId, repositoryId, releaseId, image: profile.runtime.imageDigest,
-        resources: environment.resources,
+        resources: profile.resources,
+        reservationResources: environment.resources,
         restartPolicy: profile.restartPolicy,
         command: profile.processes.web.command[0] === "php-fpm" ? profile.processes.web.command.slice(1) : profile.processes.web.command,
       });

@@ -145,7 +145,7 @@ export function parseRuntimeRequest(raw) {
     'container.exec': ['operation', 'workloadId', 'command', 'timeoutMs'],
     'container.logs': ['operation', 'workloadId'],
     'project-service.recover': ['operation'],
-    'project-service.create': ['operation', 'workloadId', 'repositoryId', 'releaseId', 'image', 'resources', 'restartPolicy', 'command'],
+    'project-service.create': ['operation', 'workloadId', 'repositoryId', 'releaseId', 'image', 'resources', 'reservationResources', 'restartPolicy', 'command'],
     'project-service.inspect': ['operation', 'workloadId'],
     'project-service.start': ['operation', 'workloadId'],
     'project-service.stop': ['operation', 'workloadId'],
@@ -176,8 +176,15 @@ export function parseRuntimeRequest(raw) {
     safeId(request.workloadId); safeRepositoryId(request.repositoryId); safeId(request.releaseId);
     safeImage(request.image);
     assert(request.resources && typeof request.resources === 'object' && !Array.isArray(request.resources), 'Project-service resource reservation is required');
-    assert(Object.keys(request.resources).every((key) => ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].includes(key)), 'Project-service resources contain unsupported properties');
+    const resourceKeys = ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'];
+    assert(Object.keys(request.resources).every((key) => resourceKeys.includes(key)), 'Project-service resources contain unsupported properties');
+    assert(resourceKeys.every((key) => Number.isSafeInteger(request.resources[key])), 'Project-service resources must define all four resource dimensions');
     safeResources(request.resources);
+    assert(request.reservationResources && typeof request.reservationResources === 'object' && !Array.isArray(request.reservationResources), 'Aggregate project reservation is required');
+    assert(Object.keys(request.reservationResources).every((key) => resourceKeys.includes(key)), 'Aggregate project reservation contains unsupported properties');
+    assert(resourceKeys.every((key) => Number.isSafeInteger(request.reservationResources[key])), 'Aggregate project reservation must define all four resource dimensions');
+    safeResources(request.reservationResources);
+    for (const key of ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB']) assert(request.resources[key] <= request.reservationResources[key], 'Application resources exceed the aggregate project reservation');
     request.restartPolicy = safeRestartPolicy(request.restartPolicy);
     if (request.command !== undefined) {
       safeArgv(request.command);
@@ -696,7 +703,7 @@ async function reserveProjectResources(request) {
   const records = await readWorkloadRecords();
   await assertManagedContainerAccounting(records);
   await assertProjectContainersAccounted(request.repositoryId, records);
-  const projectWorkloads = records.filter((item) => item.workloadType === 'project-service' && item.repositoryId === request.repositoryId && item.status !== 'removed');
+  const projectWorkloads = records.filter((item) => ['project-service', 'project-dependency'].includes(item.workloadType) && item.repositoryId === request.repositoryId && item.status !== 'removed');
   const allReservations = await readReservations();
   const currentReservation = allReservations.find((item) => item.repositoryId === request.repositoryId && item.status !== 'released');
   // A repeated reservation request is a no-op even while its project service is
@@ -727,7 +734,7 @@ async function releaseProjectResources(repositoryId) {
   const records = await readWorkloadRecords();
   await assertManagedContainerAccounting(records);
   await assertProjectContainersAccounted(repositoryId, records);
-  assert(!records.some((item) => item.workloadType === 'project-service' && item.repositoryId === repositoryId && item.status !== 'removed'), 'Cannot release project capacity while a project-service workload record still exists');
+  assert(!records.some((item) => ['project-service', 'project-dependency'].includes(item.workloadType) && item.repositoryId === repositoryId && item.status !== 'removed'), 'Cannot release project capacity while a project-service workload record still exists');
   const reservation = (await readReservations()).find((item) => item.repositoryId === repositoryId);
   if (!reservation || reservation.status === 'released') return { repositoryId, released: false, reason: 'no_active_reservation' };
   reservation.status = 'released';
@@ -866,11 +873,11 @@ async function assertManagedContainerAccounting(records) {
 
 async function assertProjectContainersAccounted(repositoryId, records) {
   const containers = await listManagedContainers();
-  for (const container of containers.filter((item) => item.workloadType === 'project-service' && item.repositoryId === repositoryId)) {
+  for (const container of containers.filter((item) => ['project-service', 'project-dependency'].includes(item.workloadType) && item.repositoryId === repositoryId)) {
     const record = records.find((item) => item.id === container.workloadId);
     assert(record, 'SANDBOX_CAPACITY_UNKNOWN: an orphan project-service container exists for this repository');
-    assert(record.workloadType === 'project-service' && record.repositoryId === container.repositoryId && record.releaseId === container.releaseId && (record.worktreeId ?? null) === (container.worktreeId ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: project-service container labels do not match the registry');
-    assert(record.status !== 'removed', 'SANDBOX_CAPACITY_UNKNOWN: a project-service container remains after its workload record was removed');
+    assert(record.workloadType === container.workloadType && record.repositoryId === container.repositoryId && (record.releaseId ?? null) === (container.releaseId ?? null) && (record.worktreeId ?? null) === (container.worktreeId ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: project-service container labels do not match the registry');
+    assert(record.status !== 'removed', 'SANDBOX_CAPACITY_UNKNOWN: a project container remains after its workload record was removed');
     const runtimeId = await resolveRuntimeId(record);
     assert(runtimeId, 'SANDBOX_CAPACITY_UNKNOWN: a project-service container could not be reconciled to its workload record');
   }
@@ -1345,6 +1352,7 @@ async function createWorkload(request) {
   const image = safeImage(request.image);
   if (request.resources) assert(Object.keys(request.resources).every((key) => ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].includes(key)), 'Resource configuration contains unsupported properties');
   const resources = safeResources({ ...request.resources, diskMiB: request.resources?.diskMiB ?? (workloadType === 'task' ? 2048 : 10240) });
+  const reservationResources = workloadType === 'project-service' ? safeResources(request.reservationResources) : null;
   if (workloadType === 'task') {
     assert(request.worktreeId, 'Task workloads require a managed worktree ID');
     assert(request.workspacePath, 'Task workloads require their assigned workspace path');
@@ -1380,6 +1388,7 @@ async function createWorkload(request) {
       JSON.stringify(existing.executionMount ?? null) === JSON.stringify(executionMount) &&
       JSON.stringify(existing.projectMounts ?? null) === JSON.stringify(request.projectMounts ?? null) &&
       existing.podName === podName &&
+      JSON.stringify(existing.reservationResources ?? existing.resources) === JSON.stringify(reservationResources ?? existing.resources) &&
       JSON.stringify({ ...existing.resources, diskMiB: existing.resources?.diskMiB ?? (workloadType === 'task' ? 2048 : 10240) }) === JSON.stringify(resources) &&
       existing.commandFingerprint === fingerprint,
       'Workload ID is already registered with different immutable attributes',
@@ -1417,7 +1426,7 @@ async function createWorkload(request) {
   assert(capacity.allowed, capacity.reasons.join('; '));
   if (workloadType === 'task') await applyWorkspaceDiskQuota(repositoryId, worktreeId, resources.diskMiB);
   let record = retryRecord ?? {
-    id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}), ...(podName ? { podName } : {}),
+    id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}), ...(podName ? { podName } : {}), ...(reservationResources ? { reservationResources } : {}),
     image, imageDigest: image.slice(image.lastIndexOf('@') + 1), restartPolicy,
     runtimeId: null, workspaceMount, executionMount, ...(request.projectMounts ? { projectMounts: request.projectMounts } : {}), ...(request.releaseId ? { releaseId: request.releaseId } : {}), resources, network, networkPolicy, commandFingerprint: fingerprint,
     status: 'creating', createdAt: new Date().toISOString(), expiresAt: workloadType === 'task' ? new Date(Date.now() + resourceBudget().taskRetentionMs).toISOString() : null, updatedAt: new Date().toISOString(),
@@ -1528,6 +1537,7 @@ async function createProjectServiceWorkload(request) {
   const releaseId = safeId(request.releaseId);
   const image = safeImage(request.image);
   const resources = safeResources(request.resources);
+  const reservationResources = safeResources(request.reservationResources);
   const restartPolicy = safeRestartPolicy(request.restartPolicy);
   const existing = await readRecord(id).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (existing && existing.status !== 'removed') {
@@ -1540,18 +1550,20 @@ async function createProjectServiceWorkload(request) {
     throw new Error('Removed project-service workload IDs are terminal; register a new project environment before provisioning again');
   }
   const reservation = (await readReservations()).find((item) => item.repositoryId === repositoryId && item.status !== 'released');
-  assert(resourceReservationMatches(reservation, resources),
-    'SANDBOX_PROJECT_RESERVATION_MISMATCH: project-service resources must exactly match the active repository reservation');
+  assert(resourceReservationMatches(reservation, reservationResources),
+    'SANDBOX_PROJECT_RESERVATION_MISMATCH: aggregate project resources must exactly match the active repository reservation');
+  for (const key of ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB']) assert(resources[key] <= reservationResources[key],
+    'SANDBOX_PROJECT_RESERVATION_EXCEEDED: application resources exceed the aggregate project reservation');
   let projectMounts = null;
   let projectPod = null;
   try {
     projectPod = await ensureProjectPod(repositoryId);
-    await applyProjectEnvironmentDiskQuota(repositoryId, id, resources.diskMiB);
+    await applyProjectEnvironmentDiskQuota(repositoryId, id, reservationResources.diskMiB);
     projectMounts = await stageProjectServiceMounts(repositoryId, id, releaseId);
     await verifyProjectServiceMounts(projectMounts, repositoryId, id);
     const workload = await createWorkload({
       operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId,
-      releaseId, projectMounts, image, resources, restartPolicy, command: request.command, network: 'none', podName: projectPod.name, readOnlyRootfs: true,
+      releaseId, projectMounts, image, resources, reservationResources, restartPolicy, command: request.command, network: 'none', podName: projectPod.name, readOnlyRootfs: true,
     });
     if (workload.runtimeId) {
       await verifyProjectServiceRestartPolicy(workload, workload.runtimeId);
@@ -1659,7 +1671,7 @@ async function startProjectServiceWorkload(workloadId) {
   assert(record.workloadType === 'project-service' && record.status !== 'removed', 'Project-service operation cannot target a removed or task workload');
   const reservations = await readReservations();
   const reservation = reservations.find((item) => item.repositoryId === record.repositoryId && item.status !== 'released');
-  assert(resourceReservationMatches(reservation, record.resources), 'Project-service resource reservation is missing or does not match the workload');
+  assert(resourceReservationMatches(reservation, record.reservationResources ?? record.resources), 'Project-service aggregate resource reservation is missing or does not match the workload');
   const projectMounts = await stageProjectServiceMounts(record.repositoryId, record.id, record.releaseId);
   await verifyProjectServiceMounts(projectMounts, record.repositoryId, record.id);
   const existingRuntimeId = record.runtimeId ?? await resolveRuntimeId(record);
