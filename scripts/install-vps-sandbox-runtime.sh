@@ -44,7 +44,7 @@ if [[ -f "${RUNTIME_ENV}" ]]; then
   fi
   [[ -z "${configured_root}" ]] || PROJECT_ENV_ROOT="${configured_root}"
   [[ -z "${configured_owner}" ]] || PROJECT_ENV_OWNER="${configured_owner}"
-  [[ -z "${configured_roots_json}" ]] || VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON="${configured_roots_json}"
+  [[ -z "${configured_roots_json}" ]] || export VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON="${configured_roots_json}"
 fi
 if [[ -n "${VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON:-}" ]]; then
   ROOT_CONFIG="$(node --input-type=module -e '

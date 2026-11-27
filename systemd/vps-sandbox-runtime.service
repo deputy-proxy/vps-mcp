@@ -37,5 +37,5 @@ LockPersonality=yes
 RestrictRealtime=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
-ReadWritePaths=/var/lib/vps-sandbox /var/lib/vps-sandbox-mounts
+ReadWritePaths=/var/lib/vps-sandbox
 ReadWritePaths=-/srv/vps-mcp-workspaces -/var/lib/vps-mcp/task-workspaces/worktrees
