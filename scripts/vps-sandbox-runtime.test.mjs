@@ -463,6 +463,22 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args.some((arg) => arg.includes('/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/234e5321-b4d7-4d4f-be92-ce56a984adaa'))).toBe(false);
   });
 
+  it('derives the repository-private pod when a project-service caller omits podName', () => {
+    const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+    const base = '/var/lib/vps-sandbox-mounts/projects/deputy-proxy-vps-mcp/' + id;
+    const args = buildContainerCreateArgs({
+      id, workloadType: 'project-service', repositoryId: 'deputy-proxy-vps-mcp',
+      image: 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64),
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' },
+      restartPolicy: 'unless-stopped', executionMount: null,
+    });
+
+    expect(args).toContain('--pod');
+    expect(args).toContain(projectPodName('deputy-proxy-vps-mcp'));
+    expect(args).toContain('io.cr8or.vps-mcp.pod=' + projectPodName('deputy-proxy-vps-mcp'));
+  });
+
   it('builds project-service mounts from broker staging paths and maps the image app UID', () => {
     const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
     const base = '/var/lib/vps-sandbox-mounts/projects/deputy-proxy-vps-mcp/' + id;

@@ -1271,15 +1271,17 @@ export function assertWorkloadTypeMatch(record, expectedWorkloadType) {
   assert(expectedWorkloadType === record.workloadType, 'Workload type mismatch; refusing cross-lifecycle operation');
 }
 export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, projectMounts, executionMount, command, network = 'none', podName, proxyUrl, restartPolicy }) {
+  const expectedProjectPodName = workloadType === 'project-service' ? projectPodName(repositoryId) : undefined;
+  const effectivePodName = podName ?? expectedProjectPodName;
   assert(workloadType !== 'task' || (executionMount?.destination === '/run/vps-mcp-executions' && path.isAbsolute(executionMount.path)), 'Task workloads require a dedicated execution log mount');
   assert(network === 'none' || (workloadType === 'task' && network === 'slirp4netns:allow_host_loopback=true' && proxyUrl === EGRESS_PROXY_CONTAINER), 'Unsupported workload network policy');
-  assert(workloadType !== 'project-service' || (executionMount == null && projectMounts && projectMounts.releaseId && podName === projectPodName(repositoryId)), 'Project-service workloads require broker-staged mounts and their repository-private pod');
+  assert(workloadType !== 'project-service' || (executionMount == null && projectMounts && projectMounts.releaseId && effectivePodName === expectedProjectPodName), 'Project-service workloads require broker-staged mounts and their repository-private pod');
   assert(workloadType !== 'task' || (projectMounts == null && podName === undefined), 'Task workloads cannot join project pods or receive project-service mounts');
   return [
     'create', '--pull=never', ...(workloadType === 'project-service' ? [] : ['--cgroup-parent', CGROUP_PARENT]), '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
-    ...(workloadType === 'project-service' ? ['--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId, '--label', 'io.cr8or.vps-mcp.pod=' + podName, '--restart=' + safeRestartPolicy(restartPolicy)] : []),
-    ...(workloadType === 'project-service' ? buildProjectPodMemberArgs(podName) : ['--network=' + network]), '--http-proxy=false', '--read-only', '--cap-drop=ALL',
+    ...(workloadType === 'project-service' ? ['--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId, '--label', 'io.cr8or.vps-mcp.pod=' + effectivePodName, '--restart=' + safeRestartPolicy(restartPolicy)] : []),
+    ...(workloadType === 'project-service' ? buildProjectPodMemberArgs(effectivePodName) : ['--network=' + network]), '--http-proxy=false', '--read-only', '--cap-drop=ALL',
     ...(workloadType === 'project-service' ? ['--userns=keep-id:uid=10001,gid=10001', '--user', '10001:10001'] : ['--userns=keep-id', '--user', String(process.getuid()) + ':' + String(process.getgid())]),
     '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json', '--pids-limit', String(resources.pids),
     '--memory', `${resources.memoryMiB}m`, `--memory-swap=${resources.memoryMiB * (workloadType === 'project-service' ? 1 : 2)}m`, '--cpus', String(resources.cpuMilli / 1000),
@@ -1436,7 +1438,7 @@ async function createWorkload(request) {
     const stagedWorkspacePath = workloadType === 'task' ? await stageWorkspaceMount(repositoryId, worktreeId, id) : null;
     if (stagedWorkspacePath) { record = { ...record, stagedWorkspacePath }; await writeRecord(record); }
     const args = buildContainerCreateArgs({
-      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount: workspaceMount ? { ...workspaceMount, stagedPath: stagedWorkspacePath } : null, projectMounts: request.projectMounts, executionMount, command: request.command, network, proxyUrl: egressEnabled ? EGRESS_PROXY_CONTAINER : undefined, restartPolicy,
+      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount: workspaceMount ? { ...workspaceMount, stagedPath: stagedWorkspacePath } : null, projectMounts: request.projectMounts, executionMount, command: request.command, network, podName, proxyUrl: egressEnabled ? EGRESS_PROXY_CONTAINER : undefined, restartPolicy,
     });
     const result = await runPodman(args, 120_000);
     const runtimeId = result.stdout.trim().split(/\s+/)[0];
