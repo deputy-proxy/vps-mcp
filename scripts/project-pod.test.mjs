@@ -59,6 +59,8 @@ describe('project-private Podman pod contract', () => {
     expect(() => validateProjectPodInspection([{ ...pod, InfraConfig: { HostNetwork: true } }], repositoryId)).toThrow('host networking');
     expect(() => validateProjectPodInspection([{ ...pod, InfraConfig: { HostNetwork: false, PortBindings: { '3306/tcp': [{ HostPort: '3306' }] } } }], repositoryId)).toThrow('publish host ports');
     expect(() => validateProjectPodInspection([{ ...pod, CgroupParent: '/user.slice' }], repositoryId)).toThrow('cgroup parent');
+    expect(() => validateProjectPodInspection([{ ...pod, Containers: undefined }], repositoryId)).toThrow('container inventory');
+    expect(() => validateProjectPodInspection([{ ...pod, Containers: [{ id: 'short' }] }], repositoryId)).toThrow('invalid ID');
   });
 
   it('verifies the infra container has no network or published ports', () => {

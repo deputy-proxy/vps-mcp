@@ -33,6 +33,7 @@ export function validateProjectPodInspection(value, repositoryId) {
   const pod = onePod(value);
   const expectedName = projectPodName(repositoryId);
   if (pod.Name !== expectedName) throw new Error('Project pod name does not match its repository identity');
+  if (typeof pod.Id !== 'string' || !/^[a-f0-9]{64}$/i.test(pod.Id)) throw new Error('Project pod ID is invalid');
   if (pod.Labels?.[LABEL_MANAGED] !== 'true' || pod.Labels?.[LABEL_REPOSITORY] !== repositoryId
     || pod.Labels?.[LABEL_NETWORK_POLICY] !== 'project-private-no-egress') {
     throw new Error('Project pod labels do not match the registered project identity and network policy');
@@ -52,6 +53,12 @@ export function validateProjectPodInspection(value, repositoryId) {
   if (pod.CgroupParent !== '/system.slice/vps-sandbox-runtime.service') {
     throw new Error('Project pod cgroup parent does not match the delegated runtime boundary');
   }
+  if (!Array.isArray(pod.Containers)) throw new Error('Project pod inspection is missing its workload container inventory');
+  const containers = pod.Containers.map((container) => {
+    const id = container.Id ?? container.id;
+    if (typeof id !== 'string' || !/^[a-f0-9]{64}$/i.test(id)) throw new Error('Project pod container inventory contains an invalid ID');
+    return { id, state: container.State ?? container.state };
+  });
   return {
     name: pod.Name,
     id: pod.Id,
@@ -60,7 +67,7 @@ export function validateProjectPodInspection(value, repositoryId) {
     sharedNamespaces: [...pod.SharedNamespaces],
     networkMode: 'none',
     networkPolicy: 'project-private-no-egress',
-    containers: Array.isArray(pod.Containers) ? pod.Containers.map((container) => ({ id: container.Id ?? container.id, state: container.State ?? container.state })) : [],
+    containers,
   };
 }
 
