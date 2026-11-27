@@ -1543,7 +1543,7 @@ async function createProjectServiceWorkload(request) {
   const resources = safeResources(request.resources);
   const reservationResources = safeResources(request.reservationResources);
   const restartPolicy = safeRestartPolicy(request.restartPolicy);
-  const existing = await readRecord(id).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  let existing = await readRecord(id).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (existing && existing.status !== 'removed') {
     assert(existing.workloadType === 'project-service' && existing.repositoryId === repositoryId && existing.releaseId === releaseId && existing.image === image && existing.restartPolicy === restartPolicy,
       'Project-service workload ID is already bound to different immutable attributes');
@@ -1552,6 +1552,26 @@ async function createProjectServiceWorkload(request) {
   }
   if (existing?.status === 'removed') {
     throw new Error('Removed project-service workload IDs are terminal; register a new project environment before provisioning again');
+  }
+  if (existing?.status === 'unknown') {
+    const runtimeId = await resolveRuntimeId(existing);
+    let namedContainerExists = false;
+    try {
+      await runPodman(['inspect', '--format', '{{.Id}}', 'vps-wl-' + id]);
+      namedContainerExists = true;
+    } catch (error) {
+      if (!isContainerNotFound(error)) throw new Error('SANDBOX_RUNTIME_UNAVAILABLE: unable to verify the existing project-service container identity');
+    }
+    const containers = await listManagedContainers();
+    assert(projectServiceMissingWorkloadReconciliationAllowed(existing, runtimeId, containers, namedContainerExists),
+      'SANDBOX_RUNTIME_UNAVAILABLE: unknown project-service workload is not safe to reconcile; record retained for operator review');
+    await removeProjectPodIfEmpty(repositoryId);
+    await releaseProjectServiceMounts(existing);
+    await fs.rm(path.dirname(recordPath(id)), { recursive: true, force: false });
+    await appendAudit('project-service.missing-workload-reconciled', {
+      workloadId: id, repositoryId, releaseId, persistentProjectDataPreserved: true,
+    });
+    existing = null;
   }
   const reservation = (await readReservations()).find((item) => item.repositoryId === repositoryId && item.status !== 'released');
   assert(resourceReservationMatches(reservation, reservationResources),
@@ -2485,6 +2505,15 @@ export function projectServiceBootRecoveryAction(record, runtimeState) {
   if (record.status === 'creating') return runtimeState === 'missing' ? 'operator-review' : 'reconcile-create';
   if (record.status === 'created' || record.status === 'stopped') return runtimeState === 'missing' ? 'operator-review' : runtimeState === 'running' ? 'stop' : record.status === 'created' && runtimeState === 'exited' ? 'reconcile-create' : 'skip';
   return 'operator-review';
+}
+
+export function projectServiceMissingWorkloadReconciliationAllowed(record, runtimeId, containers, namedContainerExists = false) {
+  return record?.workloadType === 'project-service' &&
+    record.status === 'unknown' &&
+    runtimeId === null &&
+    namedContainerExists === false &&
+    Array.isArray(containers) &&
+    !containers.some((container) => container.workloadId === record.id);
 }
 
 async function recoverProjectServiceWorkloads() {
