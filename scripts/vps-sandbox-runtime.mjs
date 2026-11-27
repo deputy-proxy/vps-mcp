@@ -1282,7 +1282,7 @@ export function buildContainerCreateArgs({ id, workloadType, repositoryId, workt
     ...labels(id, workloadType, repositoryId, worktreeId),
     ...(workloadType === 'project-service' ? ['--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId, '--label', 'io.cr8or.vps-mcp.pod=' + effectivePodName, '--restart=' + safeRestartPolicy(restartPolicy)] : []),
     ...(workloadType === 'project-service' ? buildProjectPodMemberArgs(effectivePodName) : ['--network=' + network]), '--http-proxy=false', '--read-only', '--cap-drop=ALL',
-    ...(workloadType === 'project-service' ? ['--userns=keep-id:uid=10001,gid=10001', '--user', '10001:10001'] : ['--userns=keep-id', '--user', String(process.getuid()) + ':' + String(process.getgid())]),
+    ...(workloadType === 'project-service' ? ['--user', '10001:10001'] : ['--userns=keep-id', '--user', String(process.getuid()) + ':' + String(process.getgid())]),
     '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json', '--pids-limit', String(resources.pids),
     '--memory', `${resources.memoryMiB}m`, `--memory-swap=${resources.memoryMiB * (workloadType === 'project-service' ? 1 : 2)}m`, '--cpus', String(resources.cpuMilli / 1000),
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',

@@ -520,7 +520,7 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args.join(' ')).not.toMatch(/--device|--privileged|--pid=host|--ipc=host|--uts=host|\/dev|vps-sandbox-runtime\\.sock|vps-sandbox-quota\\.sock|task-workspaces|execution-logs/);
     expect(args.join(' ')).not.toContain('/workspace');
     expect(args.join(' ')).not.toContain('/run/vps-mcp-executions');
-    expect(args).toContain('--userns=keep-id:uid=10001,gid=10001');
+    // Podman 4.9 rejects --userns together with --pod. Keep the explicit\n    // non-root application UID; the runtime service owns the pod and members.\n    expect(args).not.toContain('--userns');
     expect(args).toContain('--label');
     expect(args).toContain('io.cr8or.vps-mcp.release=234e5321-b4d7-4d4f-be92-ce56a984adaa');
     expect(args).toContain('--user');
