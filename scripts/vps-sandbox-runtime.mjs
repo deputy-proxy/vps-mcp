@@ -176,10 +176,13 @@ export function parseRuntimeRequest(raw) {
     safeId(request.workloadId); safeRepositoryId(request.repositoryId); safeId(request.releaseId);
     safeImage(request.image);
     assert(request.resources && typeof request.resources === 'object' && !Array.isArray(request.resources), 'Project-service resource reservation is required');
-    assert(Object.keys(request.resources).every((key) => ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].includes(key)), 'Project-service resources contain unsupported properties');
+    const resourceKeys = ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'];
+    assert(Object.keys(request.resources).every((key) => resourceKeys.includes(key)), 'Project-service resources contain unsupported properties');
+    assert(resourceKeys.every((key) => Number.isSafeInteger(request.resources[key])), 'Project-service resources must define all four resource dimensions');
     safeResources(request.resources);
     assert(request.reservationResources && typeof request.reservationResources === 'object' && !Array.isArray(request.reservationResources), 'Aggregate project reservation is required');
-    assert(Object.keys(request.reservationResources).every((key) => ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].includes(key)), 'Aggregate project reservation contains unsupported properties');
+    assert(Object.keys(request.reservationResources).every((key) => resourceKeys.includes(key)), 'Aggregate project reservation contains unsupported properties');
+    assert(resourceKeys.every((key) => Number.isSafeInteger(request.reservationResources[key])), 'Aggregate project reservation must define all four resource dimensions');
     safeResources(request.reservationResources);
     for (const key of ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB']) assert(request.resources[key] <= request.reservationResources[key], 'Application resources exceed the aggregate project reservation');
     request.restartPolicy = safeRestartPolicy(request.restartPolicy);
