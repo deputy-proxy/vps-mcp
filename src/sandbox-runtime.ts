@@ -19,7 +19,7 @@ export type SandboxRuntimeRequest =
       workspaceAccess?: 'read-only' | 'read-write';
       command?: string[];
     }
-  | { operation: 'project-service.create'; workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }
+  | { operation: 'project-service.create'; workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }
   | { operation: 'project-service.inspect' | 'project-service.start' | 'project-service.stop'; workloadId: string }
   | { operation: 'project-service.remove'; workloadId: string; repositoryId: string; releaseId: string }
   | { operation: 'container.inspect' | 'container.logs'; workloadId: string }
@@ -85,7 +85,11 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     if (!UUID.test(request.releaseId)) throw new Error('Invalid project release ID');
     if (!IMAGE_DIGEST.test(request.image)) throw new Error('Image must be pinned by sha256 digest');
     validateResources(request.resources);
-    if (request.resources.diskMiB === undefined) throw new Error('Project-service disk reservation is required');
+    validateResources(request.reservationResources);
+    if (request.resources.diskMiB === undefined || request.reservationResources.diskMiB === undefined) throw new Error('Project-service and aggregate disk reservations are required');
+    for (const key of ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'] as const) {
+      if ((request.resources[key] ?? 0) > (request.reservationResources[key] ?? 0)) throw new Error('Application resources exceed the aggregate project reservation');
+    }
     if (request.restartPolicy !== 'always' && request.restartPolicy !== 'unless-stopped') throw new Error('Unsupported project-service restart policy');
     if (request.command !== undefined) {
       validateArgv(request.command);
@@ -253,6 +257,8 @@ export type RuntimeWorkloadRecord = {
   workloadType: WorkloadType;
   repositoryId: string;
   worktreeId?: string;
+  podName?: string;
+  reservationResources?: { cpuMilli: number; memoryMiB: number; pids: number; diskMiB: number };
   image: string;
   imageDigest: string;
   restartPolicy?: 'no' | 'always' | 'unless-stopped';
@@ -285,7 +291,7 @@ export interface SandboxRuntimeAdapter {
   inspectImage(image: string): Promise<{ image: string; imageId: string }>;
   pullImage(image: string): Promise<{ image: string; pulled: true; output: string }>;
   createWorkload(input: Omit<Extract<SandboxRuntimeRequest, { operation: 'container.create' }>, 'operation' | 'workspacePath'>): Promise<RuntimeWorkloadRecord>;
-  createProjectServiceWorkload(input: { workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }): Promise<{ workload: RuntimeWorkloadRecord }>;
+  createProjectServiceWorkload(input: { workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }): Promise<{ workload: RuntimeWorkloadRecord }>;
   inspectProjectServiceWorkload(workloadId: string): Promise<{ workload: RuntimeWorkloadRecord; runtime: Record<string, unknown> | null; reconciliation?: string; health?: { status: "unknown" | "healthy" | "unhealthy"; checkedAt: string; checks: string[] } }>;
   startProjectServiceWorkload(workloadId: string): Promise<unknown>;
   stopProjectServiceWorkload(workloadId: string): Promise<unknown>;

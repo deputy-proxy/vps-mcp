@@ -37,6 +37,7 @@ describe('isMountpoint', () => {
 describe('canonical project-service mount source resolution', () => {
   it('derives only the release and project-owned data mount paths from stable identities', async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'vps-project-mounts-'));
+    delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
     process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = root;
     const environment = path.join(root, repositoryId);
     const paths = {
@@ -104,6 +105,7 @@ describe('canonical project-service mount source resolution', () => {
 
   it('rejects symlinked environment mount sources', async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'vps-project-mounts-'));
+    delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
     process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = root;
     const environment = path.join(root, repositoryId);
     await fs.mkdir(path.join(environment, 'releases'), { recursive: true });

@@ -43,6 +43,7 @@ const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-proj
 state.dataDir = path.join(temporaryDirectory, "data");
 const previousProjectEnvironmentRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
 const previousProjectEnvironmentRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
 process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
 const { deprovisionProjectEnvironment, inspectProjectEnvironment, listProjectEnvironments, prepareProjectEnvironmentMountAccess, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } = await import("./project-environments.js");
 
@@ -61,7 +62,7 @@ it("registers a development-only environment with canonical isolated paths and d
   expect(result.environment).toMatchObject({
     repositoryId: state.repository.id, repositoryFullName: "acme/demo", sourceBranch: "development",
     desiredState: "provisioned", observedState: "provisioned", activeReleaseId: null,
-    resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+    resources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
   });
   expect(result.environment.databasePath).toBe(path.join(state.dataDir, "project-environments", state.repository.id, "database"));
   expect(state.repository.persistentEnvironmentPaths).toContain(result.environment.rootPath);
@@ -71,12 +72,108 @@ it("registers a development-only environment with canonical isolated paths and d
   expect((await inspectProjectEnvironment(state.repository.id)).environment.id).toBe(result.environment.id);
 });
 
+it("restricts the PHP-FPM acceptance profile to the dedicated disposable repository", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-unapproved-acceptance-1234567890", fullName: "acme/unapproved-acceptance", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    await expect(registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    })).rejects.toThrow("restricted to its disposable acceptance repository");
+
+    state.repository = {
+      id: "deputy-proxy-toti-invatam-org-44fadec4d6",
+      fullName: "deputy-proxy/toti-invatam-org",
+      status: "cloned",
+      persistentEnvironmentPaths: [],
+    };
+    const result = await registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    });
+    expect(result.created).toBe(true);
+    expect(result.environment).toMatchObject({
+      repositoryId: "deputy-proxy-toti-invatam-org-44fadec4d6",
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+    });
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
 it("is idempotent for an identical environment and rejects conflicting profile or resources", async () => {
   const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   const second = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
   expect(second.created).toBe(false);
   expect(second.environment.id).toBe(first.environment.id);
-  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 750 } })).rejects.toThrow("different profile or resource reservation");
+  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 1500 } })).rejects.toThrow("different profile or resource reservation");
+});
+
+it("allows an explicit versioned profile upgrade only while the environment is idle", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-profile-upgrade-d4e5f6a7b8", fullName: "acme/profile-upgrade", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 1 });
+    const upgraded = await registerProjectEnvironment({
+      repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 3,
+      resources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
+    });
+    expect(upgraded.created).toBe(false);
+    expect(upgraded.profileUpdated).toBe(true);
+    expect(upgraded.resourcesUpdated).toBe(true);
+    expect(upgraded.environment.id).toBe(first.environment.id);
+    expect(upgraded.environment.profileVersion).toBe(3);
+    expect(upgraded.environment.resources).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
+it("rejects a profile upgrade while any project workload is registered", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-active-profile-upgrade-e5f6a7b8c9", fullName: "acme/active-profile-upgrade", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 1 });
+    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadIds: ["234e5321-b4d7-4d4f-be92-ce56a984adaa"], workloadReleaseId: "234e5321-b4d7-4d4f-be92-ce56a984adaa" });
+    await expect(registerProjectEnvironment({
+      repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 3,
+      resources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
+    })).rejects.toThrow("different profile or resource reservation");
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
+it("allows an explicit full-vector resize only while the environment is idle", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-resource-resize-c3d4e5f6a7", fullName: "acme/resource-resize", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const resizedResources = { cpuMilli: 1400, memoryMiB: 3072, pids: 384, diskMiB: 24576 };
+    const resized = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: resizedResources });
+    expect(resized.created).toBe(false);
+    expect(resized.resourcesUpdated).toBe(true);
+    expect(resized.environment.id).toBe(first.environment.id);
+    expect(resized.environment.resources).toEqual(resizedResources);
+  } finally {
+    state.repository = previousRepository;
+  }
 });
 
 it("validates repository identity, profile and bounded resource requests", async () => {
@@ -84,6 +181,7 @@ it("validates repository identity, profile and bounded resource requests", async
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "../unsafe" })).rejects.toThrow("Invalid project environment profile ID");
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "unknown-profile" })).rejects.toThrow("Unknown project environment profile");
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 5000 } })).rejects.toThrow("cpuMilli must be between");
+  await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 1000, memoryMiB: 2048, pids: 320, diskMiB: 21504 } })).rejects.toThrow("cannot be lower than the aggregate profile requirement");
 });
 
 it("persists lifecycle observations and health without changing the source branch", async () => {
@@ -104,18 +202,16 @@ it("allows a bounded resource-plan retry after capacity admission fails", async 
     persistentEnvironmentPaths: [],
   };
   try {
-    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 1500, memoryMiB: 3072, pids: 384, diskMiB: 24576 } });
     await updateProjectEnvironment({
       repositoryId: state.repository.id,
       lastError: "Resource reservation failed: SANDBOX_CAPACITY_EXCEEDED: global memory reservation budget would be exceeded",
     });
-    const retried = await registerProjectEnvironment({
-      repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 },
-    });
+    const retried = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
     expect(retried.created).toBe(false);
     expect(retried.resourcesUpdated).toBe(true);
     expect(retried.environment.id).toBe(first.environment.id);
-    expect(retried.environment.resources).toEqual({ cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 });
+    expect(retried.environment.resources).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
     expect(retried.environment.lastError).toBeNull();
   } finally {
     state.repository = previousRepository;
@@ -200,7 +296,8 @@ it("provisions from an explicitly deployable digest and retries an interrupted c
       repositoryId: state.repository.id,
       releaseId,
       image: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64),
-      resources: environment.resources,
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      reservationResources: environment.resources,
       restartPolicy: "unless-stopped",
       command: ["--nodaemonize"],
     });
@@ -209,6 +306,65 @@ it("provisions from an explicitly deployable digest and retries an interrupted c
     state.repository = previousRepository;
     if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
     else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+  }
+});
+
+it("provisions the repository-restricted PHP-FPM acceptance profile with only the approved image", async () => {
+  const previousRepository = state.repository;
+  const previousProjectRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+  const previousRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+  state.repository = {
+    id: "deputy-proxy-toti-invatam-org-44fadec4d6",
+    fullName: "deputy-proxy/toti-invatam-org",
+    status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
+  process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = JSON.stringify([
+    { root: "/var/lib/vps-mcp/project-environments", owner: "vps-mcp" },
+    { root: process.env.VPS_SANDBOX_PROJECT_ENV_ROOT, owner: "vps-mcp-development" },
+  ]);
+  const runtime = {
+    pullImage: vi.fn().mockResolvedValue({ pulled: true }),
+    createProjectServiceWorkload: vi.fn().mockResolvedValue({ workload: { id: "", status: "created" } }),
+  };
+  try {
+    const { environment } = await registerProjectEnvironment({
+      repositoryId: state.repository.id,
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+    });
+    const releaseId = "234e5321-b4d7-4d4f-be92-ce56a984adaa";
+    await fs.mkdir(path.join(environment.releasesPath, releaseId), { recursive: true });
+    await setProjectEnvironmentRelease({ repositoryId: state.repository.id, releaseId, channel: "candidate" });
+
+    const provisioned = await provisionProjectEnvironment(state.repository.id, runtime as never);
+    expect(provisioned.environment).toMatchObject({
+      profileId: "project-service-acceptance",
+      profileVersion: 1,
+      observedState: "provisioned",
+      workloadIds: [environment.id],
+      workloadReleaseId: releaseId,
+    });
+    expect(runtime.pullImage).toHaveBeenCalledExactlyOnceWith(
+      "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
+    );
+    expect(runtime.createProjectServiceWorkload).toHaveBeenCalledExactlyOnceWith({
+      workloadId: environment.id,
+      repositoryId: state.repository.id,
+      releaseId,
+      image: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72",
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      reservationResources: environment.resources,
+      restartPolicy: "unless-stopped",
+      command: ["--nodaemonize"],
+    });
+  } finally {
+    state.repository = previousRepository;
+    if (previousProjectRoot === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = previousProjectRoot;
+    if (previousRootsJson === undefined) delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+    else process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON = previousRootsJson;
   }
 });
 

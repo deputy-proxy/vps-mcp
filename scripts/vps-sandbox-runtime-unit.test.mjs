@@ -16,6 +16,8 @@ describe('rootless runtime systemd unit', () => {
     expect(unit).toContain('ProtectHome=read-only');
     expect(unit).toContain('NoNewPrivileges=no');
     expect(unit).toContain('DevicePolicy=closed');
-    expect(unit).toContain('ReadWritePaths=/var/lib/vps-sandbox /var/lib/vps-sandbox-mounts');
+    expect(unit).toContain('ReadWritePaths=/var/lib/vps-sandbox');
+    expect(unit).not.toMatch(/^ReadWritePaths=.*vps-sandbox-mounts/m);
+    expect(unit).toContain('ProtectSystem=strict');
   });
 });

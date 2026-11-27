@@ -466,7 +466,7 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("project-environment.register", {
     title: "Register persistent project environment",
-    description: "Create an idempotent durable metadata record for a registered repository and reserve its profile resource vector through the resource-governance API. This does not provision or start containers; provisioning remains gated pending an approved deployable profile with a pinned runtime image digest.",
+    description: "Create an idempotent durable metadata record for a registered repository and reserve the aggregate profile resource vector (application plus all declared dependencies) through the resource-governance API. Explicit overrides may increase the aggregate budget but cannot reduce it below the profile's declared workload requirements. An existing idle environment can change profile version only with an explicit version and complete resource vector, and only when no workloads are registered. This does not provision or start containers; provisioning remains gated pending an approved deployable profile with a pinned runtime image digest.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       repositoryId: z.string().min(2).max(200),

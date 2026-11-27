@@ -1,84 +1,137 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run as root: sudo bash scripts/configure-development-project-environment-root.sh" >&2
+if [[ ${EUID} -ne 0 ]]; then
+  echo "Run as root: sudo bash scripts/configure-development-project-environment-root.sh --apply" >&2
   exit 2
 fi
 
-readonly MCP_ENV=/etc/vps-mcp-development/vps-mcp-development.env
-readonly RUNTIME_ENV=/etc/vps-sandbox/runtime.env
-readonly PROJECT_ENV_ROOT=/var/lib/vps-mcp-development/project-environments
-readonly PROJECT_ENV_OWNER=vps-mcp-development
-readonly REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+APPLY=false
+if [[ "${1:-}" == "--apply" && $# -eq 1 ]]; then
+  APPLY=true
+elif [[ $# -ne 0 ]]; then
+  echo "Usage: $0 [--apply]" >&2
+  exit 2
+fi
 
-[[ -f "${MCP_ENV}" ]] || { echo "Missing ${MCP_ENV}." >&2; exit 2; }
-[[ -f "${RUNTIME_ENV}" ]] || { echo "Missing ${RUNTIME_ENV}; install the rootless runtime first." >&2; exit 2; }
-getent passwd "${PROJECT_ENV_OWNER}" >/dev/null || { echo "Missing ${PROJECT_ENV_OWNER} account." >&2; exit 2; }
-getent group vps-sandbox >/dev/null || { echo "Missing vps-sandbox group." >&2; exit 2; }
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly ROOTS_JSON='[{"root":"/var/lib/vps-mcp/project-environments","owner":"vps-mcp"},{"root":"/var/lib/vps-mcp-development/project-environments","owner":"vps-mcp-development"}]'
+readonly ROOT_CONFIG_HELPER="${SCRIPT_DIR}/project-environment-root-config.mjs"
+readonly PRODUCTION_MCP_ENV=/etc/vps-mcp/vps-mcp.env
+readonly DEVELOPMENT_MCP_ENV=/etc/vps-mcp-development/vps-mcp-development.env
+readonly RUNTIME_ENV=/etc/vps-sandbox/runtime.env
+readonly ROOTS=(
+  "/var/lib/vps-mcp/project-environments:vps-mcp"
+  "/var/lib/vps-mcp-development/project-environments:vps-mcp-development"
+)
+
+for file in "${PRODUCTION_MCP_ENV}" "${DEVELOPMENT_MCP_ENV}" "${RUNTIME_ENV}"; do
+  [[ -f "${file}" && ! -L "${file}" ]] || { echo "Missing or unsafe environment file: ${file}" >&2; exit 2; }
+done
+
+MISSING_ROOTS=()
+for entry in "${ROOTS[@]}"; do
+  root="${entry%%:*}"
+  owner="${entry##*:}"
+  getent passwd "${owner}" >/dev/null || { echo "Missing project environment owner account: ${owner}." >&2; exit 2; }
+  getent group "${owner}" >/dev/null || { echo "Missing project environment owner group: ${owner}." >&2; exit 2; }
+
+  if [[ -L "${root}" ]]; then
+    echo "Project environment root must not be a symlink: ${root}" >&2
+    exit 2
+  elif [[ -e "${root}" ]]; then
+    [[ -d "${root}" ]] || { echo "Project environment root is not a directory: ${root}" >&2; exit 2; }
+    [[ "$(stat -c '%U:%G' "${root}")" == "${owner}:${owner}" ]] || {
+      echo "Project environment root has unexpected ownership: ${root}" >&2
+      exit 2
+    }
+    [[ "$(stat -c '%a' "${root}")" == "700" ]] || {
+      echo "Project environment root must have mode 0700; refusing to change existing data permissions: ${root}" >&2
+      exit 2
+    }
+    [[ "$(realpath -e "${root}")" == "${root}" ]] || {
+      echo "Project environment root is not canonical: ${root}" >&2
+      exit 2
+    }
+  else
+    MISSING_ROOTS+=("${root}:${owner}")
+  fi
+done
 
 uid="$(id -u vps-sandbox)"
-containers="$(runuser -u vps-sandbox -- env HOME=/var/lib/vps-sandbox XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" podman ps -aq --filter label=io.cr8or.vps-mcp.type=project-service)"
-[[ -z "${containers}" ]] || { echo "Project-service containers already exist; refusing to change their configured data root." >&2; exit 2; }
 running_containers="$(runuser -u vps-sandbox -- env HOME=/var/lib/vps-sandbox XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" podman ps -q)"
-[[ -z "${running_containers}" ]] || { echo "Running rootless containers exist; stop them before changing runtime configuration." >&2; exit 2; }
-if [[ -d "${PROJECT_ENV_ROOT}" ]] && [[ -n "$(find "${PROJECT_ENV_ROOT}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-  echo "${PROJECT_ENV_ROOT} is not empty; refusing to reuse or overwrite existing project-environment data." >&2
+[[ -z "${running_containers}" ]] || {
+  echo "Rootless containers are running; stop them before applying the runtime configuration." >&2
   exit 2
-fi
-if [[ -d /var/lib/vps-sandbox/workloads ]]; then
-  project_records=""
-  while IFS= read -r -d '' record; do
-    if grep -qE '"workloadType"[[:space:]]*:[[:space:]]*"project-service"' "${record}"; then
-      project_records+="${record}"
-    else
-      grep_status=$?
-      [[ "${grep_status}" -eq 1 ]] || exit "${grep_status}"
-    fi
-  done < <(find /var/lib/vps-sandbox/workloads -type f -name "record.json" -print0)
-  [[ -z "${project_records}" ]] || { echo "Project-service workload records already exist; refusing to orphan their mount metadata." >&2; exit 2; }
+}
+
+node --input-type=module -e '
+  const { validateProjectEnvironmentRoots } = await import(process.argv[1]);
+  validateProjectEnvironmentRoots(process.argv[2]);
+' "${ROOT_CONFIG_HELPER}" "${ROOTS_JSON}"
+
+printf 'Project environment root map:\n'
+printf '  /var/lib/vps-mcp/project-environments -> vps-mcp\n'
+printf '  /var/lib/vps-mcp-development/project-environments -> vps-mcp-development\n'
+printf 'Environment files to update:\n  %s\n  %s\n  %s\n' "${PRODUCTION_MCP_ENV}" "${DEVELOPMENT_MCP_ENV}" "${RUNTIME_ENV}"
+printf 'The runtime installer will refresh the rootless runtime and quota-broker units.\n'
+printf 'Both MCP services will be restarted after the runtime update. No project workload will be created or started.\n'
+
+if [[ "${APPLY}" != true ]]; then
+  for entry in "${MISSING_ROOTS[@]}"; do
+    printf '  would create %s owned by %s (0700)\n' "${entry%%:*}" "${entry##*:}"
+  done
+  echo "Dry run only. Re-run with --apply to apply the root map and restart services."
+  exit 0
 fi
 
-backup_mcp="$(mktemp)"
-backup_runtime="$(mktemp)"
-cp -a "${MCP_ENV}" "${backup_mcp}"
-cp -a "${RUNTIME_ENV}" "${backup_runtime}"
-changed=true
+CREATED_ROOTS=()
+for entry in "${MISSING_ROOTS[@]}"; do
+  root="${entry%%:*}"
+  install -d -o "${entry##*:}" -g "${entry##*:}" -m 0700 "${root}"
+  CREATED_ROOTS+=("${root}")
+done
+
+backup_dir="$(mktemp -d /root/vps-project-environment-roots.XXXXXX)"
+chmod 0700 "${backup_dir}"
+changed=false
 rollback() {
-  if [[ "${changed}" == true ]]; then
-    install -o root -g vps-mcp-development -m 0640 "${backup_mcp}" "${MCP_ENV}"
-    install -o root -g vps-sandbox -m 0640 "${backup_runtime}" "${RUNTIME_ENV}"
-    bash "${REPO_DIR}/scripts/install-vps-sandbox-runtime.sh" || true
-    systemctl restart vps-mcp-development.service || true
+  status=$?
+  trap - EXIT
+  if [[ "${changed}" == true && $status -ne 0 ]]; then
+    echo "Configuration failed; restoring previous environment files and runtime units." >&2
+    cp -a "${backup_dir}/production.env" "${PRODUCTION_MCP_ENV}" || true
+    cp -a "${backup_dir}/development.env" "${DEVELOPMENT_MCP_ENV}" || true
+    cp -a "${backup_dir}/runtime.env" "${RUNTIME_ENV}" || true
+    bash "${SCRIPT_DIR}/install-vps-sandbox-runtime.sh" || true
+    systemctl restart vps-mcp.service vps-mcp-development.service || true
+    for root in "${CREATED_ROOTS[@]}"; do rmdir "${root}" 2>/dev/null || true; done
   fi
-  rm -f "${backup_mcp}" "${backup_runtime}"
+  rm -rf "${backup_dir}"
+  exit "$status"
 }
-trap rollback ERR
+trap rollback EXIT
 
-update_env() {
-  local file="$1" owner_group="$2" key_root="$3" key_owner="$4"
-  local temporary
-  temporary="$(mktemp)"
-  awk -v root_key="${key_root}" -v root_value="${PROJECT_ENV_ROOT}" -v owner_key="${key_owner}" -v owner_value="${PROJECT_ENV_OWNER}" '
-    BEGIN { root_done=0; owner_done=0 }
-    index($0, root_key "=")==1 { if (!root_done) print root_key "=" root_value; root_done=1; next }
-    index($0, owner_key "=")==1 { if (!owner_done) print owner_key "=" owner_value; owner_done=1; next }
-    { print }
-    END { if (!root_done) print root_key "=" root_value; if (!owner_done) print owner_key "=" owner_value }
-  ' "${file}" > "${temporary}"
-  install -o root -g "${owner_group}" -m 0640 "${temporary}" "${file}"
-  rm -f "${temporary}"
-}
+cp -a "${PRODUCTION_MCP_ENV}" "${backup_dir}/production.env"
+cp -a "${DEVELOPMENT_MCP_ENV}" "${backup_dir}/development.env"
+cp -a "${RUNTIME_ENV}" "${backup_dir}/runtime.env"
 
-update_env "${MCP_ENV}" vps-mcp-development VPS_SANDBOX_PROJECT_ENV_ROOT VPS_SANDBOX_PROJECT_ENV_OWNER
-update_env "${RUNTIME_ENV}" vps-sandbox VPS_SANDBOX_PROJECT_ENV_ROOT VPS_SANDBOX_PROJECT_ENV_OWNER
-install -d -o "${PROJECT_ENV_OWNER}" -g "${PROJECT_ENV_OWNER}" -m 0700 "${PROJECT_ENV_ROOT}"
-bash "${REPO_DIR}/scripts/install-vps-sandbox-runtime.sh"
-systemctl restart vps-mcp-development.service
+changed=true
+node --input-type=module -e '
+  const { updateProjectEnvironmentRootMapFile } = await import(process.argv[1]);
+  const roots = process.argv[2];
+  for (const file of process.argv.slice(3)) await updateProjectEnvironmentRootMapFile(file, roots);
+' "${ROOT_CONFIG_HELPER}" "${ROOTS_JSON}" "${PRODUCTION_MCP_ENV}" "${DEVELOPMENT_MCP_ENV}" "${RUNTIME_ENV}"
+
+bash "${SCRIPT_DIR}/install-vps-sandbox-runtime.sh"
+systemctl restart vps-mcp.service vps-mcp-development.service
+systemctl is-active --quiet vps-sandbox-runtime.socket
+systemctl is-active --quiet vps-sandbox-quota-broker.socket
+systemctl is-active --quiet vps-mcp.service
 systemctl is-active --quiet vps-mcp-development.service
 
 changed=false
-trap - ERR
-rm -f "${backup_mcp}" "${backup_runtime}"
-printf 'Configured the development MCP and rootless runtime to use %s (owner %s).\n' "${PROJECT_ENV_ROOT}" "${PROJECT_ENV_OWNER}"
-printf 'No project-service workloads were present or created.\n'
+trap - EXIT
+rm -rf "${backup_dir}"
+echo "Configured both project environment roots and restarted the runtime, production MCP and development MCP services."
+echo "Existing project environment data was retained; no project-service workload was created or started."

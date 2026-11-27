@@ -41,11 +41,16 @@ describe('sandbox runtime request contract', () => {
     })).toThrow('reserved for task workloads');
     expect(() => validateSandboxRuntimeRequest({
       operation: 'project-service.create', workloadId: id, repositoryId: 'repo', releaseId: id, image,
-      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped',
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped',
     })).not.toThrow();
     expect(() => validateSandboxRuntimeRequest({
+      operation: 'project-service.create', workloadId: id, repositoryId: 'repo', releaseId: id, image,
+      resources: { cpuMilli: 1500, memoryMiB: 512, pids: 64, diskMiB: 4096 },
+      reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped',
+    })).toThrow('exceed the aggregate project reservation');
+    expect(() => validateSandboxRuntimeRequest({
       operation: 'project-service.create', workloadId: id, repositoryId: 'repo', releaseId: id, image: 'alpine:latest',
-      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped',
+      resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped',
     })).toThrow('sha256');
   });
 
@@ -161,6 +166,7 @@ describe('sandbox runtime socket client', () => {
       releaseId: id,
       image,
       resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 },
+      reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
       restartPolicy: 'unless-stopped',
       command: ['--nodaemonize'],
     });
@@ -184,7 +190,7 @@ describe('sandbox runtime socket client', () => {
     await new Promise<void>((resolve) => server!.listen(socketPath, resolve));
     const adapter = createSandboxRuntimeAdapter(socketPath);
     await adapter.pullImage(image);
-    await adapter.createProjectServiceWorkload({ workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped' });
+    await adapter.createProjectServiceWorkload({ workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped' });
     await adapter.inspectProjectServiceWorkload(id);
     await adapter.startProjectServiceWorkload(id);
     await adapter.stopProjectServiceWorkload(id);
@@ -193,7 +199,7 @@ describe('sandbox runtime socket client', () => {
     await adapter.releaseProjectResources('deputy-proxy-vps-mcp');
     expect(operations).toEqual([
       { operation: 'image.pull', image },
-      { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, restartPolicy: 'unless-stopped' },
+      { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 512, pids: 64, diskMiB: 4096 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped' },
       { operation: 'project-service.inspect', workloadId: id },
       { operation: 'project-service.start', workloadId: id },
       { operation: 'project-service.stop', workloadId: id },

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, projectServiceMissingWorkloadReconciliationAllowed, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth, configuredProjectEnvironmentRoots, expectedProjectServiceMountSources } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
+import { projectPodName } from './project-pod.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -97,6 +98,22 @@ describe('project-service boot recovery policy', () => {
   });
 });
 
+describe('explicit project-service missing-record reconciliation', () => {
+  const record = { id: '134e5321-b4d7-4d4f-be92-ce56a984adaa', workloadType: 'project-service', status: 'unknown' };
+  it('allows reconciliation only for an unknown project service with no runtime identity or matching container', () => {
+    expect(projectServiceMissingWorkloadReconciliationAllowed(record, null, [])).toBe(true);
+  });
+  it.each([
+    [{ ...record, status: 'running' }, null, [], false],
+    [record, 'abcdef123456', [], false],
+    [record, null, [{ workloadId: record.id }], false],
+    [record, null, [], true],
+    [{ ...record, workloadType: 'task' }, null, [], false],
+  ])('rejects unsafe reconciliation evidence %#', (candidate, runtimeId, containers, namedContainerExists) => {
+    expect(projectServiceMissingWorkloadReconciliationAllowed(candidate, runtimeId, containers, namedContainerExists)).toBe(false);
+  });
+});
+
 describe('dashboard runtime metric parsers', () => {
   it('normalizes Podman Go timestamps with timezone abbreviations', () => {
     expect(normalizePodmanTimestamp('2026-11-26 00:25:29.41056272 +0100 CET')).toBe('2026-11-25T23:25:29.410Z');
@@ -181,8 +198,10 @@ describe('rootless workload runtime request validation', () => {
     const image = 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64);
     const previous = process.env.VPS_SANDBOX_ALLOWED_IMAGES;
     process.env.VPS_SANDBOX_ALLOWED_IMAGES = image;
-    const create = { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 }, restartPolicy: 'unless-stopped', command: ['--nodaemonize'] };
+    const create = { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped', command: ['--nodaemonize'] };
     expect(parseRuntimeRequest(JSON.stringify(create))).toEqual(create);
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...create, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320 } }))).toThrow('Aggregate project reservation must define all four resource dimensions');
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...create, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128 } }))).toThrow('Project-service resources must define all four resource dimensions');
     expect(() => parseRuntimeRequest(JSON.stringify({ ...create, restartPolicy: 'on-failure' }))).toThrow('restart policy');
     if (previous === undefined) delete process.env.VPS_SANDBOX_ALLOWED_IMAGES; else process.env.VPS_SANDBOX_ALLOWED_IMAGES = previous;
     for (const operation of ['project-service.inspect','project-service.start','project-service.stop','project-service.remove']) {
@@ -460,7 +479,7 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args.some((arg) => arg.includes('/var/lib/vps-mcp/task-workspaces/worktrees/deputy-proxy-vps-mcp/234e5321-b4d7-4d4f-be92-ce56a984adaa'))).toBe(false);
   });
 
-  it('builds project-service mounts from broker staging paths and maps the image app UID', () => {
+  it('derives the repository-private pod when a project-service caller omits podName', () => {
     const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
     const base = '/var/lib/vps-sandbox-mounts/projects/deputy-proxy-vps-mcp/' + id;
     const args = buildContainerCreateArgs({
@@ -470,7 +489,26 @@ describe('rootless workload lifecycle isolation', () => {
       projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' },
       restartPolicy: 'unless-stopped', executionMount: null,
     });
-    expect(args).toContain('--network=none');
+
+    expect(args).toContain('--pod');
+    expect(args).toContain(projectPodName('deputy-proxy-vps-mcp'));
+    expect(args).toContain('io.cr8or.vps-mcp.pod=' + projectPodName('deputy-proxy-vps-mcp'));
+  });
+
+  it('builds project-service mounts from broker staging paths and maps the image app UID', () => {
+    const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+    const base = '/var/lib/vps-sandbox-mounts/projects/deputy-proxy-vps-mcp/' + id;
+    const args = buildContainerCreateArgs({
+      id, workloadType: 'project-service', repositoryId: 'deputy-proxy-vps-mcp',
+      image: 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64),
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' },
+      restartPolicy: 'unless-stopped', executionMount: null, podName: projectPodName('deputy-proxy-vps-mcp'),
+    });
+    expect(args).toContain('--pod');
+    expect(args).toContain(projectPodName('deputy-proxy-vps-mcp'));
+    expect(args).not.toContain('--cgroup-parent');
+    expect(args.some((arg) => arg.startsWith('--network='))).toBe(false);
     expect(args).toContain('--read-only');
     expect(args).toContain('--memory-swap=1024m');
     expect(args).toContain('--restart=unless-stopped');
@@ -482,19 +520,19 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args.join(' ')).not.toMatch(/--device|--privileged|--pid=host|--ipc=host|--uts=host|\/dev|vps-sandbox-runtime\\.sock|vps-sandbox-quota\\.sock|task-workspaces|execution-logs/);
     expect(args.join(' ')).not.toContain('/workspace');
     expect(args.join(' ')).not.toContain('/run/vps-mcp-executions');
-    expect(args).toContain('--userns=keep-id:uid=10001,gid=10001');
+    // Podman 4.9 rejects --userns together with --pod. Keep the explicit\n    // non-root application UID; the runtime service owns the pod and members.\n    expect(args).not.toContain('--userns');
     expect(args).toContain('--label');
     expect(args).toContain('io.cr8or.vps-mcp.release=234e5321-b4d7-4d4f-be92-ce56a984adaa');
     expect(args).toContain('--user');
     expect(args).toContain('10001:10001');
-    expect(args).toContain('type=bind,src=' + base + '/release,dst=/app,ro');
-    expect(args).toContain('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
-    expect(args).toContain('type=bind,src=' + base + '/cache,dst=/app/bootstrap/cache,rw');
-    expect(args).toContain('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    expect(args).toContain('type=bind,src=' + base + '/release,dst=/app,ro,nosuid,nodev');
+    expect(args).toContain('type=bind,src=' + base + '/storage,dst=/app/storage,rw,nosuid,nodev');
+    expect(args).toContain('type=bind,src=' + base + '/cache,dst=/app/bootstrap/cache,rw,nosuid,nodev');
+    expect(args).toContain('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw,nosuid,nodev');
     // The dedicated logs bind intentionally overlays the storage bind. Keep
     // the parent mount first so the nested target exists before Podman applies it.
-    const storageMountIndex = args.indexOf('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
-    const logsMountIndex = args.indexOf('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    const storageMountIndex = args.indexOf('type=bind,src=' + base + '/storage,dst=/app/storage,rw,nosuid,nodev');
+    const logsMountIndex = args.indexOf('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw,nosuid,nodev');
     expect(storageMountIndex).toBeGreaterThan(-1);
     expect(logsMountIndex).toBeGreaterThan(storageMountIndex);
     expect(base + '/storage').not.toBe(base + '/logs');
@@ -542,4 +580,60 @@ describe('rootless workload lifecycle isolation', () => {
     })).toThrow('Unsupported workload network policy');
   });
 
+});
+
+
+describe('multi-root project-service mount verification', () => {
+  const repositoryId = 'deputy-proxy-vps-mcp';
+  const releaseId = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+  const roots = [
+    { root: '/var/lib/vps-mcp/project-environments', owner: 'vps-mcp' },
+    { root: '/var/lib/vps-mcp-development/project-environments', owner: 'vps-mcp-development' },
+  ];
+
+  it('parses both configured roots and retains their dedicated owners', () => {
+    expect(configuredProjectEnvironmentRoots({
+      VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify(roots),
+    })).toEqual(roots);
+  });
+
+  it('derives canonical mount sources for each approved root', () => {
+    expect(expectedProjectServiceMountSources(repositoryId, releaseId, roots)).toEqual([
+      {
+        release: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/releases/' + releaseId,
+        storage: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/storage',
+        cache: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/cache',
+        logs: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/logs',
+      },
+      {
+        release: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/releases/' + releaseId,
+        storage: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/storage',
+        cache: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/cache',
+        logs: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/logs',
+      },
+    ]);
+  });
+
+  it('preserves the legacy single-root configuration', () => {
+    expect(configuredProjectEnvironmentRoots({
+      VPS_SANDBOX_PROJECT_ENV_ROOT: '/srv/project-environments',
+      VPS_SANDBOX_PROJECT_ENV_OWNER: 'project-owner',
+    })).toEqual([{ root: '/srv/project-environments', owner: 'project-owner' }]);
+  });
+
+  it.each([
+    ['invalid JSON', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: '{' }, 'valid JSON'],
+    ['empty roots', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: '[]' }, 'between 1 and 8 roots'],
+    ['relative root', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: 'relative', owner: 'vps-mcp' }]) }, 'configuration is invalid'],
+    ['comma root', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: '/srv/project,environments', owner: 'vps-mcp' }]) }, 'configuration is invalid'],
+    ['invalid owner', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: '/srv/project-environments', owner: 'not a user' }]) }, 'configuration is invalid'],
+    ['duplicate roots', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: '/srv/project-environments', owner: 'vps-mcp' }, { root: '/srv/./project-environments', owner: 'vps-mcp-development' }]) }, 'must be unique'],
+  ])('rejects %s', (_name, env, message) => {
+    expect(() => configuredProjectEnvironmentRoots(env)).toThrow(message);
+  });
+
+  it('rejects an empty or malformed root list when deriving mount sources', () => {
+    expect(() => expectedProjectServiceMountSources(repositoryId, releaseId, [])).toThrow('At least one approved');
+    expect(() => expectedProjectServiceMountSources('../other', releaseId, roots)).toThrow('repository ID');
+  });
 });

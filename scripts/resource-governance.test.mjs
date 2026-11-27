@@ -92,6 +92,22 @@ describe('resource governance', () => {
     expect(replacement.charged.cpuMilli).toBe(1500);
   });
 
+  it('accounts dependency workload vectors against the same project reservation', () => {
+    const budget = resourceBudget({ VPS_SANDBOX_GLOBAL_CPU_MILLI: '8000', VPS_SANDBOX_GLOBAL_MEMORY_MIB: '16000', VPS_SANDBOX_GLOBAL_PIDS: '2048', VPS_SANDBOX_GLOBAL_DISK_MIB: '100000', VPS_SANDBOX_PER_REPOSITORY_CPU_MILLI: '4000', VPS_SANDBOX_PER_REPOSITORY_MEMORY_MIB: '8000', VPS_SANDBOX_PER_REPOSITORY_PIDS: '1024', VPS_SANDBOX_PER_REPOSITORY_DISK_MIB: '50000' });
+    const reservation = { repositoryId: 'repo', status: 'reserved', resources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 } };
+    const records = [
+      { id: 'mysql', repositoryId: 'repo', workloadType: 'project-dependency', status: 'running', resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 } },
+      { id: 'redis', repositoryId: 'repo', workloadType: 'project-dependency', status: 'stopped', resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 } },
+      { id: 'php', repositoryId: 'repo', workloadType: 'project-service', status: 'running', resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 } },
+    ];
+    const usage = calculateResourceUsage(records, [reservation]);
+    expect(usage.byRepository.repo).toMatchObject({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
+    expect(usage).toMatchObject({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
+    const over = evaluateResourceRequest({ records, reservations: [reservation], requested: { repositoryId: 'repo', workloadType: 'project-dependency', resources: { cpuMilli: 1, memoryMiB: 1, pids: 1, diskMiB: 1 } }, budget, freeDiskBytes: 100 * 1024 ** 3 });
+    expect(over.allowed).toBe(false);
+    expect(over.reasons).toContain('SANDBOX_PROJECT_RESERVATION_EXCEEDED: project cpuMilli usage would exceed its reserved budget');
+  });
+
   it('only reaps terminal orphan task containers after retention', () => {
     const now = Date.now();
     const old = new Date(now - 8 * 86400_000).toISOString();

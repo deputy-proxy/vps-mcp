@@ -1,17 +1,19 @@
 import { beforeAll, expect, it } from "vitest";
 
 let assertServiceProfileDeployable: typeof import("./service-profiles.js").assertServiceProfileDeployable;
+let assertServiceProfileRepositoryAllowed: typeof import("./service-profiles.js").assertServiceProfileRepositoryAllowed;
 let getServiceProfile: typeof import("./service-profiles.js").getServiceProfile;
 let listServiceProfiles: typeof import("./service-profiles.js").listServiceProfiles;
+let serviceProfileReservationResources: typeof import("./service-profiles.js").serviceProfileReservationResources;
 
 beforeAll(async () => {
   process.env.MCP_AUTH_TOKEN ??= "test-only-token-that-is-long-enough-for-vps-mcp";
-  ({ assertServiceProfileDeployable, getServiceProfile, listServiceProfiles } = await import("./service-profiles.js"));
+  ({ assertServiceProfileDeployable, assertServiceProfileRepositoryAllowed, getServiceProfile, listServiceProfiles, serviceProfileReservationResources } = await import("./service-profiles.js"));
 });
 
 it("lists the Laravel profile as definition-only with a bounded resource plan", () => {
   const result = listServiceProfiles();
-  expect(result.count).toBe(3);
+  expect(result.count).toBe(4);
   expect(result.profiles[0]).toMatchObject({
     id: "laravel-php",
     version: 1,
@@ -52,8 +54,22 @@ it("documents and validates the intentional storage-then-logs nested mount", () 
   expect(() => assertServiceProfileDeployable(invalid)).toThrow("unsupported nested mount");
 });
 
-it("omits definition-only profiles when callers request deployable profiles only", () => {
-  expect(listServiceProfiles({ includeDefinitionOnly: false })).toEqual({ count: 0, profiles: [] });
+it("exposes only the repository-restricted PHP-FPM acceptance profile as deployable", () => {
+  const result = listServiceProfiles({ includeDefinitionOnly: false });
+  expect(result.count).toBe(1);
+  expect(result.profiles[0]).toMatchObject({
+    id: "project-service-acceptance",
+    version: 1,
+    readiness: "deployable",
+    acceptanceRepositoryId: "deputy-proxy-toti-invatam-org-44fadec4d6",
+    runtime: { imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72", user: "non-root" },
+    dependencies: [],
+    resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+    deployment: { migrations: "disabled", migrationCommand: [], buildCommands: [], seeders: { enabled: false, allowlist: [] } },
+  });
+  expect(() => assertServiceProfileDeployable(result.profiles[0]!)).not.toThrow();
+  expect(() => assertServiceProfileRepositoryAllowed(result.profiles[0]!, "deputy-proxy-vps-mcp-01d9433d21")).toThrow("restricted to its disposable acceptance repository");
+  expect(() => assertServiceProfileRepositoryAllowed(result.profiles[0]!, "deputy-proxy-toti-invatam-org-44fadec4d6")).not.toThrow();
 });
 
 it("returns isolated profile copies so callers cannot mutate the catalog", () => {
@@ -94,4 +110,12 @@ it("keeps dependency images unpinned and the profile definition-only until revie
   const candidate = structuredClone(profile);
   candidate.readiness = "deployable";
   expect(() => assertServiceProfileDeployable(candidate)).toThrow("dependency 'mysql' must pin an immutable image digest");
+});
+
+it("computes an aggregate reservation that includes every declared dependency", () => {
+  const profile = getServiceProfile("laravel-php", 3);
+  expect(serviceProfileReservationResources(profile)).toEqual({
+    cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504,
+  });
+  expect(profile.resources).toEqual({ cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 });
 });
