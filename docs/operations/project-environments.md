@@ -25,6 +25,8 @@
 
 Environment records contain metadata only. Store secrets in a dedicated protected secret mechanism with least-privilege access; never write secret values to repository metadata, release manifests, logs, audit events, backups manifests, or tool responses. Use separate database credentials and storage paths for every project. Backups must be encrypted or stored in an equivalently protected location and must never share production credentials.
 
+After starting a Laravel project service, verify that the runtime reports health.status=healthy with the php-fpm check. The runtime probes 127.0.0.1:9000 inside the container as UID/GID 10001, retries for a bounded startup window, and stops a service that never becomes healthy. Re-run runtime inspection to refresh the persisted health observation.
+
 ## Recovery and retirement
 
 Inspect status and health before restart or restore. Preserve unknown workloads and data for operator review. Stop services before backup restore. Verify backup identity and checksums, restore into staging, and switch only after validation. Deprovisioning must stop/remove project-service workloads, preserve or explicitly retire backups and data, remove registered environment paths only after verification, and release resource reservations last.

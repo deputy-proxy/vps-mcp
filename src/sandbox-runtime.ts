@@ -286,7 +286,7 @@ export interface SandboxRuntimeAdapter {
   pullImage(image: string): Promise<{ image: string; pulled: true; output: string }>;
   createWorkload(input: Omit<Extract<SandboxRuntimeRequest, { operation: 'container.create' }>, 'operation' | 'workspacePath'>): Promise<RuntimeWorkloadRecord>;
   createProjectServiceWorkload(input: { workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }): Promise<{ workload: RuntimeWorkloadRecord }>;
-  inspectProjectServiceWorkload(workloadId: string): Promise<{ workload: RuntimeWorkloadRecord; runtime: Record<string, unknown> | null; reconciliation?: string }>;
+  inspectProjectServiceWorkload(workloadId: string): Promise<{ workload: RuntimeWorkloadRecord; runtime: Record<string, unknown> | null; reconciliation?: string; health?: { status: "unknown" | "healthy" | "unhealthy"; checkedAt: string; checks: string[] } }>;
   startProjectServiceWorkload(workloadId: string): Promise<unknown>;
   stopProjectServiceWorkload(workloadId: string): Promise<unknown>;
   removeProjectServiceWorkload(input: { workloadId: string; repositoryId: string; releaseId: string }): Promise<unknown>;
