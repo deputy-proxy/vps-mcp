@@ -19,5 +19,6 @@ jobs:
           node-version: 22
       - name: Verify the live public MCP endpoint from GitHub-hosted infrastructure
         env:
+          # Match the canonical resource advertised by protected-resource metadata.
           MCP_URL: ${{ vars.MCP_PUBLIC_URL || 'https://sndbx.cr8or.be/mcp' }}
         run: node scripts/check-public-mcp.mjs
