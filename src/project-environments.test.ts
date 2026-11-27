@@ -30,6 +30,10 @@ vi.mock("./service-profiles.js", async (importOriginal) => {
         ...profile,
         readiness: "deployable",
         runtime: { ...profile.runtime, imageDigest: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64) },
+        dependencies: profile.dependencies.map((dependency) => ({
+          ...dependency,
+          imageDigest: `docker.io/library/${dependency.name}@sha256:${dependency.name === "mysql" ? "b" : "c"}` + "0".repeat(63),
+        })),
       } : profile;
     },
   };
