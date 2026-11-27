@@ -493,14 +493,14 @@ describe('rootless workload lifecycle isolation', () => {
     expect(args).toContain('io.cr8or.vps-mcp.release=234e5321-b4d7-4d4f-be92-ce56a984adaa');
     expect(args).toContain('--user');
     expect(args).toContain('10001:10001');
-    expect(args).toContain('type=bind,src=' + base + '/release,dst=/app,ro');
-    expect(args).toContain('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
-    expect(args).toContain('type=bind,src=' + base + '/cache,dst=/app/bootstrap/cache,rw');
-    expect(args).toContain('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    expect(args).toContain('type=bind,src=' + base + '/release,dst=/app,ro,nosuid,nodev');
+    expect(args).toContain('type=bind,src=' + base + '/storage,dst=/app/storage,rw,nosuid,nodev');
+    expect(args).toContain('type=bind,src=' + base + '/cache,dst=/app/bootstrap/cache,rw,nosuid,nodev');
+    expect(args).toContain('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw,nosuid,nodev');
     // The dedicated logs bind intentionally overlays the storage bind. Keep
     // the parent mount first so the nested target exists before Podman applies it.
-    const storageMountIndex = args.indexOf('type=bind,src=' + base + '/storage,dst=/app/storage,rw');
-    const logsMountIndex = args.indexOf('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw');
+    const storageMountIndex = args.indexOf('type=bind,src=' + base + '/storage,dst=/app/storage,rw,nosuid,nodev');
+    const logsMountIndex = args.indexOf('type=bind,src=' + base + '/logs,dst=/app/storage/logs,rw,nosuid,nodev');
     expect(storageMountIndex).toBeGreaterThan(-1);
     expect(logsMountIndex).toBeGreaterThan(storageMountIndex);
     expect(base + '/storage').not.toBe(base + '/logs');
