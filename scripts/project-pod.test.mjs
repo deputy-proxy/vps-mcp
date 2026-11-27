@@ -30,6 +30,7 @@ describe('project-private Podman pod contract', () => {
     const installer = fs.readFileSync(path.join(process.cwd(), 'scripts/install-vps-sandbox-runtime.sh'), 'utf8');
     expect(installer).toContain('project-pod.mjs');
     expect(installer).toContain('${LIBEXEC}/project-pod.mjs');
+    expect(installer).toContain('export VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON=');
   });
 
   it('derives stable, repository-specific pod names', () => {
