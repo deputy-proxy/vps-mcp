@@ -37,6 +37,8 @@ The smoke test runs without network access, with a read-only root filesystem, al
 
 CI also scans the built image for unfixed-excluded high and critical vulnerabilities. A successful push to `development` publishes a commit-tagged image to GHCR with BuildKit SBOM and provenance attestations. The workflow summary records the resulting immutable digest.
 
+The project-service start operation now performs a bounded PHP-FPM TCP readiness check against 127.0.0.1:9000 from inside the container as UID/GID 10001. It retries transient startup failures and stops the container if readiness is not achieved. Runtime inspection refreshes the persisted health status. This code-level check is not yet live project-service acceptance evidence.
+
 ## Validation evidence and remaining approval gate
 
 Candidate digest:

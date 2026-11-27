@@ -40,6 +40,8 @@ Environment registration reserves CPU, memory, PIDs and disk through the #36 `re
 
 Each project gets private configuration, database/schema and credentials, storage/uploads, cache namespace and logs. Runtime mounts are explicit and project-scoped. Project services do not inherit task workspace mounts, task execution-log mounts, task egress proxy access, or task sandbox credentials. A task sandbox uses a separate worktree and cannot mount or write any persistent project path.
 
+Project-service start is not considered successful until the runtime verifies the declared PHP-FPM TCP health check at 127.0.0.1:9000 from inside the container as the non-root application user. The runtime retries within a bounded startup window and stops the container if health never becomes ready. Runtime inspection refreshes the persisted health observation; stopped or missing workloads are not reported as healthy.
+
 ## Lifecycle and recovery
 
 Desired states are `provisioned`, `running`, `stopped`, and `deprovisioned`; observed states additionally include `starting`, `stopping`, `degraded`, `unknown`, and `error`. Mutations persist intent before calling the runtime and persist the observed result afterward. Operations are idempotent and keyed by stable environment/workload identity.
