@@ -5,6 +5,15 @@ import { config } from "./config.js";
 
 export type ServiceProfileReadiness = "definition-only" | "deployable";
 export type ServiceProfileResourceVector = { cpuMilli: number; memoryMiB: number; pids: number; diskMiB: number };
+export function serviceProfileReservationResources(profile: Pick<ServiceProfile, "resources" | "dependencies">): ServiceProfileResourceVector {
+  return profile.dependencies.reduce((total, dependency) => ({
+    cpuMilli: total.cpuMilli + dependency.resources.cpuMilli,
+    memoryMiB: total.memoryMiB + dependency.resources.memoryMiB,
+    pids: total.pids + dependency.resources.pids,
+    diskMiB: total.diskMiB + dependency.resources.diskMiB,
+  }), { ...profile.resources });
+}
+
 export type ServiceProfile = {
   id: string;
   version: number;

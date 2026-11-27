@@ -3,10 +3,11 @@ import { beforeAll, expect, it } from "vitest";
 let assertServiceProfileDeployable: typeof import("./service-profiles.js").assertServiceProfileDeployable;
 let getServiceProfile: typeof import("./service-profiles.js").getServiceProfile;
 let listServiceProfiles: typeof import("./service-profiles.js").listServiceProfiles;
+let serviceProfileReservationResources: typeof import("./service-profiles.js").serviceProfileReservationResources;
 
 beforeAll(async () => {
   process.env.MCP_AUTH_TOKEN ??= "test-only-token-that-is-long-enough-for-vps-mcp";
-  ({ assertServiceProfileDeployable, getServiceProfile, listServiceProfiles } = await import("./service-profiles.js"));
+  ({ assertServiceProfileDeployable, getServiceProfile, listServiceProfiles, serviceProfileReservationResources } = await import("./service-profiles.js"));
 });
 
 it("lists the Laravel profile as definition-only with a bounded resource plan", () => {
@@ -94,4 +95,12 @@ it("keeps dependency images unpinned and the profile definition-only until revie
   const candidate = structuredClone(profile);
   candidate.readiness = "deployable";
   expect(() => assertServiceProfileDeployable(candidate)).toThrow("dependency 'mysql' must pin an immutable image digest");
+});
+
+it("computes an aggregate reservation that includes every declared dependency", () => {
+  const profile = getServiceProfile("laravel-php", 3);
+  expect(serviceProfileReservationResources(profile)).toEqual({
+    cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504,
+  });
+  expect(profile.resources).toEqual({ cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 });
 });

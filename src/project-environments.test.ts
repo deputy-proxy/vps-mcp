@@ -62,7 +62,7 @@ it("registers a development-only environment with canonical isolated paths and d
   expect(result.environment).toMatchObject({
     repositoryId: state.repository.id, repositoryFullName: "acme/demo", sourceBranch: "development",
     desiredState: "provisioned", observedState: "provisioned", activeReleaseId: null,
-    resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+    resources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
   });
   expect(result.environment.databasePath).toBe(path.join(state.dataDir, "project-environments", state.repository.id, "database"));
   expect(state.repository.persistentEnvironmentPaths).toContain(result.environment.rootPath);
@@ -78,6 +78,25 @@ it("is idempotent for an identical environment and rejects conflicting profile o
   expect(second.created).toBe(false);
   expect(second.environment.id).toBe(first.environment.id);
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 750 } })).rejects.toThrow("different profile or resource reservation");
+});
+
+it("allows an explicit full-vector resize only while the environment is idle", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-resource-resize-c3d4e5f6a7", fullName: "acme/resource-resize", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const resizedResources = { cpuMilli: 1400, memoryMiB: 3072, pids: 384, diskMiB: 24576 };
+    const resized = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: resizedResources });
+    expect(resized.created).toBe(false);
+    expect(resized.resourcesUpdated).toBe(true);
+    expect(resized.environment.id).toBe(first.environment.id);
+    expect(resized.environment.resources).toEqual(resizedResources);
+  } finally {
+    state.repository = previousRepository;
+  }
 });
 
 it("validates repository identity, profile and bounded resource requests", async () => {
@@ -201,7 +220,8 @@ it("provisions from an explicitly deployable digest and retries an interrupted c
       repositoryId: state.repository.id,
       releaseId,
       image: "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:" + "a".repeat(64),
-      resources: environment.resources,
+      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      reservationResources: environment.resources,
       restartPolicy: "unless-stopped",
       command: ["--nodaemonize"],
     });

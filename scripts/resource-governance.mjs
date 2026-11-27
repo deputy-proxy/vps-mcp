@@ -6,6 +6,7 @@ import os from 'node:os';
 import { redactSensitiveText } from './secret-redaction.mjs';
 
 const ACTIVE_RESOURCE_STATES = new Set(['creating', 'created', 'starting', 'running', 'stopping', 'removing', 'error', 'unknown']);
+const PROJECT_WORKLOAD_TYPES = new Set(['project-service', 'project-dependency']);
 const CLEANUP_ELIGIBLE_STATES = new Set(['created', 'stopped', 'error']);
 const TERMINAL_EXECUTION_STATES = new Set(['completed', 'failed', 'cancelled', 'timed_out', 'interrupted']);
 
@@ -55,7 +56,6 @@ export function resourceReservationMatches(reservation, resources) {
   return reservation?.status === 'reserved'
     && ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].every((key) => reservation.resources?.[key] === resources[key]);
 }
-
 export function calculateResourceUsage(records = [], reservations = []) {
   const usage = { cpuMilli: 0, memoryMiB: 0, pids: 0, diskMiB: 0, activeTasks: 0, byRepository: {} };
   const projectUsage = {};
@@ -65,7 +65,7 @@ export function calculateResourceUsage(records = [], reservations = []) {
     usage.diskMiB += vector.diskMiB;
     const repo = usage.byRepository[record.repositoryId] ??= { cpuMilli: 0, memoryMiB: 0, pids: 0, diskMiB: 0, activeTasks: 0 };
     repo.diskMiB += vector.diskMiB;
-    if (record.workloadType === 'project-service') {
+    if (PROJECT_WORKLOAD_TYPES.has(record.workloadType)) {
       const project = projectUsage[record.repositoryId] ??= { cpuMilli: 0, memoryMiB: 0, pids: 0, diskMiB: 0 };
       project.diskMiB += vector.diskMiB;
       project.cpuMilli += vector.cpuMilli;
@@ -122,16 +122,16 @@ export function evaluateResourceRequest({ records = [], reservations = [], reque
   let charged = vector;
   let diskToReserveMiB = vector.diskMiB;
   const projectActual = { cpuMilli: 0, memoryMiB: 0, pids: 0, diskMiB: 0 };
-  if (requested.workloadType === 'project-service' || requested.workloadType === 'project-reservation') {
+  if (PROJECT_WORKLOAD_TYPES.has(requested.workloadType) || requested.workloadType === 'project-reservation') {
     for (const record of records) {
-      if (record.workloadType !== 'project-service' || record.repositoryId !== requested.repositoryId || record.status === 'removed') continue;
+      if (!PROJECT_WORKLOAD_TYPES.has(record.workloadType) || record.repositoryId !== requested.repositoryId || record.status === 'removed') continue;
       const existing = resourceVector(record);
       projectActual.diskMiB += existing.diskMiB;
       projectActual.cpuMilli += existing.cpuMilli;
       projectActual.memoryMiB += existing.memoryMiB;
       projectActual.pids += existing.pids;
     }
-    if (requested.workloadType === 'project-service') {
+    if (PROJECT_WORKLOAD_TYPES.has(requested.workloadType)) {
       const reservation = reservations.find((item) => item.repositoryId === requested.repositoryId && item.status !== 'released');
       if (!reservation) reasons.push('SANDBOX_PROJECT_RESERVATION_REQUIRED: reserve project capacity before creating project-service workloads');
       else {
