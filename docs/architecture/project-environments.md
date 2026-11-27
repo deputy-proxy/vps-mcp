@@ -32,6 +32,8 @@ Both versions remain definition-only. Version 2's image digest passed CI build, 
 
 The Laravel profile's storage and logs mounts are intentionally nested: the project storage bind is mounted first at `/app/storage`, then the isolated logs bind overlays `/app/storage/logs`. The cache mount is separate at `/app/bootstrap/cache`. The profile validator permits only this explicit storage/logs nesting and rejects duplicate targets or any other nested mount relationship. The runtime stages each source independently through the quota broker and verifies its repository/workload identity and mount options.
 
+The runtime mount verifier resolves the mounted source against every canonical root in VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON, not only the legacy single-root setting. Each configured root has a dedicated owner; the privileged quota broker selects the one root containing the repository and rejects missing or duplicate repository identities. The runtime accepts a mount only when its source matches exactly one configured root plus the expected repository, release and data path. The legacy VPS_SANDBOX_PROJECT_ENV_ROOT / VPS_SANDBOX_PROJECT_ENV_OWNER pair remains supported when no root map is configured.
+
 The Laravel runtime image is built from digest-pinned PHP-FPM, Composer and Node.js upstream images. Its build and smoke-test contract lives in `runtime/laravel-php/`; CI scans the resulting image and publishes development builds with SBOM and provenance attestations. A published digest is not automatically sufficient to enable a project profile: the exact digest, runtime acceptance and project-service isolation/lifecycle evidence must all pass before a profile is marked deployable.
 
 ## Isolation and resource admission

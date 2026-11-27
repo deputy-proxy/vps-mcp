@@ -43,6 +43,7 @@ const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "vps-mcp-proj
 state.dataDir = path.join(temporaryDirectory, "data");
 const previousProjectEnvironmentRoot = process.env.VPS_SANDBOX_PROJECT_ENV_ROOT;
 const previousProjectEnvironmentRootsJson = process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
+delete process.env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON;
 process.env.VPS_SANDBOX_PROJECT_ENV_ROOT = path.join(state.dataDir, "project-environments");
 const { deprovisionProjectEnvironment, inspectProjectEnvironment, listProjectEnvironments, prepareProjectEnvironmentMountAccess, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } = await import("./project-environments.js");
 

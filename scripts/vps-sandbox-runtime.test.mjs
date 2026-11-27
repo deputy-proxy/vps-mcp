@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth, configuredProjectEnvironmentRoots, expectedProjectServiceMountSources } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -542,4 +542,60 @@ describe('rootless workload lifecycle isolation', () => {
     })).toThrow('Unsupported workload network policy');
   });
 
+});
+
+
+describe('multi-root project-service mount verification', () => {
+  const repositoryId = 'deputy-proxy-vps-mcp';
+  const releaseId = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+  const roots = [
+    { root: '/var/lib/vps-mcp/project-environments', owner: 'vps-mcp' },
+    { root: '/var/lib/vps-mcp-development/project-environments', owner: 'vps-mcp-development' },
+  ];
+
+  it('parses both configured roots and retains their dedicated owners', () => {
+    expect(configuredProjectEnvironmentRoots({
+      VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify(roots),
+    })).toEqual(roots);
+  });
+
+  it('derives canonical mount sources for each approved root', () => {
+    expect(expectedProjectServiceMountSources(repositoryId, releaseId, roots)).toEqual([
+      {
+        release: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/releases/' + releaseId,
+        storage: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/storage',
+        cache: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/cache',
+        logs: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/logs',
+      },
+      {
+        release: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/releases/' + releaseId,
+        storage: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/storage',
+        cache: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/cache',
+        logs: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/logs',
+      },
+    ]);
+  });
+
+  it('preserves the legacy single-root configuration', () => {
+    expect(configuredProjectEnvironmentRoots({
+      VPS_SANDBOX_PROJECT_ENV_ROOT: '/srv/project-environments',
+      VPS_SANDBOX_PROJECT_ENV_OWNER: 'project-owner',
+    })).toEqual([{ root: '/srv/project-environments', owner: 'project-owner' }]);
+  });
+
+  it.each([
+    ['invalid JSON', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: '{' }, 'valid JSON'],
+    ['empty roots', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: '[]' }, 'between 1 and 8 roots'],
+    ['relative root', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: 'relative', owner: 'vps-mcp' }]) }, 'configuration is invalid'],
+    ['comma root', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: '/srv/project,environments', owner: 'vps-mcp' }]) }, 'configuration is invalid'],
+    ['invalid owner', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: '/srv/project-environments', owner: 'not a user' }]) }, 'configuration is invalid'],
+    ['duplicate roots', { VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON: JSON.stringify([{ root: '/srv/project-environments', owner: 'vps-mcp' }, { root: '/srv/./project-environments', owner: 'vps-mcp-development' }]) }, 'must be unique'],
+  ])('rejects %s', (_name, env, message) => {
+    expect(() => configuredProjectEnvironmentRoots(env)).toThrow(message);
+  });
+
+  it('rejects an empty or malformed root list when deriving mount sources', () => {
+    expect(() => expectedProjectServiceMountSources(repositoryId, releaseId, [])).toThrow('At least one approved');
+    expect(() => expectedProjectServiceMountSources('../other', releaseId, roots)).toThrow('repository ID');
+  });
 });

@@ -60,6 +60,48 @@ export function safeImage(value) {
 }
 function safeRepositoryId(value) { assert(typeof value === 'string' && REPOSITORY_ID.test(value), 'Invalid repository ID'); return value; }
 function safeReleaseId(value) { assert(typeof value === 'string' && UUID.test(value), 'Invalid project release ID'); return value.toLowerCase(); }
+
+export function configuredProjectEnvironmentRoots(env = process.env) {
+  let entries;
+  if (env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON !== undefined) {
+    try { entries = JSON.parse(env.VPS_SANDBOX_PROJECT_ENV_ROOTS_JSON); }
+    catch { throw new Error('Project environment roots configuration must be valid JSON'); }
+  } else {
+    entries = [{
+      root: env.VPS_SANDBOX_PROJECT_ENV_ROOT ?? '/var/lib/vps-mcp/project-environments',
+      owner: env.VPS_SANDBOX_PROJECT_ENV_OWNER ?? 'vps-mcp',
+    }];
+  }
+  assert(Array.isArray(entries) && entries.length >= 1 && entries.length <= 8,
+    'Project environment roots configuration must contain between 1 and 8 roots');
+  const roots = entries.map((entry) => {
+    assert(entry && typeof entry === 'object' && !Array.isArray(entry)
+      && typeof entry.root === 'string' && path.isAbsolute(entry.root)
+      && !entry.root.includes(',') && /^\/[A-Za-z0-9._/-]+$/.test(entry.root)
+      && typeof entry.owner === 'string' && /^[a-z_][a-z0-9_-]{0,31}$/.test(entry.owner),
+    'Project environment roots configuration is invalid');
+    return { root: path.resolve(entry.root), owner: entry.owner };
+  });
+  assert(new Set(roots.map((entry) => entry.root)).size === roots.length,
+    'Project environment roots must be unique');
+  return roots;
+}
+
+export function expectedProjectServiceMountSources(repositoryId, releaseId, roots = configuredProjectEnvironmentRoots()) {
+  safeRepositoryId(repositoryId);
+  safeReleaseId(releaseId);
+  assert(Array.isArray(roots) && roots.length > 0, 'At least one approved project environment root is required');
+  return roots.map(({ root }) => {
+    assert(typeof root === 'string' && path.isAbsolute(root), 'Project environment root must be absolute');
+    const environment = path.join(path.resolve(root), repositoryId);
+    return {
+      release: path.join(environment, 'releases', releaseId),
+      storage: path.join(environment, 'storage'),
+      cache: path.join(environment, 'cache'),
+      logs: path.join(environment, 'logs'),
+    };
+  });
+}
 function safeRestartPolicy(value = 'unless-stopped') { assert(value === 'always' || value === 'unless-stopped', 'Unsupported project-service restart policy'); return value; }
 function safeArgv(value) {
   assert(Array.isArray(value) && value.length > 0 && value.length <= 64, 'Command must be a non-empty argument array');
@@ -1397,17 +1439,15 @@ async function createWorkload(request) {
 }
 async function verifyProjectServiceMounts(projectMounts, repositoryId, workloadId) {
   const base = '/var/lib/vps-sandbox-mounts/projects/' + repositoryId + '/' + workloadId;
+  const expectedSources = expectedProjectServiceMountSources(repositoryId, projectMounts.releaseId);
   for (const [key, suffix, readOnly] of [
     ['release', 'release', true], ['storage', 'storage', false], ['cache', 'cache', false], ['logs', 'logs', false],
   ]) {
     const target = base + '/' + suffix;
     assert(projectMounts[key] === target, 'Project-service mount path is not canonical');
-    const projectRoot = path.resolve(process.env.VPS_SANDBOX_PROJECT_ENV_ROOT ?? '/var/lib/vps-mcp/project-environments');
-    assert(!projectRoot.includes(','), 'Project environment root is invalid');
-    const sourceBase = path.join(projectRoot, repositoryId);
-    const expectedSource = key === 'release' ? path.join(sourceBase, 'releases', projectMounts.releaseId) : path.join(sourceBase, key);
     const mountedSource = path.resolve((await execFileAsync('/usr/bin/findmnt', ['-n', '-o', 'FSROOT', '--mountpoint', target], { encoding: 'utf8', timeout: 5000, maxBuffer: 8192 })).stdout.trim());
-    assert(mountedSource === expectedSource, 'Project-service mount source does not match its canonical repository and release identity');
+    assert(expectedSources.filter((sources) => sources[key] === mountedSource).length === 1,
+      'Project-service mount source does not match exactly one configured canonical repository and release root');
     const stat = await fs.lstat(target);
     assert(stat.isDirectory() && !stat.isSymbolicLink() && await fs.realpath(target) === target, 'Project-service mount target is not a canonical directory');
     await execFileAsync('/usr/bin/mountpoint', ['-q', target], { encoding: 'utf8', timeout: 5000, maxBuffer: 8192 });
