@@ -209,8 +209,22 @@ export async function registerProjectEnvironment(input: {
     const existing = registry.environments.find((item) => item.repositoryId === repository.id);
     if (existing) {
       if (existing.desiredState === "deprovisioned") throw new Error("Deprovisioned environment records cannot be silently reused; explicitly retire the record first");
-      if (existing.profileId !== input.profileId || existing.profileVersion !== profileVersion) {
-        throw new Error("Project environment already exists with a different profile or resource reservation");
+      const profileChanged = existing.profileId !== input.profileId || existing.profileVersion !== profileVersion;
+      if (profileChanged) {
+        const completeExplicitResources = input.resources !== undefined
+          && ["cpuMilli", "memoryMiB", "pids", "diskMiB"].every((key) => Number.isInteger(input.resources?.[key as keyof typeof input.resources]));
+        const explicitIdleProfileUpgrade = existing.profileId === input.profileId && input.profileVersion !== undefined
+          && completeExplicitResources && existing.workloadIds.length === 0
+          && ["provisioned", "stopped"].includes(existing.desiredState)
+          && existing.observedState !== "deprovisioning" && existing.observedState !== "deprovisioned";
+        if (!explicitIdleProfileUpgrade) throw new Error("Project environment already exists with a different profile or resource reservation");
+        existing.profileVersion = profileVersion;
+        existing.resources = resources;
+        existing.lastError = null;
+        existing.updatedAt = new Date().toISOString();
+        validateEnvironment(existing);
+        await writeRegistry(registry);
+        return { created: false, environment: existing, profileUpdated: true, resourcesUpdated: true };
       }
       if (JSON.stringify(existing.resources) !== JSON.stringify(resources)) {
         const retryableAdmissionFailure = /^Resource reservation failed: SANDBOX_(CAPACITY_EXCEEDED|DISK_PRESSURE)/.test(existing.lastError ?? "");

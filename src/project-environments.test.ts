@@ -80,6 +80,47 @@ it("is idempotent for an identical environment and rejects conflicting profile o
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", resources: { cpuMilli: 1500 } })).rejects.toThrow("different profile or resource reservation");
 });
 
+it("allows an explicit versioned profile upgrade only while the environment is idle", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-profile-upgrade-d4e5f6a7b8", fullName: "acme/profile-upgrade", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    const first = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 1 });
+    const upgraded = await registerProjectEnvironment({
+      repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 3,
+      resources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
+    });
+    expect(upgraded.created).toBe(false);
+    expect(upgraded.profileUpdated).toBe(true);
+    expect(upgraded.resourcesUpdated).toBe(true);
+    expect(upgraded.environment.id).toBe(first.environment.id);
+    expect(upgraded.environment.profileVersion).toBe(3);
+    expect(upgraded.environment.resources).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
+it("rejects a profile upgrade while any project workload is registered", async () => {
+  const previousRepository = state.repository;
+  state.repository = {
+    id: "acme-active-profile-upgrade-e5f6a7b8c9", fullName: "acme/active-profile-upgrade", status: "cloned",
+    persistentEnvironmentPaths: [],
+  };
+  try {
+    await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 1 });
+    await updateProjectEnvironment({ repositoryId: state.repository.id, workloadIds: ["234e5321-b4d7-4d4f-be92-ce56a984adaa"], workloadReleaseId: "234e5321-b4d7-4d4f-be92-ce56a984adaa" });
+    await expect(registerProjectEnvironment({
+      repositoryId: state.repository.id, profileId: "laravel-php", profileVersion: 3,
+      resources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
+    })).rejects.toThrow("different profile or resource reservation");
+  } finally {
+    state.repository = previousRepository;
+  }
+});
+
 it("allows an explicit full-vector resize only while the environment is idle", async () => {
   const previousRepository = state.repository;
   state.repository = {
