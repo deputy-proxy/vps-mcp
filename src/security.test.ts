@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 
 process.env.MCP_AUTH_TOKEN ??= "test-only-token-that-is-long-enough-for-vps-mcp";
-const { createOAuthAuthenticator, hasRequiredScopes, resolveJwksUrl } = await import("./security.js");
+const { createOAuthAuthenticator, extractGrantedScopes, hasRequiredScopes, resolveJwksUrl } = await import("./security.js");
 
 describe("hasRequiredScopes", () => {
   it("accepts any valid token when no resource scopes are configured", () => {
@@ -15,6 +15,12 @@ describe("hasRequiredScopes", () => {
   });
   it("accepts the array-form scp claim", () => {
     expect(hasRequiredScopes({ scp: ["mcp", "read"] }, ["mcp"])).toBe(true);
+    expect(extractGrantedScopes({ scp: ["mcp", 42, "vps:admin"] })).toEqual(["mcp", "vps:admin"]);
+  });
+  it("allows ordinary scopes without granting the administrator scope", () => {
+    const claims = { scope: "openid mcp" };
+    expect(hasRequiredScopes(claims, ["mcp"])).toBe(true);
+    expect(hasRequiredScopes(claims, ["vps:admin"])).toBe(false);
   });
   it("rejects missing scopes and partial scope names", () => {
     expect(hasRequiredScopes({ scope: "mcp-read" }, ["mcp"])).toBe(false);
@@ -82,7 +88,7 @@ describe("OAuth authentication middleware", () => {
   const issuer = "https://identity.example.com/";
   const audience = "https://mcp.example.com/mcp";
   const publicUrl = new URL(audience);
-  const requiredScopes = ["mcp", "vps:admin"];
+  const requiredScopes = ["mcp"];
   let server: Server;
   let baseUrl: string;
   let privateKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
@@ -93,7 +99,7 @@ describe("OAuth authentication middleware", () => {
     key?: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
   } = {}) {
     const now = Math.floor(Date.now() / 1000);
-    return new SignJWT({ scope: overrides.scope ?? "mcp vps:admin" })
+    return new SignJWT({ scope: overrides.scope ?? "mcp", client_id: "test-client" })
       .setProtectedHeader({ alg: "RS256", kid: "valid-key" })
       .setIssuer(overrides.issuer ?? issuer)
       .setAudience(overrides.audience ?? audience)
@@ -114,7 +120,15 @@ describe("OAuth authentication middleware", () => {
     app.get("/protected", createOAuthAuthenticator(
       { issuer, audience, scopes: requiredScopes, publicUrl },
       async () => validKeySet,
-    ), (_request, response) => response.status(200).json({ authenticated: true }));
+    ), (request, response) => {
+      const auth = (request as typeof request & { auth?: { clientId: string; scopes: string[]; expiresAt?: number } }).auth;
+      response.status(200).json({
+        authenticated: true,
+        clientId: auth?.clientId,
+        scopes: auth?.scopes,
+        expiresAt: auth?.expiresAt,
+      });
+    });
     app.get("/unavailable", createOAuthAuthenticator(
       { issuer, audience, scopes: requiredScopes, publicUrl },
       async () => { throw new Error("discovery unavailable"); },
@@ -141,7 +155,7 @@ describe("OAuth authentication middleware", () => {
   it("accepts a valid signed JWT with the required issuer, audience and scopes", async () => {
     const response = await request("/protected", await token());
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ authenticated: true });
+    expect(await response.json()).toEqual({ authenticated: true, clientId: "test-client", scopes: ["mcp"], expiresAt: expect.any(Number) });
   });
   it("rejects a missing bearer token and advertises protected-resource metadata", async () => {
     const response = await request("/protected");
@@ -151,7 +165,7 @@ describe("OAuth authentication middleware", () => {
     expect(response.headers.get("www-authenticate")).toContain(
       "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
     );
-    expect(response.headers.get("www-authenticate")).toContain('scope="mcp vps:admin"');
+    expect(response.headers.get("www-authenticate")).toContain('scope="mcp"');
   });
   it("rejects an expired JWT", async () => {
     const expired = await token({ expiration: Math.floor(Date.now() / 1000) - 30 });
@@ -168,10 +182,10 @@ describe("OAuth authentication middleware", () => {
     expect((await request("/protected", await token({ key: otherPair.privateKey }))).status).toBe(401);
   });
   it("returns 403 and the required scope challenge when scopes are insufficient", async () => {
-    const response = await request("/protected", await token({ scope: "mcp" }));
+    const response = await request("/protected", await token({ scope: "openid" }));
     expect(response.status).toBe(403);
     expect(response.headers.get("www-authenticate")).toContain('error="insufficient_scope"');
-    expect(response.headers.get("www-authenticate")).toContain('scope="mcp vps:admin"');
+    expect(response.headers.get("www-authenticate")).toContain('scope="mcp"');
   });
   it("returns 503 when the JWKS/discovery resolver is unavailable", async () => {
     expect((await request("/unavailable", await token())).status).toBe(503);

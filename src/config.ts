@@ -28,7 +28,10 @@ const oauthIssuerUrl = parseHttpsUrl("OAUTH_ISSUER_URL", oauthIssuer, authMode =
 const oauthJwksUrl = parseHttpsUrl("OAUTH_JWKS_URL", process.env.OAUTH_JWKS_URL);
 const oauthAudience = parseOAuthAudience(process.env.OAUTH_AUDIENCE, authMode === "oauth");
 const oauthScopes = (process.env.OAUTH_REQUIRED_SCOPES ?? "").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
+const oauthAdvertisedScopes = (process.env.OAUTH_SUPPORTED_SCOPES ?? "").split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean);
+const oauthSupportedScopes = [...new Set([...oauthScopes, ...oauthAdvertisedScopes])];
 if (oauthScopes.some((scope) => /[\s,]/.test(scope))) throw new Error("OAUTH_REQUIRED_SCOPES entries must be individual scope tokens");
+if (oauthAdvertisedScopes.some((scope) => /[\s,]/.test(scope))) throw new Error("OAUTH_SUPPORTED_SCOPES entries must be individual scope tokens");
 
 // ChatGPT's connector setup may fetch OAuth discovery metadata directly from the browser.
 // Always allow the official ChatGPT web origins; deployments may add exact origins via env.
@@ -91,6 +94,7 @@ export const config = {
   oauthJwksUrl,
   oauthAudience,
   oauthScopes,
+  oauthSupportedScopes,
   corsOrigins,
   allowedRoots,
   dataDir: path.resolve(process.env.MCP_DATA_DIR ?? path.join(os.homedir(), ".local/share/vps-mcp")),
@@ -109,6 +113,5 @@ export const config = {
   },
   repositoryGitHubToken,
   repositoryRequiredStatusChecks,
-  serviceProfilePromotionEnabled: process.env.VPS_SERVICE_PROFILE_PROMOTION_ENABLED === "true"
-    && (authMode !== "oauth" || oauthScopes.includes("vps:admin")),
+  serviceProfilePromotionEnabled: process.env.VPS_SERVICE_PROFILE_PROMOTION_ENABLED === "true",
 };

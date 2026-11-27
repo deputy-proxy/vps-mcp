@@ -40,7 +40,7 @@ function protectedResourceMetadata() {
     // identifiers are exact strings, so publish the original configured value.
     authorization_servers: [config.oauthIssuer!],
     bearer_methods_supported: ["header"],
-    ...(config.oauthScopes.length > 0 ? { scopes_supported: config.oauthScopes } : {}),
+    ...(config.oauthSupportedScopes.length > 0 ? { scopes_supported: config.oauthSupportedScopes } : {}),
   };
 }
 
