@@ -30,6 +30,8 @@ export type ProjectEnvironment = {
   profileId: string;
   profileVersion: number;
   enabledDependencies: Array<"mysql" | "redis">;
+  /** Marks schema-v1 environments whose dependency selection predates managed dependency workloads. */
+  legacyDependencySelection?: boolean;
   rootPath: string;
   releasesPath: string;
   dataPath: string;
@@ -81,15 +83,29 @@ function isWithin(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
-function normalizeEnabledDependencies(profile: ReturnType<typeof getServiceProfile>, selected?: readonly string[]): Array<"mysql" | "redis"> {
+function normalizeEnabledDependencies(profile: ReturnType<typeof getServiceProfile>, selected?: readonly string[], allowMissingRequired = false): Array<"mysql" | "redis"> {
   const declared = profile.dependencies.map((dependency) => dependency.name);
   const required = profile.dependencies.filter((dependency) => dependency.required).map((dependency) => dependency.name);
   const requested = selected === undefined ? required : [...selected];
   if (new Set(requested).size !== requested.length || requested.some((name) => !new Set<string>(declared).has(name))) {
     throw new Error("Enabled project dependencies must be unique members of the selected service profile");
   }
-  if (required.some((name) => !requested.includes(name))) throw new Error("All required project dependencies must be enabled");
+  if (!allowMissingRequired && required.some((name) => !requested.includes(name))) throw new Error("All required project dependencies must be enabled");
   return declared.filter((name) => requested.includes(name)) as Array<"mysql" | "redis">;
+}
+
+function inferLegacyEnabledDependencies(
+  profile: ReturnType<typeof getServiceProfile>,
+  resources: ProjectEnvironment["resources"],
+): Array<"mysql" | "redis"> {
+  const names = profile.dependencies.map((dependency) => dependency.name);
+  const matches: Array<Array<"mysql" | "redis">> = [];
+  for (let mask = 0; mask < 2 ** names.length; mask += 1) {
+    const selected = names.filter((_, index) => (mask & (1 << index)) !== 0) as Array<"mysql" | "redis">;
+    const required = serviceProfileReservationResources(profile, selected);
+    if (["cpuMilli", "memoryMiB", "pids", "diskMiB"].every((key) => resources[key as keyof typeof resources] === required[key as keyof typeof required])) matches.push(selected);
+  }
+  return matches.length === 1 ? matches[0]! : [];
 }
 
 function validateEnvironment(item: ProjectEnvironment): void {
@@ -97,7 +113,7 @@ function validateEnvironment(item: ProjectEnvironment): void {
   assertProfile(item.profileId, item.profileVersion);
   assertResources(item.resources);
   const profile = getServiceProfile(item.profileId, item.profileVersion);
-  if (!Array.isArray(item.enabledDependencies) || JSON.stringify(item.enabledDependencies) !== JSON.stringify(normalizeEnabledDependencies(profile, item.enabledDependencies))) {
+  if (!Array.isArray(item.enabledDependencies) || JSON.stringify(item.enabledDependencies) !== JSON.stringify(normalizeEnabledDependencies(profile, item.enabledDependencies, item.legacyDependencySelection === true))) {
     throw new Error("Invalid enabled project dependency selection");
   }
   const minimumResources = serviceProfileReservationResources(profile, item.enabledDependencies);
@@ -152,13 +168,20 @@ async function readRegistry(): Promise<Registry> {
     const parsed = JSON.parse(await fs.readFile(registryFile, "utf8")) as Partial<Registry>;
     if (!Array.isArray(parsed.environments)) throw new Error("Corrupt project environment registry");
     if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== SCHEMA_VERSION) throw new Error("Unsupported project environment registry schema");
+    const legacySchema = parsed.schemaVersion === 1;
     const ids = new Set<string>();
     const repositoryIds = new Set<string>();
     for (const item of parsed.environments) {
       if (item.workloadReleaseId === undefined && Array.isArray(item.workloadIds) && item.workloadIds.length === 0) item.workloadReleaseId = null;
       if (!Array.isArray(item.enabledDependencies)) {
+        if (!legacySchema) throw new Error("Invalid enabled project dependency selection");
         const profile = getServiceProfile(item.profileId, item.profileVersion);
-        item.enabledDependencies = profile.dependencies.map((dependency) => dependency.name);
+        // Before managed dependency workloads existed, schema-v1 reservations
+        // covered only the application. Infer a dependency selection only when
+        // the persisted resource vector is an exact match; never silently grow
+        // a legacy reservation or assume that a dependency was enabled.
+        item.enabledDependencies = inferLegacyEnabledDependencies(profile, item.resources);
+        item.legacyDependencySelection = true;
       }
       item.schemaVersion = SCHEMA_VERSION;
       validateEnvironment(item);
@@ -238,7 +261,7 @@ export async function registerProjectEnvironment(input: {
       if (existing.desiredState === "deprovisioned") throw new Error("Deprovisioned environment records cannot be silently reused; explicitly retire the record first");
       const profileChanged = existing.profileId !== input.profileId || existing.profileVersion !== profileVersion;
       const selectedForExisting = input.enabledDependencies === undefined
-        ? normalizeEnabledDependencies(profile, existing.enabledDependencies.filter((name) => profile.dependencies.some((dependency) => dependency.name === name)))
+        ? normalizeEnabledDependencies(profile, existing.enabledDependencies.filter((name) => profile.dependencies.some((dependency) => dependency.name === name)), existing.legacyDependencySelection === true)
         : enabledDependencies;
       if (!profileChanged && JSON.stringify(selectedForExisting) !== JSON.stringify(existing.enabledDependencies)) {
         throw new Error("Enabled project dependencies are immutable after environment registration; deprovision and register a new environment to change them");
