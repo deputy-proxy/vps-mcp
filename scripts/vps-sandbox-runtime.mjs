@@ -3253,7 +3253,7 @@ async function dashboardInventory() {
 
 export function projectServiceBootRecoveryAction(record, runtimeState) {
   if (record.workloadType !== 'project-service' || record.status === 'removed') return 'skip';
-  const legacyMountLayout = record.projectMounts?.runtimeConfig === undefined && record.projectMounts?.runtimeEnv === undefined;
+  const legacyMountLayout = Boolean(record.projectMounts) && record.projectMounts.runtimeConfig === undefined && record.projectMounts.runtimeEnv === undefined;
   if (legacyMountLayout) return runtimeState === 'running' ? 'stop' : 'operator-review';
   if (record.status === 'removing') return 'remove';
   if (record.status === 'stopping') return runtimeState === 'missing' ? 'operator-review' : 'stop';
