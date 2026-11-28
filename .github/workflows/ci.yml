@@ -5,6 +5,7 @@ on:
     branches: ["main", "development", "feat/**", "fix/**"]
   pull_request:
     branches: ["main", "development"]
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -13,8 +14,13 @@ permissions:
 jobs:
   quality:
     name: Quality workflow
+    needs: project-dependency-images
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Require the dependency image security gate
+        if: needs.project-dependency-images.result != 'success' && needs.project-dependency-images.result != 'skipped'
+        run: exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -29,6 +35,12 @@ jobs:
       - run: node --check scripts/vps-sandboxctl-broker.mjs
       - run: node --check scripts/rootless-runtime-acceptance.mjs
       - run: node --check scripts/recover-project-services.mjs
+      - run: node --check scripts/vps-sandbox-runtime.mjs
+      - run: node --check scripts/vps-sandbox-quota-helper.mjs
+      - run: node --check scripts/vps-sandbox-quota-broker.mjs
+      - run: node --check scripts/project-pod.mjs
+      - run: node --check scripts/project-dependency.mjs
+      - run: node --check scripts/project-backup.mjs
       - run: bash -n scripts/deploy-gateway.sh
       - run: bash -n scripts/deploy-development-gateway.sh
       - run: bash -n scripts/provision-development-runtime.sh
@@ -42,6 +54,7 @@ jobs:
       - run: bash -n scripts/provision-rootless-podman.sh
       - run: bash -n scripts/install-vps-sandboxctl.sh
       - run: bash -n runtime/laravel-php/smoke-test.sh
+      - run: bash -n scripts/project-dependency-smoke-test.sh
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -69,6 +82,9 @@ jobs:
     name: Build, smoke-test and scan Laravel runtime image
     needs: quality
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -86,10 +102,60 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
 
+  project-dependency-images:
+    name: Verify and scan pinned MySQL and Redis dependency images
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate DHI registry credentials
+        env:
+          DHI_REGISTRY_USERNAME: ${{ secrets.DHI_REGISTRY_USERNAME }}
+          DHI_REGISTRY_PASSWORD: ${{ secrets.DHI_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${DHI_REGISTRY_USERNAME:?Set DHI_REGISTRY_USERNAME in repository Actions secrets}"
+          : "${DHI_REGISTRY_PASSWORD:?Set DHI_REGISTRY_PASSWORD in repository Actions secrets}"
+      - name: Authenticate to Docker Hardened Images
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_REGISTRY_USERNAME }}
+          password: ${{ secrets.DHI_REGISTRY_PASSWORD }}
+      - name: Pull exact approved dependency digests
+        run: |
+          set -euo pipefail
+          docker pull dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1
+          docker pull dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae
+      - name: Scan MySQL 8.4.13 for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1
+          version: v0.76.2
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Scan Redis 8.10.3 for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae
+          version: v0.76.2
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Smoke-test DHI entrypoints, credentials and read-only runtime contracts
+        run: |
+          scripts/project-dependency-smoke-test.sh \
+            dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1 \
+            dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae
+
   publish-laravel-runtime-image:
     name: Publish immutable Laravel runtime image
-    needs: [quality, laravel-runtime-image]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
+    needs: [quality, laravel-runtime-image, project-dependency-images]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/development') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'publish-runtime-image'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -111,7 +177,7 @@ jobs:
           context: .
           file: runtime/laravel-php/Dockerfile
           push: true
-          tags: ghcr.io/deputy-proxy/vps-mcp-laravel-php:development-${{ github.sha }}
+          tags: ghcr.io/deputy-proxy/vps-mcp-laravel-php:${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, github.sha) || format('development-{0}', github.sha) }}
           labels: |
             org.opencontainers.image.source=https://github.com/deputy-proxy/vps-mcp
             org.opencontainers.image.revision=${{ github.sha }}
@@ -144,8 +210,14 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          echo "Published image: ghcr.io/deputy-proxy/vps-mcp-laravel-php@$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
-          echo "Tag: development-${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          IMAGE="ghcr.io/deputy-proxy/vps-mcp-laravel-php@$IMAGE_DIGEST"
+          echo "Published image: $IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$IMAGE" > "$RUNNER_TEMP/laravel-runtime-image.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: laravel-runtime-image-digest
+          path: ${{ runner.temp }}/laravel-runtime-image.txt
+          if-no-files-found: error
 
   deploy-production:
     name: Deploy production

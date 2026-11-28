@@ -18,12 +18,12 @@ Promotion changes profile readiness only. It does not provision, start, or deplo
 ## Intended lifecycle
 
 1. Register and validate the repository; fetch its bare cache.
-2. Select an approved, versioned service profile.
-3. Register the environment. Registration automatically reserves the aggregate profile resource vector, including application and declared dependency budgets, through `resource.reserve`; inspect the returned reservation and capacity decision. If admission fails, the metadata record remains visible with a reservation error. Retry after capacity is freed, or retry with the profile's minimum aggregate vector or adjust the versioned component budgets; the stored plan can be adjusted only after a capacity/disk admission failure and before any project service is active.
-4. Provision isolated project directories and development-only database/cache credentials.
+2. Select an approved, versioned service profile. Laravel v4 uses MySQL 8.4.13 and optional Redis 8.10.3; Redis is disabled unless explicitly selected.
+3. Register the environment. Registration automatically reserves the application plus selected dependency resource vectors through `resource.reserve`. Use `enabledDependencies: ["mysql"]` for MySQL only or `enabledDependencies: ["mysql", "redis"]` to enable Redis. The selection cannot be changed after registration. If admission fails, the metadata record remains visible with a reservation error. Retry after capacity is freed, or retry with the profile's minimum aggregate vector or adjust the versioned component budgets; the stored plan can be adjusted only after a capacity/disk admission failure and before any project service is active.
+4. Provision isolated project directories, protected secret files, the private Podman pod, and stopped application/dependency containers. Only the pod infra container has an automatic restart policy; workload containers use `restart=no` so ordered recovery controls startup.
 5. Resolve the current remote `development` commit and prepare an immutable candidate release.
 6. Build and validate the candidate release without changing the active release.
-7. Activate atomically, start the declared services, and run profile health checks.
+7. Select the candidate release, then start MySQL, optional Redis, and PHP-FPM in that order. Verify dependency authentication and PHP-FPM health.
 8. Commit the release only after health checks pass; otherwise restore the previous release pointer.
 9. Reconcile desired and observed state after MCP restart and host reboot.
 
@@ -61,3 +61,24 @@ Migrations are disabled by default and seeders are disabled with an empty allowl
 ### Disposable project-service acceptance profile
 
 The project-service-acceptance@1 profile exists only to exercise the persistent PHP-FPM project-service runtime on the registered disposable repository deputy-proxy/toti-invatam-org (deputy-proxy-toti-invatam-org-44fadec4d6). It uses the exact approved immutable #187 PHP runtime image, has no MySQL/Redis dependencies, performs no build, migration or seeding, and is rejected for every other repository ID. It does not change the readiness of laravel-php@1, @2 or @3; those remain definition-only until the dependency/network and full runtime gates are accepted. Do not use this profile for application hosting.
+
+
+## Laravel v4 dependencies
+
+- MySQL 8.4.13 is required. The environment gets its own persistent database directory, root credential, application credential and `app` database. The application user is granted privileges only on that database.
+- Redis 8.10.3 is optional and disabled by default. Enable it only at registration with `enabledDependencies: ["mysql", "redis"]`. Redis uses a dedicated ACL user and 64 MiB tmpfs; it is cache-only and is not backed up.
+- Both dependencies use approved immutable DHI image digests, rootless Podman containers, read-only root filesystems, no host networking, no published ports, and the repository-private loopback-only pod.
+- The PHP-FPM container receives a protected read-only runtime `.env` file. Never copy its contents into issue comments, audit logs, or MCP output.
+- Dependency selection is immutable after registration. To change it, deprovision and register a new environment after preserving the required data and backups.
+
+## Backup and restore
+
+Create a backup with `project-environment.backup` and `confirm: true`. The operation briefly stops PHP-FPM, takes a single-transaction MySQL logical dump, archives project storage, encrypts both artifacts with AES-256-GCM, signs the manifest, and restarts the application if it was running. The returned backup ID is the only identifier needed for restore. Each artifact is limited to 256 MiB; the backup consumes the environment's reserved disk quota. Backups are local to the VPS and are not off-host replicated.
+
+Restore with `project-environment.restore`, the returned `backupId`, and `confirm: true`. Restore is restricted to the exact repository, environment, profile version and enabled dependency selection. The runtime verifies the manifest HMAC and encrypted artifact checksums, creates a new safety backup automatically, restores database and storage, and verifies application health. On failure it restores the safety database and storage snapshot. Retain the returned safety backup ID for incident review. Redis is not restored because it is ephemeral cache.
+
+Do not delete the per-environment backup key or secret directory while backups must remain restorable. Deprovisioning removes containers and staged mounts but retains the database, storage, secret key and backups. Off-host replication and key escrow are separate operational requirements and are not provided by this local-backup implementation.
+
+## Recovery ordering
+
+A project-service record persists its environment ID, dependency workload IDs and desired state. Recovery starts required dependencies in MySQL-then-Redis order before PHP-FPM. A stopped or deprovisioning application causes dependency recovery to stop its containers, including after an interrupted stop. Missing dependency containers while the parent environment is running are marked for operator review; recovery does not silently attach a new database container to unverified data.

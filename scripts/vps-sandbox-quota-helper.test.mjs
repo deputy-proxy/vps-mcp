@@ -45,6 +45,7 @@ describe('canonical project-service mount source resolution', () => {
       storage: path.join(environment, 'storage'),
       cache: path.join(environment, 'cache'),
       logs: path.join(environment, 'logs'),
+      runtimeConfig: path.join(environment, 'secrets', 'application'),
     };
     for (const directory of Object.values(paths)) await fs.mkdir(directory, { recursive: true });
     expect(resolveProjectServicePaths(repositoryId, releaseId)).toEqual({ environment, ...paths });
@@ -68,6 +69,7 @@ describe('canonical project-service mount source resolution', () => {
       storage: path.join(environment, 'storage'),
       cache: path.join(environment, 'cache'),
       logs: path.join(environment, 'logs'),
+      runtimeConfig: path.join(environment, 'secrets', 'application'),
     };
     for (const directory of Object.values(paths)) await fs.mkdir(directory, { recursive: true });
     expect(resolveProjectServicePaths(repositoryId, releaseId)).toEqual({ environment, ...paths });

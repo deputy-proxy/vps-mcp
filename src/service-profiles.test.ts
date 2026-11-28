@@ -13,7 +13,7 @@ beforeAll(async () => {
 
 it("lists the Laravel profile as definition-only with a bounded resource plan", () => {
   const result = listServiceProfiles();
-  expect(result.count).toBe(4);
+  expect(result.count).toBe(5);
   expect(result.profiles[0]).toMatchObject({
     id: "laravel-php",
     version: 1,
@@ -78,9 +78,23 @@ it("returns isolated profile copies so callers cannot mutate the catalog", () =>
   expect(getServiceProfile("laravel-php").runtime.toolchain.php).toBe("8.4");
 });
 
+it("pins the approved MySQL 8.4 and Redis 8 images in a new immutable definition-only profile", () => {
+  const profile = getServiceProfile("laravel-php", 4);
+  expect(profile).toMatchObject({ version: 4, readiness: "definition-only", runtime: { imageDigest: null } });
+  expect(profile.restartPolicy).toBe("no");
+  expect(serviceProfileReservationResources(profile, ["mysql"])).toEqual({ cpuMilli: 1000, memoryMiB: 1792, pids: 256, diskMiB: 20480 });
+  expect(serviceProfileReservationResources(profile, ["mysql", "redis"])).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
+  expect(profile.dependencies).toEqual([
+    { name: "mysql", version: "8.4.13", required: true, imageDigest: "dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1", resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance", restartPolicy: "no" },
+    { name: "redis", version: "8.10.3", required: false, imageDigest: "dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae", resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance", restartPolicy: "no" },
+  ]);
+  expect(serviceProfileReservationResources(profile)).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
+  expect(() => assertServiceProfileDeployable(profile)).toThrow("definition-only and cannot be provisioned");
+});
+
 it("rejects unknown profile IDs and versions", () => {
   expect(() => getServiceProfile("unknown-profile")).toThrow("Unknown project environment profile");
-  expect(() => getServiceProfile("laravel-php", 4)).toThrow("Unknown project environment profile");
+  expect(() => getServiceProfile("laravel-php", 5)).toThrow("Unknown project environment profile");
 });
 
 it("fails closed until an immutable image digest is configured and the profile is deployable", () => {

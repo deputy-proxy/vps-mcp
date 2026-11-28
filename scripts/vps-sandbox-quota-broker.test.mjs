@@ -23,6 +23,24 @@ describe('workspace quota broker request validation',()=>{
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,hostPath:'/etc'}))).toThrow('Unsupported');
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,worktreeId:'../../etc'}))).toThrow('Unsupported');
  });
+ it('accepts project dependency secret preparation without returning secret material',()=>{
+  const request={operation:'prepare-dependencies',repositoryId:valid.repositoryId,environmentId:'134e5321-b4d7-4d4f-be92-ce56a984adaa',mysqlEnabled:true,redisEnabled:true};
+  expect(parseQuotaBrokerRequest(JSON.stringify(request))).toEqual(request);
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,redisEnabled:'true'}))).toThrow('secret preparation');
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,secret:'leak'}))).toThrow('Unsupported');
+ });
+ it('accepts identity-bound backup mount staging operations',()=>{
+  const request={operation:'stage-backup',repositoryId:valid.repositoryId,environmentId:'134e5321-b4d7-4d4f-be92-ce56a984adaa',backupId:'234e5321-b4d7-4d4f-be92-ce56a984adaa'};
+  expect(parseQuotaBrokerRequest(JSON.stringify(request))).toEqual(request);
+  expect(parseQuotaBrokerRequest(JSON.stringify({...request,operation:'unstage-backup'})).operation).toBe('unstage-backup');
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,backupId:'bad'}))).toThrow('backup identity');
+ });
+ it('accepts only named project dependency mount operations',()=>{
+  const request={operation:'stage-dependency',repositoryId:valid.repositoryId,workloadId:'234e5321-b4d7-4d4f-be92-ce56a984adaa',dependency:'mysql'};
+  expect(parseQuotaBrokerRequest(JSON.stringify(request))).toEqual(request);
+  expect(parseQuotaBrokerRequest(JSON.stringify({...request,operation:'unstage-dependency'})).operation).toBe('unstage-dependency');
+  expect(()=>parseQuotaBrokerRequest(JSON.stringify({...request,dependency:'../../etc'}))).toThrow('dependency name');
+ });
  it('rejects unknown operations and extra properties',()=>{
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...valid,operation:'shell'}))).toThrow('Unsupported');
   expect(()=>parseQuotaBrokerRequest(JSON.stringify({...valid,command:'id'}))).toThrow('Unsupported');

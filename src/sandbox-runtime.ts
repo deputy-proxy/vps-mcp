@@ -1,7 +1,7 @@
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 
-export type WorkloadType = 'task' | 'project-service';
+export type WorkloadType = 'task' | 'project-service' | 'project-dependency';
 export type RuntimeResources = { cpuMilli?: number; memoryMiB?: number; pids?: number; diskMiB?: number };
 export type SandboxRuntimeRequest =
   | { operation: 'image.inspect' | 'image.pull'; image: string }
@@ -19,7 +19,14 @@ export type SandboxRuntimeRequest =
       workspaceAccess?: 'read-only' | 'read-write';
       command?: string[];
     }
-  | { operation: 'project-service.create'; workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }
+  | { operation: 'project-dependency.prepare-secrets'; repositoryId: string; environmentId: string; mysqlEnabled: boolean; redisEnabled: boolean }
+  | { operation: 'project-dependency.create'; workloadId: string; environmentId: string; repositoryId: string; dependency: 'mysql' | 'redis'; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'no' | 'always' | 'unless-stopped'; podName: string }
+  | { operation: 'project-dependency.inspect' | 'project-dependency.start' | 'project-dependency.stop'; workloadId: string }
+  | { operation: 'project-dependency.remove'; workloadId: string; repositoryId: string; dependency: 'mysql' | 'redis' }
+  | { operation: 'project-dependency.recover' }
+  | { operation: 'project-backup.create'; repositoryId: string; environmentId: string; profileId: string; profileVersion: number; applicationWorkloadId: string; enabledDependencies: Array<'mysql' | 'redis'>; backupId: string }
+  | { operation: 'project-backup.restore'; repositoryId: string; environmentId: string; profileId: string; profileVersion: number; applicationWorkloadId: string; enabledDependencies: Array<'mysql' | 'redis'>; backupId: string; confirm: true }
+  | { operation: 'project-service.create'; workloadId: string; environmentId: string; profileId: string; profileVersion: number; dependencies: Array<{ name: 'mysql' | 'redis'; workloadId: string }>; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'no' | 'always' | 'unless-stopped'; command?: string[] }
   | { operation: 'project-service.inspect' | 'project-service.start' | 'project-service.stop'; workloadId: string }
   | { operation: 'project-service.remove'; workloadId: string; repositoryId: string; releaseId: string }
   | { operation: 'container.inspect' | 'container.logs'; workloadId: string }
@@ -90,7 +97,7 @@ export function validateSandboxRuntimeRequest(request: SandboxRuntimeRequest): v
     for (const key of ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'] as const) {
       if ((request.resources[key] ?? 0) > (request.reservationResources[key] ?? 0)) throw new Error('Application resources exceed the aggregate project reservation');
     }
-    if (request.restartPolicy !== 'always' && request.restartPolicy !== 'unless-stopped') throw new Error('Unsupported project-service restart policy');
+    if (request.restartPolicy !== 'no' && request.restartPolicy !== 'always' && request.restartPolicy !== 'unless-stopped') throw new Error('Unsupported project-service restart policy');
     if (request.command !== undefined) {
       validateArgv(request.command);
       if (JSON.stringify(request.command) !== JSON.stringify(['--nodaemonize'])) throw new Error('Project-service command must match the pinned PHP-FPM entrypoint');
@@ -265,7 +272,9 @@ export type RuntimeWorkloadRecord = {
   runtimeId: string | null;
   workspaceMount: { path: string; access: 'read-only' | 'read-write'; destination: '/workspace' } | null;
   executionMount?: { path: string; destination: '/run/vps-mcp-executions' } | null;
-  projectMounts?: { releaseId: string; release: string; storage: string; cache: string; logs: string };
+  projectMounts?: { releaseId: string; release: string; storage: string; cache: string; logs: string; runtimeConfig: string; runtimeEnv: string };
+  dependency?: 'mysql' | 'redis';
+  dependencyMounts?: { data: string; secrets: string };
   releaseId?: string;
   resources: { cpuMilli: number; memoryMiB: number; pids: number; diskMiB?: number };
   network: 'none';
@@ -291,7 +300,16 @@ export interface SandboxRuntimeAdapter {
   inspectImage(image: string): Promise<{ image: string; imageId: string }>;
   pullImage(image: string): Promise<{ image: string; pulled: true; output: string }>;
   createWorkload(input: Omit<Extract<SandboxRuntimeRequest, { operation: 'container.create' }>, 'operation' | 'workspacePath'>): Promise<RuntimeWorkloadRecord>;
-  createProjectServiceWorkload(input: { workloadId: string; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'always' | 'unless-stopped'; command?: string[] }): Promise<{ workload: RuntimeWorkloadRecord }>;
+  prepareProjectDependencySecrets(input: { repositoryId: string; environmentId: string; mysqlEnabled: boolean; redisEnabled: boolean }): Promise<Record<string, unknown>>;
+  createProjectDependencyWorkload(input: { workloadId: string; environmentId: string; repositoryId: string; dependency: 'mysql' | 'redis'; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'no' | 'always' | 'unless-stopped'; podName: string }): Promise<{ workload: RuntimeWorkloadRecord }>;
+  inspectProjectDependencyWorkload(workloadId: string): Promise<Record<string, unknown>>;
+  startProjectDependencyWorkload(workloadId: string): Promise<Record<string, unknown>>;
+  stopProjectDependencyWorkload(workloadId: string): Promise<Record<string, unknown>>;
+  removeProjectDependencyWorkload(input: { workloadId: string; repositoryId: string; dependency: 'mysql' | 'redis' }): Promise<Record<string, unknown>>;
+  recoverProjectDependencyWorkloads(): Promise<Record<string, unknown>>;
+  createProjectEnvironmentBackup(input: { repositoryId: string; environmentId: string; profileId: string; profileVersion: number; applicationWorkloadId: string; enabledDependencies: Array<'mysql' | 'redis'>; backupId: string }): Promise<Record<string, unknown>>;
+  restoreProjectEnvironmentBackup(input: { repositoryId: string; environmentId: string; profileId: string; profileVersion: number; applicationWorkloadId: string; enabledDependencies: Array<'mysql' | 'redis'>; backupId: string; confirm: true }): Promise<Record<string, unknown>>;
+  createProjectServiceWorkload(input: { workloadId: string; environmentId: string; profileId: string; profileVersion: number; dependencies: Array<{ name: 'mysql' | 'redis'; workloadId: string }>; repositoryId: string; releaseId: string; image: string; resources: RuntimeResources & { diskMiB: number }; reservationResources: RuntimeResources & { diskMiB: number }; restartPolicy: 'no' | 'always' | 'unless-stopped'; command?: string[] }): Promise<{ workload: RuntimeWorkloadRecord }>;
   inspectProjectServiceWorkload(workloadId: string): Promise<{ workload: RuntimeWorkloadRecord; runtime: Record<string, unknown> | null; reconciliation?: string; health?: { status: "unknown" | "healthy" | "unhealthy"; checkedAt: string; checks: string[] } }>;
   startProjectServiceWorkload(workloadId: string): Promise<unknown>;
   stopProjectServiceWorkload(workloadId: string): Promise<unknown>;
@@ -354,6 +372,15 @@ export function createSandboxRuntimeAdapter(socketPath = SOCKET_PATH): SandboxRu
       }
       throw new Error('Generic workload creation is reserved for task sandboxes');
     },
+    prepareProjectDependencySecrets: (input) => requestSandboxRuntime({ operation: 'project-dependency.prepare-secrets', ...input }, socketPath),
+    createProjectDependencyWorkload: (input) => requestSandboxRuntime({ operation: 'project-dependency.create', ...input }, socketPath),
+    inspectProjectDependencyWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-dependency.inspect', workloadId }, socketPath),
+    startProjectDependencyWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-dependency.start', workloadId }, socketPath),
+    stopProjectDependencyWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-dependency.stop', workloadId }, socketPath),
+    removeProjectDependencyWorkload: (input) => requestSandboxRuntime({ operation: 'project-dependency.remove', ...input }, socketPath),
+    recoverProjectDependencyWorkloads: () => requestSandboxRuntime({ operation: 'project-dependency.recover' }, socketPath),
+    createProjectEnvironmentBackup: (input) => requestSandboxRuntime({ operation: 'project-backup.create', ...input }, socketPath),
+    restoreProjectEnvironmentBackup: (input) => requestSandboxRuntime({ operation: 'project-backup.restore', ...input }, socketPath),
     createProjectServiceWorkload: (input) => requestSandboxRuntime({ operation: 'project-service.create', ...input }, socketPath),
     inspectProjectServiceWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-service.inspect', workloadId }, socketPath),
     startProjectServiceWorkload: (workloadId) => requestSandboxRuntime({ operation: 'project-service.start', workloadId }, socketPath),
