@@ -14,9 +14,9 @@ trap cleanup EXIT
 
 chown_for_container() {
   if [[ "$(id -u)" -eq 0 ]]; then
-    chown -R 65532:65532 "$@"
+    chown 65532:65532 "$@"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo chown -R 65532:65532 "$@"
+    sudo chown 65532:65532 "$@"
   else
     echo 'Changing secret-file ownership requires root or sudo' >&2
     return 1
@@ -45,8 +45,8 @@ password=$MYSQL_APP_PASSWORD
 host=127.0.0.1
 protocol=TCP
 EOF_MYSQL_APP
-chown_for_container "$TMP_DIR/mysql-runtime-secrets" "$TMP_DIR/mysql-client-secrets"
 chmod 0440 "$TMP_DIR/mysql-runtime-secrets/"* "$TMP_DIR/mysql-client-secrets/"*
+chown_for_container "$TMP_DIR/mysql-runtime-secrets/"* "$TMP_DIR/mysql-client-secrets/"*
 
 # Exercise the DHI entrypoint contract: only MYSQL_ROOT_PASSWORD_FILE and an
 # explicit mysqld command are supplied. The server never receives app credentials.
@@ -97,8 +97,8 @@ dir /data
 save ""
 appendonly no
 EOF_REDIS_CONF
-chown_for_container "$TMP_DIR/redis-runtime-secrets"
 chmod 0440 "$TMP_DIR/redis-runtime-secrets/"*
+chown_for_container "$TMP_DIR/redis-runtime-secrets/"*
 
 docker run --detach --name "$REDIS_NAME" --network none --read-only \
   --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64 \
