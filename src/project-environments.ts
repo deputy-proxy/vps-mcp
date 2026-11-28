@@ -116,9 +116,11 @@ function validateEnvironment(item: ProjectEnvironment): void {
   if (!Array.isArray(item.enabledDependencies) || JSON.stringify(item.enabledDependencies) !== JSON.stringify(normalizeEnabledDependencies(profile, item.enabledDependencies, item.legacyDependencySelection === true))) {
     throw new Error("Invalid enabled project dependency selection");
   }
-  const minimumResources = serviceProfileReservationResources(profile, item.enabledDependencies);
-  for (const key of ["cpuMilli", "memoryMiB", "pids", "diskMiB"] as const) {
-    if (item.resources[key] < minimumResources[key]) throw new Error(`Project environment ${key} reservation is below its enabled dependency requirements`);
+  if (item.legacyDependencySelection !== true) {
+    const minimumResources = serviceProfileReservationResources(profile, item.enabledDependencies);
+    for (const key of ["cpuMilli", "memoryMiB", "pids", "diskMiB"] as const) {
+      if (item.resources[key] < minimumResources[key]) throw new Error(`Project environment ${key} reservation is below its enabled dependency requirements`);
+    }
   }
   if (item.sourceBranch !== "development") throw new Error("Project environments may only track the development branch");
   if (!STATES.includes(item.desiredState)) throw new Error("Invalid desired project environment state");
@@ -484,6 +486,9 @@ export async function provisionProjectEnvironment(repositoryId: string, runtime:
     const profile = getServiceProfile(environment.profileId, environment.profileVersion);
     assertServiceProfileRepositoryAllowed(profile, repositoryId);
     assertServiceProfileDeployable(profile);
+    // Legacy records remain inspectable, but cannot bypass required dependencies
+    // if a formerly definition-only profile later becomes deployable.
+    normalizeEnabledDependencies(profile, environment.enabledDependencies);
     if (!profile.runtime.imageDigest) throw new Error("Project service profile has no approved immutable image reference");
     const releaseId = environment.candidateReleaseId ?? environment.activeReleaseId;
     if (!releaseId) throw new Error("Project environment has no active or candidate release to mount");

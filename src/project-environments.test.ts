@@ -235,7 +235,7 @@ it("migrates pre-dependency schema-v1 environments without inventing dependency 
     const registry = JSON.parse(await fs.readFile(registryPath, "utf8"));
     const item = registry.environments.find((environment: { repositoryId: string }) => environment.repositoryId === state.repository.id);
     item.schemaVersion = 1;
-    item.resources = { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 };
+    item.resources = { cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 };
     delete item.enabledDependencies;
     registry.schemaVersion = 1;
     await fs.writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
@@ -246,7 +246,7 @@ it("migrates pre-dependency schema-v1 environments without inventing dependency 
       id: registered.environment.id,
       enabledDependencies: [],
       legacyDependencySelection: true,
-      resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
+      resources: { cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 },
     });
     expect((await listProjectEnvironments()).count).toBeGreaterThan(0);
   } finally { state.repository = previousRepository; }
