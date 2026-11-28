@@ -1,6 +1,6 @@
 #!/usr/bin/node
 import {execFileSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 const roots=['/var/lib/vps-mcp/task-workspaces/worktrees','/srv/vps-mcp-workspaces'];
@@ -161,7 +161,7 @@ export function resolveProjectServicePaths(repositoryId,releaseId){
  const storage=canonicalDirectory(path.join(environment,'storage'),'Project storage directory');
  const cache=canonicalDirectory(path.join(environment,'cache'),'Project cache directory');
  const logs=canonicalDirectory(path.join(environment,'logs'),'Project logs directory');
- return {environment,release,storage,cache,logs};
+ return {environment,release,storage,cache,logs,runtimeConfig:path.join(environment,'secrets','application')};
 }
 function assertProjectEnvironmentOwnership(sources,repositoryId){
  const configured=projectEnvironmentRootForRepository(repositoryId);
@@ -249,9 +249,15 @@ export function stageProjectServiceMounts(repositoryId,workloadId,releaseId){
  ensureProjectStagingDirectory(path.join(stagingRoot,'projects'),sandboxGid);
  ensureProjectStagingDirectory(path.join(stagingRoot,'projects',repositoryId),sandboxGid);
  ensureProjectStagingDirectory(base,sandboxGid);
- const targets={release:path.join(base,'release'),storage:path.join(base,'storage'),cache:path.join(base,'cache'),logs:path.join(base,'logs')};
+ const runtimeConfig=canonicalDirectory(path.join(sources.environment,'secrets','application'),'Project runtime configuration directory');
+ const runtimeConfigStat=fs.lstatSync(runtimeConfig);
+ if(runtimeConfigStat.uid!==0||runtimeConfigStat.gid!==sandboxGid||(runtimeConfigStat.mode&0o777)!==0o750)throw Error('Project runtime configuration has unsafe ownership or permissions');
+ const runtimeEnv=path.join(runtimeConfig,'runtime.env');
+ const runtimeEnvStat=fs.lstatSync(runtimeEnv);
+ if(!runtimeEnvStat.isFile()||runtimeEnvStat.isSymbolicLink()||runtimeEnvStat.uid!==0||runtimeEnvStat.gid!==sandboxGid||(runtimeEnvStat.mode&0o777)!==0o440)throw Error('Project runtime environment file has unsafe ownership or permissions');
+ const targets={release:path.join(base,'release'),storage:path.join(base,'storage'),cache:path.join(base,'cache'),logs:path.join(base,'logs'),runtimeConfig:path.join(base,'runtime-config')};
  for(const target of Object.values(targets))try{fs.mkdirSync(target,{mode:0o750});}catch(e){if(e.code!=='EEXIST')throw e;}
- const keys=['release','storage','cache','logs'];
+ const keys=['release','storage','cache','logs','runtimeConfig'];
  const existing=[];
  for(const key of keys){
   if(!isMountpoint(targets[key]))continue;
@@ -264,7 +270,7 @@ export function stageProjectServiceMounts(repositoryId,workloadId,releaseId){
  const created=[];
  try{
   grantProjectRuntimeAccess(repositoryId,releaseId);
-  for(const key of keys)if(mountProjectPath(sources[key],targets[key],key==='release'))created.push(key);
+  for(const key of keys)if(mountProjectPath(sources[key],targets[key],key==='release'||key==='runtimeConfig'))created.push(key);
  }catch(error){
   for(const key of created.reverse()){
    const target=targets[key];
@@ -282,15 +288,21 @@ export function stageProjectServiceMounts(repositoryId,workloadId,releaseId){
   }
   throw error;
  }
- return {ok:true,repositoryId,workloadId,releaseId,stagedPaths:targets};
+ return {ok:true,repositoryId,workloadId,releaseId,stagedPaths:{...targets,runtimeEnv:path.join(targets.runtimeConfig,'runtime.env')}};
 }
 export function unstageProjectServiceMounts(repositoryId,workloadId,releaseId){
  if(process.getuid()!==0)throw Error('Quota helper must run as root');
  if(!repoRe.test(repositoryId)||!uuidRe.test(workloadId))throw Error('Invalid project staging identity');
  const sources=resolveProjectServicePaths(repositoryId,releaseId);
  const base=path.join(stagingRoot,'projects',repositoryId,workloadId);
- const targets={release:path.join(base,'release'),storage:path.join(base,'storage'),cache:path.join(base,'cache'),logs:path.join(base,'logs')};
- for(const key of ['logs','cache','storage','release']){
+ const runtimeConfig=canonicalDirectory(path.join(sources.environment,'secrets','application'),'Project runtime configuration directory');
+ const runtimeConfigStat=fs.lstatSync(runtimeConfig);
+ if(runtimeConfigStat.uid!==0||runtimeConfigStat.gid!==sandboxGid||(runtimeConfigStat.mode&0o777)!==0o750)throw Error('Project runtime configuration has unsafe ownership or permissions');
+ const runtimeEnv=path.join(runtimeConfig,'runtime.env');
+ const runtimeEnvStat=fs.lstatSync(runtimeEnv);
+ if(!runtimeEnvStat.isFile()||runtimeEnvStat.isSymbolicLink()||runtimeEnvStat.uid!==0||runtimeEnvStat.gid!==sandboxGid||(runtimeEnvStat.mode&0o777)!==0o440)throw Error('Project runtime environment file has unsafe ownership or permissions');
+ const targets={release:path.join(base,'release'),storage:path.join(base,'storage'),cache:path.join(base,'cache'),logs:path.join(base,'logs'),runtimeConfig:path.join(base,'runtime-config')};
+ for(const key of ['runtimeConfig','logs','cache','storage','release']){
   const target=targets[key];let st;try{st=fs.lstatSync(target);}catch(e){if(e.code==='ENOENT')continue;throw e;}
   if(!st.isDirectory()||st.isSymbolicLink()||fs.realpathSync(target)!==target)throw Error('Unsafe project staging target');
   if(isMountpoint(target)){
@@ -305,4 +317,164 @@ export function unstageProjectServiceMounts(repositoryId,workloadId,releaseId){
  return {ok:true,repositoryId,workloadId,releaseId,unstaged:true};
 }
 
-if(import.meta.url==='file://'+process.argv[1]){try{const op=process.argv[2];let result;if(op==='apply'&&process.argv.length===6)result=applyWorkspaceProjectQuota(process.argv[3],process.argv[4],Number(process.argv[5]));else if(op==='stage'&&process.argv.length===6)result=stageWorkspaceMount(process.argv[3],process.argv[4],process.argv[5]);else if(op==='unstage'&&process.argv.length===6)result=unstageWorkspaceMount(process.argv[3],process.argv[4],process.argv[5]);else if(op==='apply-project'&&process.argv.length===6)result=applyProjectEnvironmentQuota(process.argv[3],process.argv[4],Number(process.argv[5]));else if(op==='stage-project'&&process.argv.length===6)result=stageProjectServiceMounts(process.argv[3],process.argv[4],process.argv[5]);else if(op==='unstage-project'&&process.argv.length===6)result=unstageProjectServiceMounts(process.argv[3],process.argv[4],process.argv[5]);else throw Error('Invalid quota helper operation or arguments');console.log(JSON.stringify(result));}catch(e){console.error(e.message);process.exit(1);}}
+function safeEnvironmentId(value){if(typeof value!=='string'||!uuidRe.test(value))throw Error('Invalid project environment identity');return value.toLowerCase();}
+function ensureSecretDirectory(directory,sandboxGid){
+ fs.mkdirSync(directory,{recursive:true,mode:0o750});
+ const st=fs.lstatSync(directory);
+ if(!st.isDirectory()||st.isSymbolicLink()||fs.realpathSync(directory)!==directory)throw Error('Unsafe project secret directory');
+ fs.chownSync(directory,0,sandboxGid);fs.chmodSync(directory,0o750);
+}
+function writeProtectedSecret(file,content,sandboxGid){
+ const directory=path.dirname(file);ensureSecretDirectory(directory,sandboxGid);
+ try{
+  const st=fs.lstatSync(file);
+  if(!st.isFile()||st.isSymbolicLink()||st.uid!==0||st.gid!==sandboxGid||(st.mode&0o777)!==0o440)throw Error('Existing project secret has unsafe ownership or permissions');
+  return false;
+ }catch(error){if(error.code!=='ENOENT')throw error;}
+ const temporary=file+'.'+process.pid+'.'+randomBytes(6).toString('hex')+'.tmp';
+ const fd=fs.openSync(temporary,'wx',0o440);
+ try{fs.writeFileSync(fd,content,{encoding:'utf8'});fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+ fs.chownSync(temporary,0,sandboxGid);fs.chmodSync(temporary,0o440);fs.renameSync(temporary,file);
+ return true;
+}
+export function prepareProjectDependencySecrets(repositoryId,environmentId,mysqlEnabled,redisEnabled){
+ if(process.getuid()!==0)throw Error('Project dependency secrets must be prepared by root');
+ if(!repoRe.test(repositoryId)||!uuidRe.test(environmentId)||typeof mysqlEnabled!=='boolean'||typeof redisEnabled!=='boolean')throw Error('Invalid project dependency secret identity');
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const expectedUid=Number(run('/usr/bin/id',['-u',configured.owner]));
+ const expectedGid=Number(run('/usr/bin/id',['-g',configured.owner]));
+ const environment=canonicalDirectory(path.join(configured.root,repositoryId),'Project environment');
+ const secrets=path.join(environment,'secrets');const mysql=path.join(secrets,'mysql');const redis=path.join(secrets,'redis');
+ const sandboxGid=Number(run('/usr/bin/id',['-g','vps-sandbox']));
+ const application=path.join(secrets,'application');const backupSecrets=path.join(secrets,'backup');
+ ensureSecretDirectory(secrets,sandboxGid);ensureSecretDirectory(application,sandboxGid);ensureSecretDirectory(backupSecrets,sandboxGid);
+ if(mysqlEnabled)ensureSecretDirectory(mysql,sandboxGid);
+ if(redisEnabled)ensureSecretDirectory(redis,sandboxGid);
+ const writeIfAbsent=(file,content)=>{
+  try{const st=fs.lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||st.uid!==0||st.gid!==sandboxGid||(st.mode&0o777)!==0o440)throw Error('Existing project secret has unsafe ownership or permissions');return fs.readFileSync(file,'utf8');}
+  catch(error){if(error.code!=='ENOENT')throw error;writeProtectedSecret(file,content,sandboxGid);return content;}
+ };
+ const appKey=writeIfAbsent(path.join(application,'app-key'),randomBytes(32).toString('base64')).trim();
+ let appPassword='';
+ if(mysqlEnabled){
+  const rootPassword=writeIfAbsent(path.join(mysql,'mysql-root-password'),randomBytes(48).toString('base64url')).trim();
+  appPassword=writeIfAbsent(path.join(application,'mysql-app-password'),randomBytes(48).toString('base64url')).trim();
+  const rootClientConfig=`[client]\nuser=root\npassword=${rootPassword}\nhost=127.0.0.1\nprotocol=TCP\n`;
+  if(writeIfAbsent(path.join(mysql,'mysql-root.cnf'),rootClientConfig)!==rootClientConfig)throw Error('Existing MySQL root client configuration does not match its protected credential');
+  const initializeSql=`CREATE DATABASE IF NOT EXISTS app CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\nCREATE USER IF NOT EXISTS 'app'@'%' IDENTIFIED BY '${appPassword}';\nALTER USER 'app'@'%' IDENTIFIED BY '${appPassword}';\nGRANT ALL PRIVILEGES ON app.* TO 'app'@'%';\nFLUSH PRIVILEGES;\n`;
+  if(writeIfAbsent(path.join(mysql,'initialize.sql'),initializeSql)!==initializeSql)throw Error('Existing MySQL initialization script does not match its protected application credential');
+ }
+ let redisPassword='';
+ if(redisEnabled){
+  const redisAcl=writeIfAbsent(path.join(redis,'redis-users.acl'),`user default off\nuser app on >${randomBytes(48).toString('base64url')} ~* &* +@all\n`);
+  const redisPasswordMatch=/^user default off\nuser app on >([A-Za-z0-9_-]+) ~\* &\* \+@all\n$/.exec(redisAcl);
+  if(!redisPasswordMatch)throw Error('Existing Redis ACL file does not match the isolated application-user policy');
+  redisPassword=redisPasswordMatch[1];
+  if(writeIfAbsent(path.join(redis,'redis-app-password'),redisPassword)!==redisPassword)throw Error('Existing Redis application credential does not match its protected ACL');
+  const redisConfig='bind 0.0.0.0\nprotected-mode yes\naclfile /run/secrets/redis-users.acl\ndir /data\nsave ""\nappendonly no\n';
+  if(writeIfAbsent(path.join(redis,'redis.conf'),redisConfig)!==redisConfig)throw Error('Existing Redis configuration does not match the approved ephemeral-cache policy');
+ }
+ writeIfAbsent(path.join(backupSecrets,'backup.key'),randomBytes(32).toString('base64url'));
+ const backups=path.join(environment,'backups');
+ fs.mkdirSync(backups,{recursive:true,mode:0o700});
+ const backupsStat=fs.lstatSync(backups);
+ if(!backupsStat.isDirectory()||backupsStat.isSymbolicLink()||fs.realpathSync(backups)!==backups)throw Error('Project backup path is not a canonical directory');
+ fs.chownSync(backups,expectedUid,expectedGid);
+ fs.chmodSync(backups,0o700);
+ run('/usr/bin/setfacl',['-m','u:vps-sandbox:rwX','-m','d:u:vps-sandbox:rwX',backups]);
+ const runtimeEnv=[
+  'APP_ENV=local','APP_DEBUG=true',`APP_KEY=base64:${appKey}`,'LOG_CHANNEL=stderr',
+  ...(mysqlEnabled?['DB_CONNECTION=mysql','DB_HOST=127.0.0.1','DB_PORT=3306','DB_DATABASE=app','DB_USERNAME=app',`DB_PASSWORD=${appPassword}`]:[]),
+  `CACHE_STORE=${redisEnabled?'redis':'file'}`,'SESSION_DRIVER=file','QUEUE_CONNECTION=sync',
+  ...(redisEnabled?['REDIS_CLIENT=phpredis','REDIS_HOST=127.0.0.1','REDIS_PASSWORD='+redisPassword,'REDIS_PORT=6379','REDIS_USERNAME=app']:[]),
+ ].join('\n')+'\n';
+ if(writeIfAbsent(path.join(application,'runtime.env'),runtimeEnv)!==runtimeEnv)throw Error('Existing project runtime configuration does not match its protected dependency credentials and profile selection');
+ return {ok:true,repositoryId,environmentId,mysqlEnabled,redisEnabled,secretPaths:{mysql:mysqlEnabled?'/secrets/mysql':null,redis:redisEnabled?'/secrets/redis':null,application:'/secrets/application',backup:'/secrets/backup'},createdWithoutReturningValues:true};
+}
+
+export function stageProjectDependencyMounts(repositoryId,workloadId,dependency){
+ if(process.getuid()!==0)throw Error('Project dependency staging must run as root');
+ if(!repoRe.test(repositoryId)||!uuidRe.test(workloadId)||!['mysql','redis'].includes(dependency))throw Error('Invalid project dependency staging identity');
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const environment=canonicalDirectory(path.join(configured.root,repositoryId),'Project environment');
+ const sourceData=dependency==='mysql'?canonicalDirectory(path.join(environment,'database'),'Project database directory'):null;
+ const sourceSecrets=canonicalDirectory(path.join(environment,'secrets',dependency),'Project dependency secret directory');
+ const sandboxGid=Number(run('/usr/bin/id',['-g','vps-sandbox']));
+ const base=path.join(stagingRoot,'projects',repositoryId,workloadId);
+ ensureProjectStagingDirectory(path.join(stagingRoot,'projects'),sandboxGid);
+ ensureProjectStagingDirectory(path.join(stagingRoot,'projects',repositoryId),sandboxGid);
+ ensureProjectStagingDirectory(base,sandboxGid);
+ const targets={data:path.join(base,'dependency-data'),secrets:path.join(base,'secrets')};
+ if(dependency==='mysql'){
+  const createdData=mountProjectPath(sourceData,targets.data,false);
+  const createdSecrets=mountProjectPath(sourceSecrets,targets.secrets,true);
+  return {ok:true,repositoryId,workloadId,dependency,stagedPaths:targets,created:[createdData,createdSecrets]};
+ }
+ const createdSecrets=mountProjectPath(sourceSecrets,targets.secrets,true);
+ return {ok:true,repositoryId,workloadId,dependency,stagedPaths:targets,created:[createdSecrets]};
+}
+export function unstageProjectDependencyMounts(repositoryId,workloadId,dependency){
+ if(process.getuid()!==0)throw Error('Project dependency unstaging must run as root');
+ if(!repoRe.test(repositoryId)||!uuidRe.test(workloadId)||!['mysql','redis'].includes(dependency))throw Error('Invalid project dependency staging identity');
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const environment=canonicalDirectory(path.join(configured.root,repositoryId),'Project environment');
+ const sources={data:dependency==='mysql'?canonicalDirectory(path.join(environment,'database'),'Project database directory'):null,secrets:canonicalDirectory(path.join(environment,'secrets',dependency),'Project dependency secret directory')};
+ const base=path.join(stagingRoot,'projects',repositoryId,workloadId);
+ const targets={data:path.join(base,'dependency-data'),secrets:path.join(base,'secrets')};
+ for(const key of ['secrets','data']){
+  if(!sources[key])continue;
+  const target=targets[key];let st;try{st=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+  if(!st.isDirectory()||st.isSymbolicLink()||fs.realpathSync(target)!==target)throw Error('Unsafe project dependency staging target');
+  if(isMountpoint(target)){
+   const mountedSource=path.resolve(run('/usr/bin/findmnt',['-n','-o','FSROOT','--mountpoint',target],10000));
+   if(mountedSource!==sources[key])throw Error('Refusing to unmount a project dependency staging target with a different source');
+   run('/usr/bin/umount',['--',target],30000);
+  }
+  try{fs.rmdirSync(target);}catch(error){if(!['ENOENT','ENOTEMPTY','EBUSY'].includes(error.code))throw error;}
+ }
+ try{fs.rmdirSync(base);}catch(error){if(!['ENOENT','ENOTEMPTY','EBUSY'].includes(error.code))throw error;}
+ return {ok:true,repositoryId,workloadId,dependency,unstaged:true};
+}
+
+export function stageProjectBackupMounts(repositoryId,environmentId,backupId){
+ if(process.getuid()!==0)throw Error('Project backup staging must run as root');
+ if(!repoRe.test(repositoryId)||!uuidRe.test(environmentId)||!uuidRe.test(backupId))throw Error('Invalid project backup staging identity');
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const environment=canonicalDirectory(path.join(configured.root,repositoryId),'Project environment');
+ const backups=canonicalDirectory(path.join(environment,'backups'),'Project backup directory');
+ const secrets=canonicalDirectory(path.join(environment,'secrets','backup'),'Project backup secret directory');
+ const key=path.join(secrets,'backup.key');const keyStat=fs.lstatSync(key);
+ if(!keyStat.isFile()||keyStat.isSymbolicLink()||keyStat.uid!==0||(keyStat.mode&0o777)!==0o440)throw Error('Project backup key has unsafe ownership or permissions');
+ const sandboxGid=Number(run('/usr/bin/id',['-g','vps-sandbox']));
+ if(keyStat.gid!==sandboxGid)throw Error('Project backup key group does not match the sandbox runtime');
+ const base=path.join(stagingRoot,'projects',repositoryId,backupId);
+ ensureProjectStagingDirectory(path.join(stagingRoot,'projects'),sandboxGid);
+ ensureProjectStagingDirectory(path.join(stagingRoot,'projects',repositoryId),sandboxGid);
+ ensureProjectStagingDirectory(base,sandboxGid);
+ const targets={backups:path.join(base,'backups'),secrets:path.join(base,'secrets')};
+ mountProjectPath(backups,targets.backups,false);mountProjectPath(secrets,targets.secrets,true);
+ return {ok:true,repositoryId,environmentId,backupId,stagedPaths:targets};
+}
+export function unstageProjectBackupMounts(repositoryId,environmentId,backupId){
+ if(process.getuid()!==0)throw Error('Project backup unstaging must run as root');
+ if(!repoRe.test(repositoryId)||!uuidRe.test(environmentId)||!uuidRe.test(backupId))throw Error('Invalid project backup staging identity');
+ const configured=projectEnvironmentRootForRepository(repositoryId);
+ const environment=canonicalDirectory(path.join(configured.root,repositoryId),'Project environment');
+ const sources={backups:canonicalDirectory(path.join(environment,'backups'),'Project backup directory'),secrets:canonicalDirectory(path.join(environment,'secrets','backup'),'Project backup secret directory')};
+ const base=path.join(stagingRoot,'projects',repositoryId,backupId);
+ const targets={backups:path.join(base,'backups'),secrets:path.join(base,'secrets')};
+ for(const key of ['secrets','backups']){
+  const target=targets[key];let st;try{st=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+  if(!st.isDirectory()||st.isSymbolicLink()||fs.realpathSync(target)!==target)throw Error('Unsafe project backup staging target');
+  if(isMountpoint(target)){
+   const mountedSource=path.resolve(run('/usr/bin/findmnt',['-n','-o','FSROOT','--mountpoint',target],10000));
+   if(mountedSource!==sources[key])throw Error('Refusing to unmount a project backup target with a different source');
+   run('/usr/bin/umount',['--',target],30000);
+  }
+  try{fs.rmdirSync(target);}catch(error){if(!['ENOENT','ENOTEMPTY','EBUSY'].includes(error.code))throw error;}
+ }
+ try{fs.rmdirSync(base);}catch(error){if(!['ENOENT','ENOTEMPTY','EBUSY'].includes(error.code))throw error;}
+ return {ok:true,repositoryId,environmentId,backupId,unstaged:true};
+}
+
+if(import.meta.url==='file://'+process.argv[1]){try{const op=process.argv[2];let result;if(op==='apply'&&process.argv.length===6)result=applyWorkspaceProjectQuota(process.argv[3],process.argv[4],Number(process.argv[5]));else if(op==='stage'&&process.argv.length===6)result=stageWorkspaceMount(process.argv[3],process.argv[4],process.argv[5]);else if(op==='unstage'&&process.argv.length===6)result=unstageWorkspaceMount(process.argv[3],process.argv[4],process.argv[5]);else if(op==='apply-project'&&process.argv.length===6)result=applyProjectEnvironmentQuota(process.argv[3],process.argv[4],Number(process.argv[5]));else if(op==='stage-project'&&process.argv.length===6)result=stageProjectServiceMounts(process.argv[3],process.argv[4],process.argv[5]);else if(op==='unstage-project'&&process.argv.length===6)result=unstageProjectServiceMounts(process.argv[3],process.argv[4],process.argv[5]);else if(op==='prepare-dependencies'&&process.argv.length===7)result=prepareProjectDependencySecrets(process.argv[3],process.argv[4],process.argv[5]==='true',process.argv[6]==='true');else if(op==='stage-dependency'&&process.argv.length===6)result=stageProjectDependencyMounts(process.argv[3],process.argv[4],process.argv[5]);else if(op==='unstage-dependency'&&process.argv.length===6)result=unstageProjectDependencyMounts(process.argv[3],process.argv[4],process.argv[5]);else if(op==='stage-backup'&&process.argv.length===6)result=stageProjectBackupMounts(process.argv[3],process.argv[4],process.argv[5]);else if(op==='unstage-backup'&&process.argv.length===6)result=unstageProjectBackupMounts(process.argv[3],process.argv[4],process.argv[5]);else throw Error('Invalid quota helper operation or arguments');console.log(JSON.stringify(result));}catch(e){console.error(e.message);process.exit(1);}}

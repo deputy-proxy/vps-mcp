@@ -28,7 +28,7 @@ grep -Eq '^PHP 8\.4\.' <<<"$output"
 grep -Eq '^Composer version 2\.' <<<"$output"
 grep -Eq '^v22\.' <<<"$output"
 
-for extension in bcmath exif gd intl mbstring PDO pdo_mysql 'Zend OPcache' pcntl sockets zip; do
+for extension in bcmath exif gd intl mbstring PDO pdo_mysql redis 'Zend OPcache' pcntl sockets zip; do
   grep -Fxq "$extension" <<<"$output" || {
     printf 'Missing PHP extension: %s\n' "$extension" >&2
     exit 1

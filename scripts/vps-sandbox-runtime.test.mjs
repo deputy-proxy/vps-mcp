@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, projectServiceMissingWorkloadReconciliationAllowed, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth, configuredProjectEnvironmentRoots, expectedProjectServiceMountSources } from './vps-sandbox-runtime.mjs';
+import { assertWorkloadTypeMatch, buildContainerCreateArgs, expectedTaskWorkspacePath, parseRuntimeRequest, buildSandboxExecArgs, buildSandboxFilesystemScript, buildSandboxFilesystemArgs, parseSandboxDirectoryListing, decodeSandboxFile, assertTaskWorkspaceWritable, assertTaskSandboxWorkload, validateProjectServiceCgroupV2Limits, boundedSandboxOutput, hasSandboxCapacity, isSandboxBusy, safeImage, reconcileSandboxOperationRecord, workspacePathsForStorageScan, workspaceMountRecoveryCandidates, durableLockKeys, isNewWorkOperation, normalizePodmanTimestamp, parseNetworkNamespaceCounters, parsePodmanInspectResult, projectServiceBootRecoveryAction, projectDependencyBootRecoveryAction, projectServiceMissingWorkloadReconciliationAllowed, buildPodmanEnvironment, projectServiceHealthProbeCommand, waitForProjectServiceHealth, configuredProjectEnvironmentRoots, expectedProjectServiceMountSources, validateProjectServiceContainerMounts } from './vps-sandbox-runtime.mjs';
 import { resourceReservationMatches } from './resource-governance.mjs';
 import { projectPodName } from './project-pod.mjs';
+import { projectDependencyWorkloadId } from './project-dependency.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -20,10 +21,13 @@ describe('Podman subprocess environment', () => {
 
 describe('persistent project-service PHP-FPM health checks', () => {
   it('probes the configured TCP listener as the non-root application user', () => {
-    expect(projectServiceHealthProbeCommand()).toEqual([
-      'php', '-r',
-      "$socket = @fsockopen('127.0.0.1', 9000, $errno, $errstr, 2); if (!is_resource($socket)) { fwrite(STDERR, 'PHP-FPM TCP health check failed'); exit(1); } fclose($socket);",
-    ]);
+    const probe = projectServiceHealthProbeCommand();
+    expect(probe.slice(0, 2)).toEqual(['php', '-r']);
+    expect(probe[2]).toContain("fsockopen('127.0.0.1', 9000");
+    expect(probe[2]).toContain("new PDO('mysql:host=127.0.0.1;port=3306;dbname='");
+    expect(probe[2]).toContain("$redis->auth([$env['REDIS_USERNAME'] ?? 'app', $env['REDIS_PASSWORD']])");
+    expect(probe[2]).not.toContain('DB_PASSWORD=');
+    expect(probe[2]).not.toContain('REDIS_PASSWORD=');
   });
 
   it('retries transient startup failures and returns verified health evidence', async () => {
@@ -52,6 +56,25 @@ describe('persistent project-service PHP-FPM health checks', () => {
   });
 });
 
+describe('project-service container mount contract', () => {
+  const root = '/var/lib/vps-sandbox-mounts/projects/repo/workload';
+  const mounts = { release: `${root}/release`, storage: `${root}/storage`, cache: `${root}/cache`, logs: `${root}/logs`, runtimeEnv: `${root}/runtime-config/runtime.env` };
+  const inspected = { Mounts: [
+    { Type: 'bind', Source: mounts.release, Destination: '/app', RW: false },
+    { Type: 'bind', Source: mounts.storage, Destination: '/app/storage', RW: true },
+    { Type: 'bind', Source: mounts.cache, Destination: '/app/bootstrap/cache', RW: true },
+    { Type: 'bind', Source: mounts.logs, Destination: '/app/storage/logs', RW: true },
+    { Type: 'bind', Source: mounts.runtimeEnv, Destination: '/app/.env', RW: false },
+  ] };
+  it('accepts only the canonical read-only release and runtime config plus writable data mounts', () => {
+    expect(validateProjectServiceContainerMounts(inspected, mounts)).toEqual({ verified: true, count: 5 });
+  });
+  it('rejects unexpected host mounts and writable application configuration', () => {
+    expect(() => validateProjectServiceContainerMounts({ Mounts: [...inspected.Mounts, { Type: 'bind', Source: '/etc/shadow', Destination: '/run/shadow', RW: false }] }, mounts)).toThrow('unexpected host bind mount');
+    expect(() => validateProjectServiceContainerMounts({ Mounts: inspected.Mounts.map((mount) => mount.Destination === '/app/.env' ? { ...mount, RW: true } : mount) }, mounts)).toThrow('canonical read/write contract');
+  });
+});
+
 describe('project-service boot recovery policy', () => {
   const project = (status) => ({ workloadType: 'project-service', status });
   it.each([
@@ -72,6 +95,12 @@ describe('project-service boot recovery policy', () => {
     [{ workloadType: 'task', status: 'running' }, 'running', 'skip'],
   ])('chooses %s / %s -> %s', (record, runtimeState, expected) => {
     expect(projectServiceBootRecoveryAction(record, runtimeState)).toBe(expected);
+  });
+  it('follows durable desired state when lifecycle status alone is ambiguous', () => {
+    expect(projectServiceBootRecoveryAction(project('stopped'), 'exited')).toBe('skip');
+    expect(projectServiceBootRecoveryAction({ ...project('stopped'), desiredState: 'running' }, 'exited')).toBe('start');
+    expect(projectServiceBootRecoveryAction({ ...project('running'), desiredState: 'stopped' }, 'running')).toBe('stop');
+    expect(projectServiceBootRecoveryAction({ ...project('stopped'), desiredState: 'stopped' }, 'missing')).toBe('operator-review');
   });
 });
 
@@ -178,6 +207,33 @@ describe('rootless workload runtime request validation', () => {
     { operation: 'image.inspect', image: `docker.io/library/node@sha256:${'a'.repeat(64)}` },
     { operation: 'container.list' },
     { operation: 'dashboard.inventory' },
+    { operation: 'project-dependency.prepare-secrets', repositoryId: 'deputy-proxy-vps-mcp', environmentId: '134e5321-b4d7-4d4f-be92-ce56a984adaa', mysqlEnabled: true, redisEnabled: true },
+    {
+      operation: 'project-dependency.create',
+      workloadId: projectDependencyWorkloadId('134e5321-b4d7-4d4f-be92-ce56a984adaa', 'mysql'),
+      environmentId: '134e5321-b4d7-4d4f-be92-ce56a984adaa', repositoryId: 'deputy-proxy-vps-mcp', dependency: 'mysql',
+      image: 'dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1',
+      resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 },
+      reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
+      restartPolicy: 'no', podName: projectPodName('deputy-proxy-vps-mcp'),
+    },
+    { operation: 'project-dependency.inspect', workloadId: projectDependencyWorkloadId('134e5321-b4d7-4d4f-be92-ce56a984adaa', 'mysql') },
+    { operation: 'project-dependency.start', workloadId: projectDependencyWorkloadId('134e5321-b4d7-4d4f-be92-ce56a984adaa', 'mysql') },
+    { operation: 'project-dependency.stop', workloadId: projectDependencyWorkloadId('134e5321-b4d7-4d4f-be92-ce56a984adaa', 'mysql') },
+    { operation: 'project-dependency.remove', workloadId: projectDependencyWorkloadId('134e5321-b4d7-4d4f-be92-ce56a984adaa', 'mysql'), repositoryId: 'deputy-proxy-vps-mcp', dependency: 'mysql' },
+    { operation: 'project-dependency.recover' },
+    {
+      operation: 'project-backup.create', repositoryId: 'deputy-proxy-vps-mcp',
+      environmentId: '134e5321-b4d7-4d4f-be92-ce56a984adaa', profileId: 'laravel-php', profileVersion: 4,
+      applicationWorkloadId: '334e5321-b4d7-4d4f-be92-ce56a984adaa', enabledDependencies: ['mysql'],
+      backupId: '234e5321-b4d7-4d4f-be92-ce56a984adaa',
+    },
+    {
+      operation: 'project-backup.restore', repositoryId: 'deputy-proxy-vps-mcp',
+      environmentId: '134e5321-b4d7-4d4f-be92-ce56a984adaa', profileId: 'laravel-php', profileVersion: 4,
+      applicationWorkloadId: '334e5321-b4d7-4d4f-be92-ce56a984adaa', enabledDependencies: ['mysql', 'redis'],
+      backupId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', confirm: true,
+    },
     { operation: 'container.inspect', workloadId: '134e5321-b4d7-4d4f-be92-ce56a984adaa' },
     {
       operation: 'container.create',
@@ -198,7 +254,7 @@ describe('rootless workload runtime request validation', () => {
     const image = 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64);
     const previous = process.env.VPS_SANDBOX_ALLOWED_IMAGES;
     process.env.VPS_SANDBOX_ALLOWED_IMAGES = image;
-    const create = { operation: 'project-service.create', workloadId: id, repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped', command: ['--nodaemonize'] };
+    const create = { operation: 'project-service.create', workloadId: id, environmentId: id, profileId: 'laravel-php', profileVersion: 4, dependencies: [], repositoryId: 'deputy-proxy-vps-mcp', releaseId: id, image, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 }, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 }, restartPolicy: 'unless-stopped', command: ['--nodaemonize'] };
     expect(parseRuntimeRequest(JSON.stringify(create))).toEqual(create);
     expect(() => parseRuntimeRequest(JSON.stringify({ ...create, reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320 } }))).toThrow('Aggregate project reservation must define all four resource dimensions');
     expect(() => parseRuntimeRequest(JSON.stringify({ ...create, resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128 } }))).toThrow('Project-service resources must define all four resource dimensions');
@@ -371,6 +427,36 @@ describe('rootless workload runtime request validation', () => {
   });
 
 
+  it('requires explicit confirmation for identity-bound backup restoration', () => {
+    const base = {
+      operation: 'project-backup.restore', repositoryId: 'deputy-proxy-vps-mcp',
+      environmentId: '134e5321-b4d7-4d4f-be92-ce56a984adaa', profileId: 'laravel-php', profileVersion: 4,
+      applicationWorkloadId: '334e5321-b4d7-4d4f-be92-ce56a984adaa', enabledDependencies: ['mysql'],
+      backupId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', confirm: true,
+    };
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...base, confirm: false }))).toThrow('confirm=true');
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...base, enabledDependencies: ['redis'] }))).toThrow('requires MySQL');
+    expect(isNewWorkOperation({ operation: 'project-backup.create' })).toBe(true);
+    expect(isNewWorkOperation({ operation: 'project-backup.restore' })).toBe(true);
+    expect(durableLockKeys({ ...base, operation: 'project-backup.restore' })).toContain('repository:deputy-proxy-vps-mcp');
+  });
+
+  it('rejects unsafe dependency identities, unpinned images and resource overcommit', () => {
+    const environmentId = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
+    const workloadId = projectDependencyWorkloadId(environmentId, 'mysql');
+    const base = {
+      operation: 'project-dependency.create', workloadId, environmentId, repositoryId: 'deputy-proxy-vps-mcp', dependency: 'mysql',
+      image: 'dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1',
+      resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 },
+      reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
+      restartPolicy: 'no', podName: projectPodName('deputy-proxy-vps-mcp'),
+    };
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...base, image: 'mysql:8' }))).toThrow('sha256 digest');
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...base, workloadId: '234e5321-b4d7-4d4f-be92-ce56a984adaa' }))).toThrow('does not match');
+    expect(() => parseRuntimeRequest(JSON.stringify({ ...base, resources: { ...base.resources, cpuMilli: 1300 } }))).toThrow('exceeds aggregate');
+    expect(() => parseRuntimeRequest(JSON.stringify({ operation: 'project-dependency.prepare-secrets', repositoryId: 'deputy-proxy-vps-mcp', environmentId, mysqlEnabled: 'true', redisEnabled: true }))).toThrow('booleans');
+  });
+
   it('rejects unknown operations and extra request properties', () => {
     expect(() => parseRuntimeRequest('{"operation":"exec","command":"id"}')).toThrow('Unsupported');
     expect(() => parseRuntimeRequest('{"operation":"container.list","command":"id"}')).toThrow('unsupported properties');
@@ -483,10 +569,10 @@ describe('rootless workload lifecycle isolation', () => {
     const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
     const base = '/var/lib/vps-sandbox-mounts/projects/deputy-proxy-vps-mcp/' + id;
     const args = buildContainerCreateArgs({
-      id, workloadType: 'project-service', repositoryId: 'deputy-proxy-vps-mcp',
+      id, workloadType: 'project-service', repositoryId: 'deputy-proxy-vps-mcp', environmentId: id, profileId: 'laravel-php', profileVersion: 4,
       image: 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64),
       resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
-      projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' },
+      projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs', runtimeEnv: base + '/runtime.env' },
       restartPolicy: 'unless-stopped', executionMount: null,
     });
 
@@ -499,10 +585,10 @@ describe('rootless workload lifecycle isolation', () => {
     const id = '134e5321-b4d7-4d4f-be92-ce56a984adaa';
     const base = '/var/lib/vps-sandbox-mounts/projects/deputy-proxy-vps-mcp/' + id;
     const args = buildContainerCreateArgs({
-      id, workloadType: 'project-service', repositoryId: 'deputy-proxy-vps-mcp',
+      id, workloadType: 'project-service', repositoryId: 'deputy-proxy-vps-mcp', environmentId: id, profileId: 'laravel-php', profileVersion: 4,
       image: 'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:' + 'a'.repeat(64),
       resources: { cpuMilli: 500, memoryMiB: 1024, pids: 128, diskMiB: 10240 },
-      projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' },
+      projectMounts: { releaseId: '234e5321-b4d7-4d4f-be92-ce56a984adaa', release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs', runtimeEnv: base + '/runtime.env' },
       restartPolicy: 'unless-stopped', executionMount: null, podName: projectPodName('deputy-proxy-vps-mcp'),
     });
     expect(args).toContain('--pod');
@@ -523,6 +609,7 @@ describe('rootless workload lifecycle isolation', () => {
     // Podman 4.9 rejects --userns together with --pod. Keep the explicit\n    // non-root application UID; the runtime service owns the pod and members.\n    expect(args).not.toContain('--userns');
     expect(args).toContain('--label');
     expect(args).toContain('io.cr8or.vps-mcp.release=234e5321-b4d7-4d4f-be92-ce56a984adaa');
+    expect(args).toContain('--userns=keep-id:uid=10001,gid=10001');
     expect(args).toContain('--user');
     expect(args).toContain('10001:10001');
     expect(args).toContain('type=bind,src=' + base + '/release,dst=/app,ro,nosuid,nodev');
@@ -604,12 +691,14 @@ describe('multi-root project-service mount verification', () => {
         storage: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/storage',
         cache: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/cache',
         logs: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/logs',
+        runtimeConfig: '/var/lib/vps-mcp/project-environments/' + repositoryId + '/secrets/application',
       },
       {
         release: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/releases/' + releaseId,
         storage: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/storage',
         cache: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/cache',
         logs: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/logs',
+        runtimeConfig: '/var/lib/vps-mcp-development/project-environments/' + repositoryId + '/secrets/application',
       },
     ]);
   });
@@ -635,5 +724,24 @@ describe('multi-root project-service mount verification', () => {
   it('rejects an empty or malformed root list when deriving mount sources', () => {
     expect(() => expectedProjectServiceMountSources(repositoryId, releaseId, [])).toThrow('At least one approved');
     expect(() => expectedProjectServiceMountSources('../other', releaseId, roots)).toThrow('repository ID');
+  });
+});
+
+
+describe('project dependency boot recovery policy', () => {
+  const dependency = { workloadType: 'project-dependency', status: 'running', desiredState: 'running' };
+  it.each([
+    [dependency, 'running', 'running', 'verify'],
+    [dependency, 'exited', 'running', 'start'],
+    [dependency, 'missing', 'running', 'operator-review'],
+    [{ ...dependency, desiredState: 'stopped' }, 'running', 'stopped', 'stop'],
+    [{ ...dependency, desiredState: 'running' }, 'running', 'stopped', 'stop'],
+    [{ ...dependency, desiredState: 'stopped' }, 'exited', 'stopped', 'skip'],
+    [{ ...dependency, desiredState: 'stopped' }, 'missing', 'stopped', 'operator-review'],
+    [{ ...dependency, status: 'removed' }, 'missing', undefined, 'skip'],
+    [dependency, 'running', undefined, 'operator-review'],
+    [{ ...dependency, desiredState: 'stopped' }, 'running', 'running', 'operator-review'],
+  ])('reconciles dependency %s / %s / parent %s -> %s', (record, state, parent, expected) => {
+    expect(projectDependencyBootRecoveryAction(record, state, parent)).toBe(expected);
   });
 });

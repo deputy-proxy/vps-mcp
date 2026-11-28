@@ -9,6 +9,8 @@ import { EXECUTION_POLICY, safeExecutionId, executionCommandMetadata, buildExecu
 import { promisify } from 'node:util';
 import { redactSensitiveText } from './secret-redaction.mjs';
 import { buildProjectPodCreateArgs, buildProjectPodMemberArgs, projectPodName, validateProjectPodInspection, validateProjectPodInfraInspection, validateProjectPodMemberInspection } from './project-pod.mjs';
+import { APPROVED_PROJECT_DEPENDENCY_IMAGES, APPROVED_PROJECT_SERVICE_IMAGES, buildProjectDependencyCreateArgs, dependencyHealthCommand, dependencyStagingPaths, projectDependencyWorkloadId, validateProjectDependencyInspection } from './project-dependency.mjs';
+import { MAX_BACKUP_ARTIFACT_BYTES, createProjectBackupManifest, decodeProjectBackupKey, decryptProjectBackupArtifact, encryptProjectBackupArtifact, validateProjectBackupManifest, replaceProjectStorageContents } from './project-backup.mjs';
 import { resourceBudget, calculateResourceUsage, evaluateResourceRequest, cleanupEligibility, withDurableLocks, auditSafeValue, diskPressureLevel, operationReplayDecision, orphanContainerEligibility, staleLockIsReapable, staleTemporaryFile, createWorkloadReplayDecision, resourceReservationMatches } from './resource-governance.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -46,7 +48,7 @@ const activeExecutionStarts = new Set();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_DIGEST = /^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/i;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
-const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'project-service.recover', 'project-service.create', 'project-service.inspect', 'project-service.start', 'project-service.stop', 'project-service.remove', 'dashboard.inventory', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.status', 'sandbox.execution.logs', 'sandbox.execution.cancel', 'sandbox.execution.list', 'resource.inspect', 'resource.reserve', 'resource.release', 'sandbox.retention.set', 'cleanup.preview', 'cleanup.run', 'cleanup.pause', 'workspace.write.begin', 'workspace.write.finish', 'audit.list']);
+const OPERATIONS = new Set(['image.inspect', 'image.pull', 'container.create', 'container.start', 'container.inspect', 'container.list', 'container.stop', 'container.remove', 'container.exec', 'container.logs', 'project-service.recover', 'project-dependency.prepare-secrets', 'project-dependency.create', 'project-dependency.inspect', 'project-dependency.start', 'project-dependency.stop', 'project-dependency.remove', 'project-dependency.recover', 'project-backup.create', 'project-backup.restore', 'project-service.create', 'project-service.inspect', 'project-service.start', 'project-service.stop', 'project-service.remove', 'dashboard.inventory', 'sandbox.exec', 'sandbox.fs.list', 'sandbox.fs.read', 'sandbox.fs.write', 'sandbox.execution.start', 'sandbox.execution.status', 'sandbox.execution.logs', 'sandbox.execution.cancel', 'sandbox.execution.list', 'resource.inspect', 'resource.reserve', 'resource.release', 'sandbox.retention.set', 'cleanup.preview', 'cleanup.run', 'cleanup.pause', 'workspace.write.begin', 'workspace.write.finish', 'audit.list']);
 let operationQueue = Promise.resolve();
 const ACTIVE_STATES = new Set(['creating', 'created', 'starting', 'running', 'stopping', 'stopped', 'removing', 'error']);
 const KNOWN_WORKLOAD_STATES = new Set([...ACTIVE_STATES, 'removed', 'unknown']);
@@ -56,7 +58,7 @@ function safeId(value) { assert(typeof value === 'string' && UUID.test(value), '
 export function safeImage(value) {
   assert(typeof value === 'string' && IMAGE_DIGEST.test(value), 'Image must be pinned by sha256 digest');
   const approved = (process.env.VPS_SANDBOX_ALLOWED_IMAGES ?? '').split(',').map((item) => item.trim()).filter(Boolean);
-  assert(approved.includes(value), 'Image digest is not present in the administrator-approved runtime image allowlist');
+  assert(approved.includes(value) || APPROVED_PROJECT_DEPENDENCY_IMAGES.includes(value) || APPROVED_PROJECT_SERVICE_IMAGES.includes(value), 'Image digest is not present in the administrator-approved runtime image allowlist');
   return value;
 }
 function safeRepositoryId(value) { assert(typeof value === 'string' && REPOSITORY_ID.test(value), 'Invalid repository ID'); return value; }
@@ -100,10 +102,11 @@ export function expectedProjectServiceMountSources(repositoryId, releaseId, root
       storage: path.join(environment, 'storage'),
       cache: path.join(environment, 'cache'),
       logs: path.join(environment, 'logs'),
+      runtimeConfig: path.join(environment, 'secrets', 'application'),
     };
   });
 }
-function safeRestartPolicy(value = 'unless-stopped') { assert(value === 'always' || value === 'unless-stopped', 'Unsupported project-service restart policy'); return value; }
+function safeRestartPolicy(value = 'no') { assert(value === 'no' || value === 'unless-stopped', 'Unsupported project-service restart policy'); return value; }
 function safeArgv(value) {
   assert(Array.isArray(value) && value.length > 0 && value.length <= 64, 'Command must be a non-empty argument array');
   for (const arg of value) assert(typeof arg === 'string' && arg.length > 0 && arg.length <= 4096 && !arg.includes('\0'), 'Invalid command argument');
@@ -145,7 +148,16 @@ export function parseRuntimeRequest(raw) {
     'container.exec': ['operation', 'workloadId', 'command', 'timeoutMs'],
     'container.logs': ['operation', 'workloadId'],
     'project-service.recover': ['operation'],
-    'project-service.create': ['operation', 'workloadId', 'repositoryId', 'releaseId', 'image', 'resources', 'reservationResources', 'restartPolicy', 'command'],
+    'project-dependency.prepare-secrets': ['operation', 'repositoryId', 'environmentId', 'mysqlEnabled', 'redisEnabled'],
+    'project-dependency.create': ['operation', 'workloadId', 'environmentId', 'repositoryId', 'dependency', 'image', 'resources', 'reservationResources', 'restartPolicy', 'podName'],
+    'project-dependency.inspect': ['operation', 'workloadId'],
+    'project-dependency.start': ['operation', 'workloadId'],
+    'project-dependency.stop': ['operation', 'workloadId'],
+    'project-dependency.remove': ['operation', 'workloadId', 'repositoryId', 'dependency'],
+    'project-dependency.recover': ['operation'],
+    'project-backup.create': ['operation', 'repositoryId', 'environmentId', 'profileId', 'profileVersion', 'applicationWorkloadId', 'enabledDependencies', 'backupId'],
+    'project-backup.restore': ['operation', 'repositoryId', 'environmentId', 'profileId', 'profileVersion', 'applicationWorkloadId', 'enabledDependencies', 'backupId', 'confirm'],
+    'project-service.create': ['operation', 'workloadId', 'environmentId', 'profileId', 'profileVersion', 'dependencies', 'repositoryId', 'releaseId', 'image', 'resources', 'reservationResources', 'restartPolicy', 'command'],
     'project-service.inspect': ['operation', 'workloadId'],
     'project-service.start': ['operation', 'workloadId'],
     'project-service.stop': ['operation', 'workloadId'],
@@ -172,6 +184,40 @@ export function parseRuntimeRequest(raw) {
   }[request.operation];
   assert(Object.keys(request).every((key) => allowed.includes(key)), 'Request contains unsupported properties');
   if (request.operation === 'dashboard.inventory') return request;
+  if (request.operation === 'project-dependency.prepare-secrets') {
+    safeRepositoryId(request.repositoryId); safeId(request.environmentId);
+    assert(typeof request.mysqlEnabled === 'boolean' && typeof request.redisEnabled === 'boolean', 'Dependency enabled flags must be booleans');
+  }
+  if (request.operation === 'project-dependency.create') {
+    safeId(request.workloadId); safeId(request.environmentId); safeRepositoryId(request.repositoryId);
+    assert(request.dependency === 'mysql' || request.dependency === 'redis', 'Unsupported project dependency');
+    assert(request.restartPolicy === 'no', 'Project dependencies must use restart=no so ordered recovery controls startup');
+    assert(projectDependencyWorkloadId(request.environmentId, request.dependency) === request.workloadId, 'Project dependency workload ID does not match its environment and dependency identity');
+    safeImage(request.image);
+    for (const [label, value] of [['resources', request.resources], ['reservationResources', request.reservationResources]]) {
+      assert(value && typeof value === 'object' && !Array.isArray(value), `Dependency ${label} are required`);
+      assert(Object.keys(value).every((key) => ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].includes(key)), `Dependency ${label} contain unsupported properties`);
+      assert(['cpuMilli', 'memoryMiB', 'pids', 'diskMiB'].every((key) => Number.isSafeInteger(value[key])), `Dependency ${label} must define all four dimensions`);
+      safeResources(value);
+    }
+    for (const key of ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB']) assert(request.resources[key] <= request.reservationResources[key], `Dependency ${key} exceeds aggregate project reservation`);
+    request.restartPolicy = safeRestartPolicy(request.restartPolicy);
+    assert(request.podName === projectPodName(request.repositoryId), 'Project dependency must join its repository-private pod');
+  }
+  if (['project-dependency.inspect','project-dependency.start','project-dependency.stop'].includes(request.operation)) safeId(request.workloadId);
+  if (request.operation === 'project-dependency.remove') {
+    safeId(request.workloadId); safeRepositoryId(request.repositoryId);
+    assert(request.dependency === 'mysql' || request.dependency === 'redis', 'Unsupported project dependency');
+  }
+  if (['project-backup.create', 'project-backup.restore'].includes(request.operation)) {
+    safeRepositoryId(request.repositoryId); safeId(request.environmentId); safeId(request.applicationWorkloadId); safeId(request.backupId);
+    assert(typeof request.profileId === 'string' && /^[a-z][a-z0-9-]{1,63}$/.test(request.profileId), 'Project backup profile identity is invalid');
+    assert(Number.isSafeInteger(request.profileVersion) && request.profileVersion >= 1 && request.profileVersion <= 1000, 'Project backup profile version is invalid');
+    assert(Array.isArray(request.enabledDependencies) && request.enabledDependencies.includes('mysql')
+      && new Set(request.enabledDependencies).size === request.enabledDependencies.length
+      && request.enabledDependencies.every((item) => ['mysql', 'redis'].includes(item)), 'Project backup requires MySQL and a valid enabled dependency selection');
+    if (request.operation === 'project-backup.restore') assert(request.confirm === true, 'Project backup restore requires confirm=true');
+  }
   if (request.operation === 'project-service.create') {
     safeId(request.workloadId); safeRepositoryId(request.repositoryId); safeId(request.releaseId);
     safeImage(request.image);
@@ -291,9 +337,9 @@ async function applyProjectEnvironmentDiskQuota(repositoryId, workloadId, diskMi
 async function stageProjectServiceMounts(repositoryId, workloadId, releaseId) {
   const result = await quotaBrokerRequest({ operation: 'stage-project', repositoryId, workloadId, releaseId });
   const base = '/var/lib/vps-sandbox-mounts/projects/' + repositoryId + '/' + workloadId;
-  const expected = { release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs' };
+  const expected = { release: base + '/release', storage: base + '/storage', cache: base + '/cache', logs: base + '/logs', runtimeConfig: base + '/runtime-config', runtimeEnv: base + '/runtime-config/runtime.env' };
   assert(result.ok === true && result.repositoryId === repositoryId && result.workloadId === workloadId && result.releaseId === releaseId
-    && JSON.stringify(result.stagedPaths) === JSON.stringify(expected), 'SANDBOX_PROJECT_MOUNT_FAILED: quota broker returned invalid project mount paths');
+    && JSON.stringify({ ...result.stagedPaths, runtimeEnv: result.stagedPaths?.runtimeEnv }) === JSON.stringify(expected), 'SANDBOX_PROJECT_MOUNT_FAILED: quota broker returned invalid project mount paths');
   return { releaseId, ...expected };
 }
 async function unstageProjectServiceMounts(repositoryId, workloadId, releaseId) {
@@ -426,7 +472,7 @@ async function readWorkloadRecords(options = {}) {
     try {
       assert(entry.isDirectory() && !entry.isSymbolicLink(), 'Workload record path is not a real directory');
       const record = await readRecord(entry.name);
-      assert(['task', 'project-service'].includes(record.workloadType), 'Workload record has an invalid workload type');
+      assert(['task', 'project-service', 'project-dependency'].includes(record.workloadType), 'Workload record has an invalid workload type');
       safeRepositoryId(record.repositoryId);
       assert(KNOWN_WORKLOAD_STATES.has(record.status), 'Workload record has an invalid lifecycle state');
       assert(record.network === 'none' || (record.workloadType === 'task' && record.network === 'slirp4netns:allow_host_loopback=true'), 'Workload record has an unsupported network boundary');
@@ -447,13 +493,30 @@ async function readWorkloadRecords(options = {}) {
       }
       if (record.workloadType === 'project-service') {
         if (record.podName !== undefined) assert(record.podName === projectPodName(record.repositoryId), 'Project-service workload has an invalid repository-private pod identity');
+        if (record.environmentId !== undefined) {
+          assert(UUID.test(record.environmentId) && typeof record.profileId === 'string' && /^[a-z][a-z0-9-]{1,63}$/.test(record.profileId)
+            && Number.isInteger(record.profileVersion) && record.profileVersion >= 1 && Array.isArray(record.dependencies), 'Project-service environment dependency identity is invalid');
+          assert(new Set(record.dependencies.map((item) => item.name)).size === record.dependencies.length
+            && record.dependencies.every((item) => ['mysql', 'redis'].includes(item.name) && projectDependencyWorkloadId(record.environmentId, item.name) === item.workloadId), 'Project-service dependency workload identities are invalid');
+        }
         assert(record.projectMounts && UUID.test(record.projectMounts.releaseId), 'Project-service workload is missing its release identity');
         assert(record.releaseId === record.projectMounts.releaseId, 'Project-service release identity does not match its mounts');
         const mountRoot = '/var/lib/vps-sandbox-mounts/projects/' + record.repositoryId + '/' + record.id;
-        for (const [key, suffix] of Object.entries({ release: 'release', storage: 'storage', cache: 'cache', logs: 'logs' })) {
+        for (const [key, suffix] of Object.entries({ release: 'release', storage: 'storage', cache: 'cache', logs: 'logs', runtimeConfig: 'runtime-config' })) {
           const target = mountRoot + '/' + suffix;
           assert(record.projectMounts[key] === target, 'Project-service mount path is not canonical');
         }
+        assert(record.projectMounts.runtimeEnv === mountRoot + '/runtime-config/runtime.env', 'Project-service runtime environment path is not canonical');
+      }
+      if (record.workloadType === 'project-dependency') {
+        assert(UUID.test(record.environmentId) && ['mysql', 'redis'].includes(record.dependency), 'Project dependency record identity is invalid');
+        assert(projectDependencyWorkloadId(record.environmentId, record.dependency) === record.id, 'Project dependency record ID does not match its environment');
+        assert(record.podName === projectPodName(record.repositoryId), 'Project dependency record pod identity is invalid');
+        const expectedMounts = dependencyStagingPaths(record.repositoryId, record.id);
+        assert(record.dependencyMounts?.data === expectedMounts.data && record.dependencyMounts?.secrets === expectedMounts.secrets, 'Project dependency record mounts are not canonical');
+        assert(['running', 'stopped'].includes(record.desiredState), 'Project dependency desired state is invalid');
+        assert(record.reservationResources && typeof record.reservationResources === 'object', 'Project dependency aggregate reservation is missing');
+        safeResources(record.reservationResources);
       }
       assert(record.retained === undefined || typeof record.retained === 'boolean', 'Workload retention state is invalid');
       assert(record.resources && typeof record.resources === 'object' && !Array.isArray(record.resources), 'Workload resource vector is missing');
@@ -825,6 +888,7 @@ async function listManagedContainers({ includeMetrics = false } = {}) {
       containerId: String(item.Id ?? item.ID ?? '').toLowerCase(),
       workloadId: typeof labels['io.cr8or.vps-mcp.workload'] === 'string' && UUID.test(labels['io.cr8or.vps-mcp.workload']) ? labels['io.cr8or.vps-mcp.workload'].toLowerCase() : labels['io.cr8or.vps-mcp.workload'] ?? null,
       workloadType: labels['io.cr8or.vps-mcp.type'] ?? null,
+      dependency: labels['io.cr8or.vps-mcp.dependency'] ?? null,
       repositoryId: labels['io.cr8or.vps-mcp.repository'] ?? null,
       worktreeId: typeof labels['io.cr8or.vps-mcp.worktree'] === 'string' && UUID.test(labels['io.cr8or.vps-mcp.worktree']) ? labels['io.cr8or.vps-mcp.worktree'].toLowerCase() : labels['io.cr8or.vps-mcp.worktree'] ?? null,
       releaseId: typeof labels['io.cr8or.vps-mcp.release'] === 'string' && UUID.test(labels['io.cr8or.vps-mcp.release']) ? labels['io.cr8or.vps-mcp.release'].toLowerCase() : labels['io.cr8or.vps-mcp.release'] ?? null,
@@ -864,7 +928,7 @@ async function assertManagedContainerAccounting(records) {
       if (!terminal.has(container.state)) throw new Error('SANDBOX_CAPACITY_UNKNOWN: an untracked managed container is running or has an unknown state');
       continue;
     }
-    assert(record.workloadType === container.workloadType && record.repositoryId === container.repositoryId && (record.worktreeId ?? null) === (container.worktreeId ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: managed container labels do not match the workload registry');
+    assert(record.workloadType === container.workloadType && record.repositoryId === container.repositoryId && (record.worktreeId ?? null) === (container.worktreeId ?? null) && (record.dependency ?? null) === (container.dependency ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: managed container labels do not match the workload registry');
     const runtimeId = await resolveRuntimeId(record);
     assert(runtimeId, 'SANDBOX_CAPACITY_UNKNOWN: a managed container could not be reconciled to its workload record');
     if (['removed', 'stopped'].includes(record.status) && !terminal.has(container.state)) throw new Error('SANDBOX_CAPACITY_UNKNOWN: container runtime state conflicts with its stopped or removed workload record');
@@ -876,7 +940,7 @@ async function assertProjectContainersAccounted(repositoryId, records) {
   for (const container of containers.filter((item) => ['project-service', 'project-dependency'].includes(item.workloadType) && item.repositoryId === repositoryId)) {
     const record = records.find((item) => item.id === container.workloadId);
     assert(record, 'SANDBOX_CAPACITY_UNKNOWN: an orphan project-service container exists for this repository');
-    assert(record.workloadType === container.workloadType && record.repositoryId === container.repositoryId && (record.releaseId ?? null) === (container.releaseId ?? null) && (record.worktreeId ?? null) === (container.worktreeId ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: project-service container labels do not match the registry');
+    assert(record.workloadType === container.workloadType && record.repositoryId === container.repositoryId && (record.releaseId ?? null) === (container.releaseId ?? null) && (record.worktreeId ?? null) === (container.worktreeId ?? null) && (record.dependency ?? null) === (container.dependency ?? null), 'SANDBOX_WORKLOAD_IDENTITY_MISMATCH: project container labels do not match the registry');
     assert(record.status !== 'removed', 'SANDBOX_CAPACITY_UNKNOWN: a project container remains after its workload record was removed');
     const runtimeId = await resolveRuntimeId(record);
     assert(runtimeId, 'SANDBOX_CAPACITY_UNKNOWN: a project-service container could not be reconciled to its workload record');
@@ -1270,19 +1334,29 @@ async function runPodman(args, timeout = DEFAULT_TIMEOUT_MS, maxBuffer = MAX_RES
 export function assertWorkloadTypeMatch(record, expectedWorkloadType) {
   assert(expectedWorkloadType === record.workloadType, 'Workload type mismatch; refusing cross-lifecycle operation');
 }
-export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount, projectMounts, executionMount, command, network = 'none', podName, proxyUrl, restartPolicy }) {
+export function buildContainerCreateArgs({ id, workloadType, repositoryId, worktreeId, environmentId, profileId, profileVersion, image, resources, workspaceMount, projectMounts, executionMount, command, network = 'none', podName, proxyUrl, restartPolicy }) {
   const expectedProjectPodName = workloadType === 'project-service' ? projectPodName(repositoryId) : undefined;
   const effectivePodName = podName ?? expectedProjectPodName;
   assert(workloadType !== 'task' || (executionMount?.destination === '/run/vps-mcp-executions' && path.isAbsolute(executionMount.path)), 'Task workloads require a dedicated execution log mount');
   assert(network === 'none' || (workloadType === 'task' && network === 'slirp4netns:allow_host_loopback=true' && proxyUrl === EGRESS_PROXY_CONTAINER), 'Unsupported workload network policy');
-  assert(workloadType !== 'project-service' || (executionMount == null && projectMounts && projectMounts.releaseId && effectivePodName === expectedProjectPodName), 'Project-service workloads require broker-staged mounts and their repository-private pod');
+  assert(workloadType !== 'project-service' || (executionMount == null && projectMounts && projectMounts.releaseId && effectivePodName === expectedProjectPodName
+    && UUID.test(environmentId) && typeof profileId === 'string' && /^[a-z][a-z0-9-]{1,63}$/.test(profileId)
+    && Number.isInteger(profileVersion) && profileVersion >= 1 && profileVersion <= 1000), 'Project-service workloads require a registered environment profile, broker-staged mounts and their repository-private pod');
   assert(workloadType !== 'task' || (projectMounts == null && podName === undefined), 'Task workloads cannot join project pods or receive project-service mounts');
   return [
     'create', '--pull=never', ...(workloadType === 'project-service' ? [] : ['--cgroup-parent', CGROUP_PARENT]), '--name', `vps-wl-${id}`,
     ...labels(id, workloadType, repositoryId, worktreeId),
-    ...(workloadType === 'project-service' ? ['--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId, '--label', 'io.cr8or.vps-mcp.pod=' + effectivePodName, '--restart=' + safeRestartPolicy(restartPolicy)] : []),
+    ...(workloadType === 'project-service' ? [
+      '--label', 'io.cr8or.vps-mcp.environment=' + environmentId,
+      '--label', 'io.cr8or.vps-mcp.profile=' + profileId,
+      '--label', 'io.cr8or.vps-mcp.profile-version=' + profileVersion,
+      '--label', 'io.cr8or.vps-mcp.image-digest=' + image.slice(image.lastIndexOf('@') + 1),
+      '--label', 'io.cr8or.vps-mcp.release=' + projectMounts.releaseId,
+      '--label', 'io.cr8or.vps-mcp.pod=' + effectivePodName,
+      '--restart=' + safeRestartPolicy(restartPolicy),
+    ] : []),
     ...(workloadType === 'project-service' ? buildProjectPodMemberArgs(effectivePodName) : ['--network=' + network]), '--http-proxy=false', '--read-only', '--cap-drop=ALL',
-    ...(workloadType === 'project-service' ? ['--user', '10001:10001'] : ['--userns=keep-id', '--user', String(process.getuid()) + ':' + String(process.getgid())]),
+    ...(workloadType === 'project-service' ? ['--userns=keep-id:uid=10001,gid=10001', '--user', '10001:10001'] : ['--userns=keep-id', '--user', String(process.getuid()) + ':' + String(process.getgid())]),
     '--security-opt=no-new-privileges', '--security-opt=seccomp=/usr/share/containers/seccomp.json', '--pids-limit', String(resources.pids),
     '--memory', `${resources.memoryMiB}m`, `--memory-swap=${resources.memoryMiB * (workloadType === 'project-service' ? 1 : 2)}m`, '--cpus', String(resources.cpuMilli / 1000),
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',
@@ -1292,6 +1366,7 @@ export function buildContainerCreateArgs({ id, workloadType, repositoryId, workt
       '--mount', 'type=bind,src=' + projectMounts.storage + ',dst=/app/storage,rw,nosuid,nodev',
       '--mount', 'type=bind,src=' + projectMounts.cache + ',dst=/app/bootstrap/cache,rw,nosuid,nodev',
       '--mount', 'type=bind,src=' + projectMounts.logs + ',dst=/app/storage/logs,rw,nosuid,nodev',
+      '--mount', 'type=bind,src=' + projectMounts.runtimeEnv + ',dst=/app/.env,ro,nosuid,nodev',
     ] : []),
     ...(executionMount ? ['--mount', `type=bind,src=${executionMount.path},dst=/run/vps-mcp-executions,rw`] : []),
     ...(proxyUrl ? [
@@ -1362,9 +1437,10 @@ async function createWorkload(request) {
     assert(request.workspacePath === undefined && request.workspaceAccess === undefined, 'Project-service mounts are provisioned by the project environment manager');
     assert(request.projectMounts && request.projectMounts.releaseId === request.releaseId, 'Project-service mounts must be staged by the restricted broker');
     const mountRoot = '/var/lib/vps-sandbox-mounts/projects/' + repositoryId + '/' + id;
-    for (const [key, suffix] of Object.entries({ release: 'release', storage: 'storage', cache: 'cache', logs: 'logs' })) {
+    for (const [key, suffix] of Object.entries({ release: 'release', storage: 'storage', cache: 'cache', logs: 'logs', runtimeConfig: 'runtime-config' })) {
       assert(request.projectMounts[key] === mountRoot + '/' + suffix, 'Project-service mount path is not canonical');
     }
+    assert(request.projectMounts.runtimeEnv === mountRoot + '/runtime-config/runtime.env', 'Project runtime environment mount path is not canonical');
   }
   const workspaceMount = request.workspacePath === undefined ? null : await resolveWorkspaceMount(request.workspacePath, request.workspaceAccess ?? 'read-only', repositoryId, worktreeId);
   const executionMount = workloadType === 'task' ? await ensureExecutionLogDirectory(id) : null;
@@ -1429,6 +1505,9 @@ async function createWorkload(request) {
   if (workloadType === 'task') await applyWorkspaceDiskQuota(repositoryId, worktreeId, resources.diskMiB);
   let record = retryRecord ?? {
     id, workloadType, repositoryId, ...(worktreeId ? { worktreeId } : {}), ...(podName ? { podName } : {}), ...(reservationResources ? { reservationResources } : {}),
+    ...(request.environmentId ? { environmentId: request.environmentId } : {}), ...(request.profileId ? { profileId: request.profileId } : {}),
+    ...(request.profileVersion !== undefined ? { profileVersion: request.profileVersion } : {}), ...(request.dependencies ? { dependencies: request.dependencies } : {}),
+    ...(workloadType === 'project-service' ? { desiredState: 'stopped' } : {}),
     image, imageDigest: image.slice(image.lastIndexOf('@') + 1), restartPolicy,
     runtimeId: null, workspaceMount, executionMount, ...(request.projectMounts ? { projectMounts: request.projectMounts } : {}), ...(request.releaseId ? { releaseId: request.releaseId } : {}), resources, network, networkPolicy, commandFingerprint: fingerprint,
     status: 'creating', createdAt: new Date().toISOString(), expiresAt: workloadType === 'task' ? new Date(Date.now() + resourceBudget().taskRetentionMs).toISOString() : null, updatedAt: new Date().toISOString(),
@@ -1438,7 +1517,7 @@ async function createWorkload(request) {
     const stagedWorkspacePath = workloadType === 'task' ? await stageWorkspaceMount(repositoryId, worktreeId, id) : null;
     if (stagedWorkspacePath) { record = { ...record, stagedWorkspacePath }; await writeRecord(record); }
     const args = buildContainerCreateArgs({
-      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount: workspaceMount ? { ...workspaceMount, stagedPath: stagedWorkspacePath } : null, projectMounts: request.projectMounts, executionMount, command: request.command, network, podName, proxyUrl: egressEnabled ? EGRESS_PROXY_CONTAINER : undefined, restartPolicy,
+      id, workloadType, repositoryId, worktreeId, image, resources, workspaceMount: workspaceMount ? { ...workspaceMount, stagedPath: stagedWorkspacePath } : null, projectMounts: request.projectMounts, executionMount, command: request.command, network, podName, proxyUrl: egressEnabled ? EGRESS_PROXY_CONTAINER : undefined, restartPolicy, environmentId: request.environmentId, profileId: request.profileId, profileVersion: request.profileVersion,
     });
     const result = await runPodman(args, 120_000);
     const runtimeId = result.stdout.trim().split(/\s+/)[0];
@@ -1457,7 +1536,7 @@ async function verifyProjectServiceMounts(projectMounts, repositoryId, workloadI
   const base = '/var/lib/vps-sandbox-mounts/projects/' + repositoryId + '/' + workloadId;
   const expectedSources = expectedProjectServiceMountSources(repositoryId, projectMounts.releaseId);
   for (const [key, suffix] of [
-    ['release', 'release'], ['storage', 'storage'], ['cache', 'cache'], ['logs', 'logs'],
+    ['release', 'release'], ['storage', 'storage'], ['cache', 'cache'], ['logs', 'logs'], ['runtimeConfig', 'runtime-config'],
   ]) {
     const target = base + '/' + suffix;
     assert(projectMounts[key] === target, 'Project-service mount path is not canonical');
@@ -1474,6 +1553,9 @@ async function verifyProjectServiceMounts(projectMounts, repositoryId, workloadI
     // bind mount in buildContainerCreateArgs; do not misread the service's older
     // propagated mount clone as the broker's authoritative mount.
   }
+  assert(projectMounts.runtimeEnv === base + '/runtime-config/runtime.env', 'Project runtime environment mount path is not canonical');
+  const runtimeEnvStat = await fs.lstat(projectMounts.runtimeEnv);
+  assert(runtimeEnvStat.isFile() && !runtimeEnvStat.isSymbolicLink() && await fs.realpath(projectMounts.runtimeEnv) === projectMounts.runtimeEnv, 'Project runtime environment must be a canonical regular file');
 }
 async function inspectProjectPod(repositoryId) {
   const name = projectPodName(repositoryId);
@@ -1515,6 +1597,27 @@ async function ensureProjectPod(repositoryId) {
   }
 }
 
+export function validateProjectServiceContainerMounts(value, projectMounts) {
+  assert(value && typeof value === 'object' && Array.isArray(value.Mounts), 'Project-service inspection is missing its mount inventory');
+  const expected = [
+    { source: projectMounts.release, destination: '/app', readWrite: false },
+    { source: projectMounts.storage, destination: '/app/storage', readWrite: true },
+    { source: projectMounts.cache, destination: '/app/bootstrap/cache', readWrite: true },
+    { source: projectMounts.logs, destination: '/app/storage/logs', readWrite: true },
+    { source: projectMounts.runtimeEnv, destination: '/app/.env', readWrite: false },
+  ];
+  const allowedBindDestinations = new Set([...expected.map((mount) => mount.destination), '/etc/hosts', '/etc/hostname', '/etc/resolv.conf']);
+  const bindMounts = value.Mounts.filter((mount) => mount.Type === 'bind');
+  assert(bindMounts.every((mount) => allowedBindDestinations.has(mount.Destination)), 'Project service contains an unexpected host bind mount');
+  const projectBindMounts = bindMounts.filter((mount) => String(mount.Source ?? '').includes('/var/lib/vps-sandbox-mounts/projects/'));
+  assert(projectBindMounts.length === expected.length, 'Project service has an unexpected number of project bind mounts');
+  for (const mount of expected) {
+    const actual = projectBindMounts.find((item) => item.Source === mount.source && item.Destination === mount.destination);
+    assert(actual && actual.RW === mount.readWrite, 'Project service bind mount does not match its canonical read/write contract');
+  }
+  return { verified: true, count: expected.length };
+}
+
 async function verifyProjectServicePod(record, runtimeId) {
   assert(record.podName === projectPodName(record.repositoryId), 'Project-service pod identity does not match its repository');
   const pod = await inspectProjectPod(record.repositoryId);
@@ -1522,6 +1625,23 @@ async function verifyProjectServicePod(record, runtimeId) {
   let member;
   try { member = JSON.parse(memberResult.stdout.trim()); } catch { throw new Error('Podman returned invalid project-service pod member inspection JSON'); }
   validateProjectPodMemberInspection(member, pod);
+  assert(member.Config?.Image === record.image, 'Project-service image reference does not match its approved immutable digest');
+  assert(String(member.Config?.User ?? '').split(':')[0] === '10001', 'Project-service must run as the approved non-root application user');
+  assert(member.Config?.Labels?.['io.cr8or.vps-mcp.workload'] === record.id
+    && member.Config?.Labels?.['io.cr8or.vps-mcp.repository'] === record.repositoryId
+    && member.Config?.Labels?.['io.cr8or.vps-mcp.type'] === 'project-service', 'Project-service labels do not match its durable workload identity');
+  if (record.profileId && record.profileVersion) {
+    assert(member.Config?.Labels?.['io.cr8or.vps-mcp.environment'] === record.environmentId
+      && member.Config?.Labels?.['io.cr8or.vps-mcp.profile'] === record.profileId
+      && member.Config?.Labels?.['io.cr8or.vps-mcp.profile-version'] === String(record.profileVersion)
+      && member.Config?.Labels?.['io.cr8or.vps-mcp.image-digest'] === record.image.slice(record.image.lastIndexOf('@') + 1),
+    'Project-service labels do not match its registered environment profile');
+  }
+  assert(member.HostConfig?.ReadonlyRootfs === true && member.HostConfig?.Privileged !== true && member.HostConfig?.RestartPolicy?.Name === record.restartPolicy
+    && member.HostConfig?.SecurityOpt?.includes('no-new-privileges') && member.HostConfig?.SecurityOpt?.some((value) => value.startsWith('seccomp='))
+    && member.HostConfig?.CapDrop?.includes('ALL'),
+  'Project-service runtime security contract does not match its durable record');
+  if (record.profileId && record.profileVersion) validateProjectServiceContainerMounts(member, record.projectMounts);
   return pod;
 }
 
@@ -1535,9 +1655,583 @@ async function removeProjectPodIfEmpty(repositoryId) {
   return { removed: true, output: result.stdout.trim() };
 }
 
+
+async function prepareProjectDependencySecrets(request) {
+  const result = await quotaBrokerRequest({
+    operation: 'prepare-dependencies', repositoryId: request.repositoryId,
+    environmentId: request.environmentId, mysqlEnabled: request.mysqlEnabled, redisEnabled: request.redisEnabled,
+  }, 30_000);
+  assert(result.ok === true && result.repositoryId === request.repositoryId
+    && result.environmentId === request.environmentId && result.mysqlEnabled === request.mysqlEnabled && result.redisEnabled === request.redisEnabled
+    && result.createdWithoutReturningValues === true && !Object.hasOwn(result, 'secrets'),
+  'SANDBOX_PROJECT_SECRET_FAILED: quota broker did not confirm protected project secret preparation');
+  return result;
+}
+
+async function stageProjectDependencyMounts(repositoryId, workloadId, dependency) {
+  const result = await quotaBrokerRequest({ operation: 'stage-dependency', repositoryId, workloadId, dependency });
+  const expected = dependencyStagingPaths(repositoryId, workloadId);
+  assert(result.ok === true && result.repositoryId === repositoryId && result.workloadId === workloadId
+    && result.dependency === dependency && result.stagedPaths?.data === expected.data
+    && result.stagedPaths?.secrets === expected.secrets,
+  'SANDBOX_PROJECT_DEPENDENCY_MOUNT_FAILED: quota broker returned invalid dependency mount paths');
+  return expected;
+}
+
+async function unstageProjectDependencyMounts(repositoryId, workloadId, dependency) {
+  const result = await quotaBrokerRequest({ operation: 'unstage-dependency', repositoryId, workloadId, dependency });
+  assert(result.ok === true && result.unstaged === true && result.repositoryId === repositoryId
+    && result.workloadId === workloadId && result.dependency === dependency,
+  'SANDBOX_PROJECT_DEPENDENCY_MOUNT_FAILED: quota broker did not confirm dependency unmount');
+  return result;
+}
+
+async function stageProjectBackupMounts(repositoryId, environmentId, backupId) {
+  const result = await quotaBrokerRequest({ operation: 'stage-backup', repositoryId, environmentId, backupId });
+  const base = '/var/lib/vps-sandbox-mounts/projects/' + repositoryId + '/' + backupId;
+  const expected = { backups: base + '/backups', secrets: base + '/secrets' };
+  assert(result.ok === true && result.repositoryId === repositoryId && result.environmentId === environmentId
+    && result.backupId === backupId && JSON.stringify(result.stagedPaths) === JSON.stringify(expected),
+  'SANDBOX_PROJECT_BACKUP_MOUNT_FAILED: quota broker returned invalid backup mount paths');
+  return expected;
+}
+
+async function unstageProjectBackupMounts(repositoryId, environmentId, backupId) {
+  const result = await quotaBrokerRequest({ operation: 'unstage-backup', repositoryId, environmentId, backupId });
+  assert(result.ok === true && result.unstaged === true && result.repositoryId === repositoryId
+    && result.environmentId === environmentId && result.backupId === backupId,
+  'SANDBOX_PROJECT_BACKUP_MOUNT_FAILED: quota broker did not confirm backup unmount');
+  return result;
+}
+
+async function verifyProjectDependency(record, runtimeId = record.runtimeId) {
+  assert(record.workloadType === 'project-dependency' && ['mysql', 'redis'].includes(record.dependency),
+    'Project dependency operation cannot target another workload type');
+  assert(runtimeId, 'Project dependency runtime container is missing');
+  assert(record.podName === projectPodName(record.repositoryId), 'Project dependency pod identity is invalid');
+  const pod = await inspectProjectPod(record.repositoryId);
+  const raw = await runPodman(['inspect', '--format', '{{json .}}', runtimeId]);
+  let inspected;
+  try { inspected = JSON.parse(raw.stdout.trim()); } catch { throw new Error('Podman returned invalid project dependency inspection JSON'); }
+  const identity = validateProjectDependencyInspection(inspected, {
+    runtimeId, workloadId: record.id, repositoryId: record.repositoryId,
+    dependency: record.dependency, podId: pod.id, infraContainerId: pod.infraContainerId,
+  });
+  validateProjectPodMemberInspection(inspected, pod);
+  assert(inspected.ImageName === record.image || inspected.Config?.Image === record.image,
+    'Project dependency image identity does not match its immutable profile digest');
+  return { pod, runtime: inspected, identity };
+}
+
+async function runAuthenticatedRedisCommand(record, runtimeId, command, expectedReply) {
+  assert(record.dependency === 'redis' && typeof record.dependencyMounts?.secrets === 'string', 'Redis secret mount identity is missing');
+  const password = (await fs.readFile(path.join(record.dependencyMounts.secrets, 'redis-app-password'), 'utf8')).trim();
+  assert(/^[A-Za-z0-9_-]{32,128}$/.test(password), 'Redis application credential file is invalid');
+  // The DHI Redis image has no shell. Send AUTH and the command over stdin so
+  // credentials never appear in argv, environment variables or runtime logs.
+  const result = await runPodmanWithInput(['exec', '-i', runtimeId, 'redis-cli'], `AUTH app ${password}\n${command}\n`, 10_000, 8192);
+  const output = result.stdout.trim().split('\n');
+  assert(output.length === 2 && output[0] === 'OK' && output[1] === expectedReply,
+    `Redis authenticated ${command} did not return the expected response`);
+  return output[1];
+}
+
+async function projectDependencyHealth(record, runtimeId) {
+  const command = dependencyHealthCommand(record.dependency);
+  try {
+    if (record.dependency === 'redis') await runAuthenticatedRedisCommand(record, runtimeId, 'PING', 'PONG');
+    else await runPodman(['exec', runtimeId, ...command], 5000, 8192);
+    return { status: 'healthy', checks: [record.dependency === 'mysql' ? 'mysql-authenticated-ping' : 'redis-authenticated-ping'] };
+  } catch (error) {
+    return { status: 'unhealthy', checks: [error instanceof Error ? error.message.slice(0, 160) : 'health probe failed'] };
+  }
+}
+
+async function createProjectDependencyWorkload(request) {
+  const id = safeId(request.workloadId);
+  const repositoryId = safeRepositoryId(request.repositoryId);
+  const environmentId = safeId(request.environmentId);
+  const dependency = request.dependency;
+  const image = safeImage(request.image);
+  const resources = safeResources(request.resources);
+  const reservationResources = safeResources(request.reservationResources);
+  const restartPolicy = safeRestartPolicy(request.restartPolicy);
+  assert(restartPolicy === 'no', 'Project dependencies must use restart=no so ordered recovery controls startup');
+  assert(projectDependencyWorkloadId(environmentId, dependency) === id, 'Project dependency workload identity does not match its environment');
+  const parent = await readRecord(environmentId);
+  validateProjectDependencyDeclaration(parent, { repositoryId, environmentId, dependency, image, resources, reservationResources });
+  assert(request.podName === projectPodName(repositoryId), 'Project dependency must join its repository-private pod');
+  const reservation = (await readReservations()).find((item) => item.repositoryId === repositoryId && item.status !== 'released');
+  assert(resourceReservationMatches(reservation, reservationResources), 'SANDBOX_PROJECT_RESERVATION_MISMATCH: dependency aggregate reservation is missing or changed');
+  for (const key of ['cpuMilli', 'memoryMiB', 'pids', 'diskMiB']) assert(resources[key] <= reservationResources[key], `SANDBOX_PROJECT_RESERVATION_EXCEEDED: dependency ${key} exceeds its aggregate reservation`);
+  const currentRecords = await readWorkloadRecords();
+  await assertManagedContainerAccounting(currentRecords);
+  await assertProjectContainersAccounted(repositoryId, currentRecords);
+  const reservations = await readReservations();
+  const disk = await diskStatus();
+  const admission = evaluateResourceRequest({
+    records: currentRecords, reservations,
+    requested: { workloadType: 'project-dependency', repositoryId, resources },
+    budget: resourceBudget(), freeDiskBytes: disk.freeBytes,
+  });
+  assert(admission.allowed, admission.reasons.join('; '));
+  const existing = await readRecord(id).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (existing) {
+    assert(existing.workloadType === 'project-dependency' && existing.repositoryId === repositoryId
+      && existing.environmentId === environmentId && existing.dependency === dependency
+      && existing.image === image && existing.restartPolicy === restartPolicy
+      && JSON.stringify(existing.resources) === JSON.stringify(resources)
+      && JSON.stringify(existing.reservationResources) === JSON.stringify(reservationResources),
+    'Project dependency workload ID is already bound to different immutable attributes');
+    assert(existing.status !== 'removed', 'Removed project dependency workload IDs are terminal; register a new environment before provisioning again');
+    const runtimeId = await resolveRuntimeId(existing);
+    if (runtimeId) {
+      await verifyProjectDependency(existing, runtimeId);
+      const runtimeState = await inspectContainerState(runtimeId);
+      const status = runtimeState === 'running' ? 'running' : ['exited', 'stopped'].includes(runtimeState) ? 'stopped' : 'created';
+      const reconciled = { ...existing, runtimeId, status, updatedAt: new Date().toISOString() };
+      await writeRecord(reconciled);
+      return { workload: reconciled, reused: true };
+    }
+    assert(['error', 'creating', 'created', 'stopped'].includes(existing.status), 'Unknown dependency runtime identity requires operator review');
+    const named = await runPodman(['inspect', '--format', '{{.Id}}', 'vps-wl-' + id]).then((result) => result.stdout.trim()).catch((error) => {
+      if (isContainerNotFound(error)) return null;
+      throw error;
+    });
+    assert(!named, 'Dependency container exists without a verifiable runtime identity; operator review is required');
+  }
+  const projectPod = await ensureProjectPod(repositoryId);
+  const mounts = await stageProjectDependencyMounts(repositoryId, id, dependency);
+  const record = {
+    id, workloadType: 'project-dependency', repositoryId, environmentId, dependency,
+    podName: projectPod.name, image, imageDigest: image.slice(image.lastIndexOf('@') + 1),
+    restartPolicy, runtimeId: null, workspaceMount: null, dependencyMounts: mounts,
+    resources, reservationResources, network: 'none', networkPolicy: 'project-private-no-egress',
+    commandFingerprint: commandFingerprint(dependency === 'mysql' ? ['mysqld'] : ['redis-server', '/run/secrets/redis.conf']),
+    desiredState: 'stopped', status: 'creating', createdAt: new Date().toISOString(), expiresAt: null, updatedAt: new Date().toISOString(),
+  };
+  await writeRecord(record);
+  try {
+    const args = buildProjectDependencyCreateArgs({
+      workloadId: id, repositoryId, environmentId, dependency, image, resources, reservationResources,
+      mounts, podName: projectPod.name, restartPolicy,
+    });
+    const result = await runPodman(args, 120_000);
+    const runtimeId = result.stdout.trim().split(/\s+/)[0];
+    assert(/^[a-f0-9]{12,64}$/i.test(runtimeId ?? ''), 'Podman returned an invalid dependency container ID');
+    const created = { ...record, runtimeId, status: 'created', updatedAt: new Date().toISOString() };
+    await writeRecord(created);
+    await verifyProjectDependency(created, runtimeId);
+    await appendAudit('project-dependency.created', { workloadId: id, repositoryId, environmentId, dependency, imageDigest: created.imageDigest, resources });
+    return { workload: created };
+  } catch (error) {
+    const latest = await readRecord(id).catch(() => record);
+    await writeRecord({ ...latest, status: 'error', error: error instanceof Error ? error.message.slice(0, 500) : 'Dependency creation failed', updatedAt: new Date().toISOString() });
+    throw error;
+  }
+}
+
+async function inspectProjectDependencyWorkload(workloadId) {
+  const record = await readRecord(workloadId);
+  assert(record.workloadType === 'project-dependency', 'Project dependency operation cannot target another workload type');
+  const runtimeId = record.runtimeId ?? await resolveRuntimeId(record);
+  if (!runtimeId) return { workload: record, runtime: null, health: { status: 'unknown', checks: ['runtime-container-missing'] } };
+  const verified = await verifyProjectDependency(record, runtimeId);
+  const state = await inspectContainerState(runtimeId);
+  const health = state === 'running' ? await projectDependencyHealth(record, runtimeId) : { status: 'unknown', checks: ['dependency-not-running'] };
+  const updated = { ...record, runtimeId, status: state === 'running' ? 'running' : ['exited', 'stopped'].includes(state) ? 'stopped' : record.status, updatedAt: new Date().toISOString() };
+  await writeRecord(updated);
+  return { workload: updated, runtime: { id: runtimeId, state, podId: verified.pod.id }, health };
+}
+
+async function waitForProjectDependency(record, runtimeId) {
+  let last = { status: 'unhealthy', checks: ['not-yet-checked'] };
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    last = await projectDependencyHealth(record, runtimeId);
+    if (last.status === 'healthy') return { ...last, attempts: attempt + 1 };
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(`Project ${record.dependency} dependency did not become healthy: ${last.checks.join('; ')}`);
+}
+
+async function startProjectDependencyWorkload(workloadId) {
+  const record = await readRecord(workloadId);
+  assert(record.workloadType === 'project-dependency' && record.status !== 'removed', 'Project dependency start cannot target another workload type');
+  const reservation = (await readReservations()).find((item) => item.repositoryId === record.repositoryId && item.status !== 'released');
+  assert(resourceReservationMatches(reservation, record.reservationResources), 'Project dependency aggregate reservation is missing or changed');
+  const runtimeId = record.runtimeId ?? await resolveRuntimeId(record);
+  assert(runtimeId, 'Project dependency runtime container is missing; operator review is required');
+  await verifyProjectDependency(record, runtimeId);
+  const pod = await inspectProjectPod(record.repositoryId);
+  if (await inspectContainerState(pod.infraContainerId) !== 'running') await runPodman(['start', pod.infraContainerId], 60_000);
+  if (await inspectContainerState(runtimeId) !== 'running') await runPodman(['start', runtimeId], 60_000);
+  const state = await inspectContainerState(runtimeId);
+  assert(state === 'running', 'Project dependency did not start with its private project pod');
+  try {
+    await verifyProjectServiceCgroupV2Limits(runtimeId, record.resources);
+  } catch (error) {
+    await runPodman(['stop', '--time', '1', runtimeId], 30_000).catch(() => {});
+    await writeRecord({ ...record, runtimeId, status: 'error', desiredState: 'stopped', error: ('Dependency cgroup limits were not enforced: ' + (error instanceof Error ? error.message : 'verification failed')).slice(0, 500), updatedAt: new Date().toISOString() });
+    throw new Error('Project dependency start rejected because effective cgroup v2 limits were not enforced');
+  }
+  const started = { ...record, runtimeId, status: 'running', desiredState: 'running', updatedAt: new Date().toISOString() };
+  await writeRecord(started);
+  try {
+    const health = await waitForProjectDependency(started, runtimeId);
+    if (record.dependency === 'mysql') {
+      const sql = await fs.readFile(path.join(record.dependencyMounts.secrets, 'initialize.sql'), 'utf8');
+      assert(sql.length > 0 && sql.length <= 16_384, 'MySQL initialization script is missing or exceeds its safe size');
+      await runPodmanWithInput(['exec', '-i', runtimeId, 'mysql', '--defaults-extra-file=/run/secrets/mysql-root.cnf'], sql, 30_000, 32_768);
+      await appendAudit('project-dependency.mysql.initialized', { workloadId, repositoryId: record.repositoryId, environmentId: record.environmentId });
+    }
+    await appendAudit('project-dependency.started', { workloadId, repositoryId: record.repositoryId, dependency: record.dependency, checks: health.checks });
+    return { workload: started, health, output: 'dependency started in verified project pod' };
+  } catch (error) {
+    await runPodman(['stop', '--time', '1', runtimeId], 30_000).catch(() => {});
+    await writeRecord({ ...started, status: 'error', desiredState: 'stopped', error: 'Dependency health or initialization failed; sensitive output was withheld', updatedAt: new Date().toISOString() });
+    await appendAudit('project-dependency.start.failed', { workloadId, repositoryId: record.repositoryId, dependency: record.dependency });
+    throw new Error(`Project ${record.dependency} dependency failed its health or initialization checks`);
+  }
+}
+
+async function stopProjectDependencyWorkload(workloadId) {
+  const record = await readRecord(workloadId);
+  assert(record.workloadType === 'project-dependency', 'Project dependency stop cannot target another workload type');
+  const runtimeId = record.runtimeId ?? await resolveRuntimeId(record);
+  if (runtimeId && await inspectContainerState(runtimeId) === 'running') await runPodman(['stop', '--time', '10', runtimeId], 30_000);
+  const stopped = { ...record, runtimeId: runtimeId ?? null, status: 'stopped', desiredState: 'stopped', updatedAt: new Date().toISOString() };
+  await writeRecord(stopped);
+  await appendAudit('project-dependency.stopped', { workloadId, repositoryId: record.repositoryId, dependency: record.dependency });
+  return { workload: stopped, stopped: true };
+}
+
+async function removeProjectDependencyWorkload(request) {
+  const record = await readRecord(request.workloadId).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!record) {
+    const containers = await listManagedContainers();
+    assert(!containers.some((item) => item.workloadId === request.workloadId || item.name === 'vps-wl-' + request.workloadId), 'Dependency record is missing but its container still exists; operator review is required');
+    await unstageProjectDependencyMounts(request.repositoryId, request.workloadId, request.dependency);
+    return { workload: null, removed: true, notFound: true };
+  }
+  assert(record.workloadType === 'project-dependency' && record.repositoryId === request.repositoryId && record.dependency === request.dependency,
+    'Project dependency removal identity does not match its durable record');
+  const runtimeId = record.runtimeId ?? await resolveRuntimeId(record);
+  if (runtimeId) {
+    const state = await inspectContainerState(runtimeId);
+    if (state === 'running') await runPodman(['stop', '--time', '10', runtimeId], 30_000);
+    await runPodman(['rm', '--force', runtimeId], 30_000).catch((error) => { if (!isContainerNotFound(error)) throw error; });
+  }
+  const podRemoval = await removeProjectPodIfEmpty(record.repositoryId);
+  await unstageProjectDependencyMounts(record.repositoryId, record.id, record.dependency);
+  const removed = { ...record, runtimeId: null, status: 'removed', desiredState: 'stopped', updatedAt: new Date().toISOString() };
+  await writeRecord(removed);
+  await appendAudit('project-dependency.removed', { workloadId: record.id, repositoryId: record.repositoryId, dependency: record.dependency, podRemoved: podRemoval.removed, persistentDataPreserved: record.dependency === 'mysql' });
+  return { workload: removed, removed: true, podRemoved: podRemoval.removed };
+}
+
+export function projectDependencyBootRecoveryAction(record, runtimeState, parentDesiredState) {
+  if (record.workloadType !== 'project-dependency' || record.status === 'removed') return 'skip';
+  if (parentDesiredState === 'stopped') return runtimeState === 'running' ? 'stop' : runtimeState === 'missing' ? 'operator-review' : 'skip';
+  if (parentDesiredState !== 'running' || record.desiredState !== 'running') return 'operator-review';
+  return runtimeState === 'missing' ? 'operator-review' : runtimeState === 'running' ? 'verify' : 'start';
+}
+
+async function recoverProjectDependencyWorkloads() {
+  const records = await readWorkloadRecords();
+  const dependencies = records.filter((item) => item.workloadType === 'project-dependency' && item.status !== 'removed');
+  const results = [];
+  for (const record of dependencies) {
+    try {
+      const parent = records.find((item) => item.workloadType === 'project-service' && item.repositoryId === record.repositoryId && item.environmentId === record.environmentId);
+      const runtimeId = record.runtimeId ?? await resolveRuntimeId(record);
+      const state = runtimeId ? await inspectContainerState(runtimeId) : 'missing';
+      const action = !parent || parent.status === 'removed' ? 'operator-review' : projectDependencyBootRecoveryAction(record, state, parent.desiredState);
+      if (action === 'operator-review') {
+        await writeRecord({ ...record, status: 'unknown', updatedAt: new Date().toISOString(), error: 'Dependency container is missing during recovery' });
+        results.push({ workloadId: record.id, status: 'operator-review' });
+        continue;
+      }
+      if (action === 'start') {
+        await startProjectDependencyWorkload(record.id);
+        results.push({ workloadId: record.id, status: 'restarted' });
+      } else if (action === 'stop') {
+        await stopProjectDependencyWorkload(record.id);
+        results.push({ workloadId: record.id, status: 'stopped' });
+      } else if (action === 'verify') {
+        const mounts = await stageProjectDependencyMounts(record.repositoryId, record.id, record.environmentId, record.dependency);
+        const reconciled = { ...record, runtimeId, dependencyMounts: mounts };
+        await writeRecord(reconciled);
+        await verifyProjectDependency(reconciled, runtimeId);
+        await verifyProjectServiceCgroupV2Limits(runtimeId, record.resources);
+        const health = await waitForProjectDependency(reconciled, runtimeId);
+        await writeRecord({ ...reconciled, status: 'running', updatedAt: new Date().toISOString() });
+        results.push({ workloadId: record.id, status: 'running', checks: health.checks });
+      } else {
+        await writeRecord({ ...record, runtimeId: runtimeId ?? null, status: 'stopped', updatedAt: new Date().toISOString() });
+        results.push({ workloadId: record.id, status: 'stopped' });
+      }
+    } catch (error) {
+      await writeRecord({ ...record, status: 'unknown', error: error instanceof Error ? error.message.slice(0, 500) : 'Dependency recovery failed', updatedAt: new Date().toISOString() });
+      results.push({ workloadId: record.id, status: 'operator-review' });
+    }
+  }
+  await appendAudit('project-dependency.recovered', { count: results.length, operatorReview: results.filter((item) => item.status === 'operator-review').length });
+  return { count: results.length, results, operatorReview: results.filter((item) => item.status === 'operator-review').length };
+}
+
+
+async function runBinaryCommand(command, args, timeoutMs = 900_000, maxBuffer = MAX_BACKUP_ARTIFACT_BYTES + 1) {
+  return await new Promise((resolve, reject) => {
+    execFile(command, args, { encoding: 'buffer', timeout: timeoutMs, maxBuffer }, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout ?? Buffer.alloc(0);
+        error.stderr = stderr ?? Buffer.alloc(0);
+        reject(error);
+      } else resolve({ stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ''), stderr: Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr ?? '') });
+    });
+  });
+}
+
+async function writeAtomicBackupFile(file, data) {
+  const temporary = file + '.' + process.pid + '.' + randomUUID() + '.tmp';
+  const handle = await fs.open(temporary, 'wx', 0o600);
+  try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
+  await fs.rename(temporary, file);
+}
+
+async function assertSafeBackupTree(root) {
+  const canonical = await fs.realpath(root);
+  assert(canonical === root, 'Project storage backup source is not canonical');
+  let count = 0;
+  const visit = async (directory, depth) => {
+    assert(depth <= 64, 'Project storage tree exceeds the safe directory depth');
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      count += 1;
+      assert(count <= 100_000, 'Project storage tree exceeds the safe file count');
+      assert(!entry.name.startsWith('.restore-storage-'), 'Project storage contains an interrupted restore staging directory; operator review is required');
+      const full = path.join(directory, entry.name);
+      const stat = await fs.lstat(full);
+      assert(!stat.isSymbolicLink() && (stat.isDirectory() || stat.isFile()), 'Project storage backup rejects symbolic links and special files');
+      if (stat.isDirectory()) await visit(full, depth + 1);
+    }
+  };
+  await visit(root, 0);
+}
+
+async function readProjectBackupArtifacts(request, backupId) {
+  const mounts = await stageProjectBackupMounts(request.repositoryId, request.environmentId, backupId);
+  try {
+    const keyText = await fs.readFile(path.join(mounts.secrets, 'backup.key'), 'utf8');
+    const key = decodeProjectBackupKey(keyText.trim());
+    const backupDirectory = path.join(mounts.backups, backupId);
+    const directoryStat = await fs.lstat(backupDirectory);
+    assert(directoryStat.isDirectory() && !directoryStat.isSymbolicLink() && await fs.realpath(backupDirectory) === backupDirectory,
+      'Project backup directory is not canonical');
+    const manifestPath = path.join(backupDirectory, 'manifest.json');
+    const manifestStat = await fs.lstat(manifestPath);
+    assert(manifestStat.isFile() && !manifestStat.isSymbolicLink() && await fs.realpath(manifestPath) === manifestPath && manifestStat.size <= 64 * 1024, 'Project backup manifest is not a bounded canonical file');
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    const expected = {
+      backupId, repositoryId: request.repositoryId, environmentId: request.environmentId,
+      profileId: request.profileId, profileVersion: request.profileVersion,
+      enabledDependencies: request.enabledDependencies,
+    };
+    validateProjectBackupManifest(manifest, expected, key);
+    const readArtifact = async (filename) => {
+      const file = path.join(backupDirectory, filename);
+      const stat = await fs.lstat(file);
+      assert(stat.isFile() && !stat.isSymbolicLink() && await fs.realpath(file) === file && stat.size <= MAX_BACKUP_ARTIFACT_BYTES, 'Project backup artifact is not a bounded canonical file');
+      return await fs.readFile(file);
+    };
+    const databaseCiphertext = await readArtifact(manifest.artifacts.database.file);
+    const storageCiphertext = await readArtifact(manifest.artifacts.storage.file);
+    const identity = { backupId, repositoryId: request.repositoryId, environmentId: request.environmentId };
+    const database = decryptProjectBackupArtifact(databaseCiphertext, manifest.artifacts.database, key, identity, 'database');
+    const storage = decryptProjectBackupArtifact(storageCiphertext, manifest.artifacts.storage, key, identity, 'storage');
+    return { manifest, database, storage, mounts, backupDirectory };
+  } catch (error) {
+    await unstageProjectBackupMounts(request.repositoryId, request.environmentId, backupId).catch(() => {});
+    throw error;
+  }
+}
+
+async function createProjectEnvironmentBackup(request) {
+  const app = await readRecord(request.applicationWorkloadId);
+  assert(app.workloadType === 'project-service' && app.repositoryId === request.repositoryId && app.environmentId === request.environmentId && app.profileId === request.profileId && app.profileVersion === request.profileVersion && app.releaseId,
+    'Project backup application workload identity does not match its environment');
+  const expectedDependencies = request.enabledDependencies.map((name) => ({ name, workloadId: projectDependencyWorkloadId(request.environmentId, name) }));
+  assert(JSON.stringify(app.dependencies ?? []) === JSON.stringify(expectedDependencies), 'Project backup application dependency set does not match its environment');
+  assert(app.projectMounts?.storage, 'Project backup requires the canonical application storage mount');
+  await verifyProjectServiceMounts(app.projectMounts, request.repositoryId, app.id, app.releaseId);
+  const mysqlId = projectDependencyWorkloadId(request.environmentId, 'mysql');
+  const mysql = await readRecord(mysqlId);
+  assert(mysql.workloadType === 'project-dependency' && mysql.dependency === 'mysql' && mysql.repositoryId === request.repositoryId
+    && mysql.environmentId === request.environmentId, 'Project backup requires the registered MySQL dependency');
+  const appRuntimeId = app.runtimeId ?? await resolveRuntimeId(app);
+  const mysqlRuntimeId = mysql.runtimeId ?? await resolveRuntimeId(mysql);
+  assert(appRuntimeId && mysqlRuntimeId, 'Project backup workload runtime identity is missing');
+  await verifyProjectDependency(mysql, mysqlRuntimeId);
+  const appWasRunning = await inspectContainerState(appRuntimeId) === 'running';
+  const mysqlWasRunning = await inspectContainerState(mysqlRuntimeId) === 'running';
+  if (appWasRunning && !mysqlWasRunning) throw new Error('Cannot back up a running application while its MySQL dependency is stopped');
+  if (request.enabledDependencies.includes('redis')) {
+    const redisId = projectDependencyWorkloadId(request.environmentId, 'redis');
+    const redis = await readRecord(redisId);
+    assert(redis.workloadType === 'project-dependency' && redis.repositoryId === request.repositoryId && redis.environmentId === request.environmentId && redis.dependency === 'redis', 'Project backup Redis dependency identity does not match its environment');
+    const redisRuntimeId = redis.runtimeId ?? await resolveRuntimeId(redis);
+    if (appWasRunning && (!redisRuntimeId || await inspectContainerState(redisRuntimeId) !== 'running')) throw new Error('Cannot back up a running application while its enabled Redis dependency is stopped');
+  }
+  if (appWasRunning) {
+    await runPodman(['stop', '--time', '10', appRuntimeId], 30_000);
+    await writeRecord({ ...app, runtimeId: appRuntimeId, status: 'stopped', updatedAt: new Date().toISOString() });
+  }
+  if (!mysqlWasRunning) await startProjectDependencyWorkload(mysqlId);
+  const mounts = await stageProjectBackupMounts(request.repositoryId, request.environmentId, request.backupId);
+  let backupDirectory;
+  try {
+    const key = decodeProjectBackupKey((await fs.readFile(path.join(mounts.secrets, 'backup.key'), 'utf8')).trim());
+    await assertSafeBackupTree(app.projectMounts.storage);
+    const dump = await runPodman(['exec', mysqlRuntimeId, 'mysqldump', '--defaults-extra-file=/run/secrets/mysql-root.cnf', '--single-transaction', '--routines', '--triggers', '--events', '--add-drop-database', '--databases', 'app'], 900_000, MAX_BACKUP_ARTIFACT_BYTES + 1);
+    const databasePlaintext = Buffer.from(dump.stdout, 'utf8');
+    assert(databasePlaintext.length > 0 && databasePlaintext.length <= MAX_BACKUP_ARTIFACT_BYTES, 'MySQL logical backup is empty or exceeds the 256 MiB safety limit');
+    const storageResult = await runBinaryCommand('/usr/bin/tar', ['--numeric-owner', '--create', '--gzip', '--file', '-', '--directory', app.projectMounts.storage, '.']);
+    assert(storageResult.stdout.length > 0 && storageResult.stdout.length <= MAX_BACKUP_ARTIFACT_BYTES, 'Project storage backup is empty or exceeds the 256 MiB safety limit');
+    const identity = { backupId: request.backupId, repositoryId: request.repositoryId, environmentId: request.environmentId };
+    const database = encryptProjectBackupArtifact(databasePlaintext, key, identity, 'database');
+    const storage = encryptProjectBackupArtifact(storageResult.stdout, key, identity, 'storage');
+    backupDirectory = path.join(mounts.backups, request.backupId);
+    await fs.mkdir(backupDirectory, { mode: 0o700 });
+    const directoryStat = await fs.lstat(backupDirectory);
+    assert(directoryStat.isDirectory() && !directoryStat.isSymbolicLink() && await fs.realpath(backupDirectory) === backupDirectory,
+      'New project backup directory is not canonical');
+    await writeAtomicBackupFile(path.join(backupDirectory, database.metadata.file), database.ciphertext);
+    await writeAtomicBackupFile(path.join(backupDirectory, storage.metadata.file), storage.ciphertext);
+    const manifest = createProjectBackupManifest({
+      ...request, enabledDependencies: request.enabledDependencies,
+      artifacts: { database: database.metadata, storage: storage.metadata },
+    }, key);
+    await writeAtomicBackupFile(path.join(backupDirectory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+    const result = {
+      backupId: request.backupId, repositoryId: request.repositoryId, environmentId: request.environmentId,
+      profileId: request.profileId, profileVersion: request.profileVersion,
+      createdAt: manifest.createdAt, encrypted: true,
+      artifacts: { databaseBytes: database.metadata.encryptedBytes, storageBytes: storage.metadata.encryptedBytes },
+    };
+    await appendAudit('project-environment.backup.created', result).catch(() => {});
+    return result;
+  } finally {
+    await unstageProjectBackupMounts(request.repositoryId, request.environmentId, request.backupId).catch(() => {});
+    if (!mysqlWasRunning) await stopProjectDependencyWorkload(mysqlId).catch(() => {});
+    if (appWasRunning) await startProjectServiceWorkload(app.id);
+  }
+}
+
+
+async function restoreProjectEnvironmentBackup(request) {
+  const app = await readRecord(request.applicationWorkloadId);
+  assert(app.workloadType === 'project-service' && app.repositoryId === request.repositoryId && app.environmentId === request.environmentId && app.profileId === request.profileId && app.profileVersion === request.profileVersion && app.releaseId,
+    'Project restore application workload identity does not match its environment');
+  const expectedDependencies = request.enabledDependencies.map((name) => ({ name, workloadId: projectDependencyWorkloadId(request.environmentId, name) }));
+  assert(JSON.stringify(app.dependencies ?? []) === JSON.stringify(expectedDependencies), 'Project restore application dependency set does not match its environment');
+  assert(app.projectMounts?.storage, 'Project restore requires the canonical application storage mount');
+  await verifyProjectServiceMounts(app.projectMounts, request.repositoryId, app.id, app.releaseId);
+  const mysqlId = projectDependencyWorkloadId(request.environmentId, 'mysql');
+  const mysql = await readRecord(mysqlId);
+  assert(mysql.workloadType === 'project-dependency' && mysql.dependency === 'mysql' && mysql.repositoryId === request.repositoryId
+    && mysql.environmentId === request.environmentId, 'Project restore requires the registered MySQL dependency');
+  const redisId = request.enabledDependencies.includes('redis') ? projectDependencyWorkloadId(request.environmentId, 'redis') : null;
+  const redis = redisId ? await readRecord(redisId) : null;
+  if (redis) assert(redis.workloadType === 'project-dependency' && redis.dependency === 'redis' && redis.repositoryId === request.repositoryId
+    && redis.environmentId === request.environmentId, 'Project restore Redis dependency identity does not match its environment');
+  const source = await readProjectBackupArtifacts(request, request.backupId);
+  await unstageProjectBackupMounts(request.repositoryId, request.environmentId, request.backupId);
+  const safetyBackupId = randomUUID();
+  await createProjectEnvironmentBackup({ ...request, backupId: safetyBackupId });
+  const safety = await readProjectBackupArtifacts(request, safetyBackupId);
+  await unstageProjectBackupMounts(request.repositoryId, request.environmentId, safetyBackupId);
+  const appRuntimeId = app.runtimeId ?? await resolveRuntimeId(app);
+  const mysqlRuntimeId = mysql.runtimeId ?? await resolveRuntimeId(mysql);
+  assert(appRuntimeId && mysqlRuntimeId, 'Project restore workload runtime identity is missing');
+  const appWasRunning = await inspectContainerState(appRuntimeId) === 'running';
+  const mysqlWasRunning = await inspectContainerState(mysqlRuntimeId) === 'running';
+  const redisWasRunning = redis ? await inspectContainerState(redis.runtimeId ?? await resolveRuntimeId(redis)) === 'running' : false;
+  if (appWasRunning && !mysqlWasRunning) throw new Error('Cannot restore while a running application has a stopped MySQL dependency');
+  if (appWasRunning && redis && !redisWasRunning) throw new Error('Cannot restore while a running application has a stopped Redis dependency');
+  let storageSwap = null;
+  let databaseChanged = false;
+  const restoreMounts = await stageProjectBackupMounts(request.repositoryId, request.environmentId, request.backupId);
+  const restoreToken = randomUUID();
+  const restoreDirectory = path.join(app.projectMounts.storage, '.restore-storage-' + restoreToken);
+  const archivePath = path.join(restoreMounts.backups, '.restore-storage-' + restoreToken + '.tar.gz');
+  try {
+    if (appWasRunning) {
+      await runPodman(['stop', '--time', '10', appRuntimeId], 30_000);
+      await writeRecord({ ...app, runtimeId: appRuntimeId, status: 'stopped', updatedAt: new Date().toISOString() });
+    }
+    await assertSafeBackupTree(app.projectMounts.storage);
+    await fs.writeFile(archivePath, source.storage, { mode: 0o600, flag: 'wx' });
+    await fs.mkdir(restoreDirectory, { mode: 0o700 });
+    await runBinaryCommand('/usr/bin/tar', ['--extract', '--gzip', '--file', archivePath, '--directory', restoreDirectory, '--no-same-owner', '--no-same-permissions']);
+    await assertSafeBackupTree(restoreDirectory);
+    if (!mysqlWasRunning) await startProjectDependencyWorkload(mysqlId);
+    if (redis) {
+      await startProjectDependencyWorkload(redisId);
+      const redisRecord = await readRecord(redisId);
+      const redisRuntimeId = redisRecord.runtimeId ?? await resolveRuntimeId(redisRecord);
+      assert(redisRuntimeId, 'Redis runtime identity is missing during restore');
+      await runAuthenticatedRedisCommand(redisRecord, redisRuntimeId, 'FLUSHDB', 'OK');
+    }
+    databaseChanged = true;
+    await runPodmanWithInput(['exec', '-i', mysqlRuntimeId, 'mysql', '--defaults-extra-file=/run/secrets/mysql-root.cnf'], source.database, 900_000, 32_768);
+    storageSwap = await replaceProjectStorageContents(app.projectMounts.storage, restoreDirectory, restoreMounts.backups, restoreToken);
+    await startProjectServiceWorkload(app.id);
+    if (!appWasRunning) {
+      await runPodman(['stop', '--time', '10', appRuntimeId], 30_000);
+      await writeRecord({ ...app, runtimeId: appRuntimeId, status: 'stopped', desiredState: 'stopped', updatedAt: new Date().toISOString() });
+    }
+    if (!redisWasRunning && redis) await stopProjectDependencyWorkload(redisId);
+    if (!mysqlWasRunning) await stopProjectDependencyWorkload(mysqlId);
+    const storageCommit = await storageSwap.commit();
+    const result = {
+      backupId: request.backupId, safetyBackupId, repositoryId: request.repositoryId,
+      environmentId: request.environmentId, restored: true, healthVerified: true,
+      storageCleanupPending: storageCommit.cleanupPending,
+      redisCacheFlushed: Boolean(redis), createdAt: source.manifest.createdAt,
+    };
+    await appendAudit('project-environment.backup.restored', result).catch(() => {});
+    return result;
+  } catch (error) {
+    try {
+      await runPodman(['stop', '--time', '5', appRuntimeId], 30_000).catch(() => {});
+      if (databaseChanged) await runPodmanWithInput(['exec', '-i', mysqlRuntimeId, 'mysql', '--defaults-extra-file=/run/secrets/mysql-root.cnf'], safety.database, 900_000, 32_768);
+      if (storageSwap) await storageSwap.rollback();
+      if (appWasRunning) await startProjectServiceWorkload(app.id);
+      else {
+        await runPodman(['stop', '--time', '10', appRuntimeId], 30_000).catch(() => {});
+        await writeRecord({ ...app, runtimeId: appRuntimeId, status: 'stopped', desiredState: 'stopped', updatedAt: new Date().toISOString() }).catch(() => {});
+      }
+      if (!redisWasRunning && redis) await stopProjectDependencyWorkload(redisId).catch(() => {});
+      if (!mysqlWasRunning) await stopProjectDependencyWorkload(mysqlId).catch(() => {});
+    } catch (rollbackError) {
+      await appendAudit('project-environment.backup.rollback-failed', { repositoryId: request.repositoryId, environmentId: request.environmentId, backupId: request.backupId, safetyBackupId, error: 'automatic rollback failed; operator review required' }).catch(() => {});
+      throw new Error('Project restore failed and automatic rollback requires operator review; the safety backup has been retained');
+    }
+    throw new Error('Project restore failed; the previous database and storage state was restored from the automatic safety backup');
+  } finally {
+    await fs.rm(archivePath, { force: true }).catch(() => {});
+    await fs.rm(restoreDirectory, { recursive: true, force: true }).catch(() => {});
+    await unstageProjectBackupMounts(request.repositoryId, request.environmentId, request.backupId).catch(() => {});
+  }
+}
+
 async function createProjectServiceWorkload(request) {
   const id = safeId(request.workloadId);
   const repositoryId = safeRepositoryId(request.repositoryId);
+  const environmentId = safeId(request.environmentId);
+  assert(typeof request.profileId === 'string' && /^[a-z][a-z0-9-]{1,63}$/.test(request.profileId) && Number.isInteger(request.profileVersion) && request.profileVersion >= 1 && request.profileVersion <= 1000, 'Project-service profile identity is invalid');
+  assert(Array.isArray(request.dependencies) && new Set(request.dependencies.map((item) => item.name)).size === request.dependencies.length
+    && request.dependencies.every((item) => ['mysql', 'redis'].includes(item.name) && projectDependencyWorkloadId(environmentId, item.name) === item.workloadId), 'Project-service dependency workload identities are invalid');
   const releaseId = safeId(request.releaseId);
   const image = safeImage(request.image);
   const resources = safeResources(request.resources);
@@ -1545,7 +2239,9 @@ async function createProjectServiceWorkload(request) {
   const restartPolicy = safeRestartPolicy(request.restartPolicy);
   let existing = await readRecord(id).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (existing && existing.status !== 'removed') {
-    assert(existing.workloadType === 'project-service' && existing.repositoryId === repositoryId && existing.releaseId === releaseId && existing.image === image && existing.restartPolicy === restartPolicy,
+    assert(existing.workloadType === 'project-service' && existing.repositoryId === repositoryId && (existing.environmentId ?? environmentId) === environmentId
+      && (existing.profileId ?? request.profileId) === request.profileId && (existing.profileVersion ?? request.profileVersion) === request.profileVersion
+      && JSON.stringify(existing.dependencies ?? []) === JSON.stringify(request.dependencies) && existing.releaseId === releaseId && existing.image === image && existing.restartPolicy === restartPolicy,
       'Project-service workload ID is already bound to different immutable attributes');
     assert(JSON.stringify({ ...existing.resources, diskMiB: existing.resources?.diskMiB ?? 10240 }) === JSON.stringify(resources),
       'Project-service resource reservation is immutable while its workload exists');
@@ -1586,7 +2282,7 @@ async function createProjectServiceWorkload(request) {
     projectMounts = await stageProjectServiceMounts(repositoryId, id, releaseId);
     await verifyProjectServiceMounts(projectMounts, repositoryId, id);
     const workload = await createWorkload({
-      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId,
+      operation: 'container.create', workloadId: id, workloadType: 'project-service', repositoryId, environmentId, profileId: request.profileId, profileVersion: request.profileVersion, dependencies: request.dependencies,
       releaseId, projectMounts, image, resources, reservationResources, restartPolicy, command: request.command, network: 'none', podName: projectPod.name, readOnlyRootfs: true,
     });
     if (workload.runtimeId) {
@@ -1635,7 +2331,23 @@ async function inspectProjectServiceWorkload(workloadId) {
   return { workload: updated, runtime, health };
 }
 export function projectServiceHealthProbeCommand() {
-  return ['php', '-r', "$socket = @fsockopen('127.0.0.1', 9000, $errno, $errstr, 2); if (!is_resource($socket)) { fwrite(STDERR, 'PHP-FPM TCP health check failed'); exit(1); } fclose($socket);"];
+  const script = String.raw`
+$socket = @fsockopen('127.0.0.1', 9000, $errno, $errstr, 2);
+if (!is_resource($socket)) { fwrite(STDERR, 'PHP-FPM TCP health check failed'); exit(1); }
+fclose($socket);
+$env = @parse_ini_file('/app/.env', false, INI_SCANNER_RAW);
+if (!is_array($env)) { fwrite(STDERR, 'Project runtime configuration is unreadable'); exit(1); }
+if (($env['DB_CONNECTION'] ?? '') === 'mysql') {
+  try { $pdo = new PDO('mysql:host=127.0.0.1;port=3306;dbname=' . ($env['DB_DATABASE'] ?? 'app'), $env['DB_USERNAME'] ?? '', $env['DB_PASSWORD'] ?? '', [PDO::ATTR_TIMEOUT => 2]); $pdo->query('SELECT 1'); }
+  catch (Throwable $error) { fwrite(STDERR, 'MySQL application authentication failed'); exit(1); }
+}
+if (isset($env['REDIS_PASSWORD'])) {
+  if (!class_exists('Redis')) { fwrite(STDERR, 'Redis PHP extension is unavailable'); exit(1); }
+  try { $redis = new Redis(); $redis->connect('127.0.0.1', 6379, 2); if (!$redis->auth([$env['REDIS_USERNAME'] ?? 'app', $env['REDIS_PASSWORD']])) throw new RuntimeException('auth'); $pong = $redis->ping(); if ($pong !== true && $pong !== '+PONG') throw new RuntimeException('ping'); }
+  catch (Throwable $error) { fwrite(STDERR, 'Redis application authentication failed'); exit(1); }
+}
+`;
+  return ['php', '-r', script];
 }
 
 export async function waitForProjectServiceHealth(probe, options = {}) {
@@ -1691,8 +2403,10 @@ async function verifyProjectServiceCgroupV2Limits(runtimeId, resources) {
 }
 
 async function startProjectServiceWorkload(workloadId) {
-  const record = await readRecord(workloadId);
-  assert(record.workloadType === 'project-service' && record.status !== 'removed', 'Project-service operation cannot target a removed or task workload');
+  const initialRecord = await readRecord(workloadId);
+  assert(initialRecord.workloadType === 'project-service' && initialRecord.status !== 'removed', 'Project-service operation cannot target a removed or task workload');
+  const record = { ...initialRecord, status: 'starting', desiredState: 'running', updatedAt: new Date().toISOString() };
+  await writeRecord(record);
   const reservations = await readReservations();
   const reservation = reservations.find((item) => item.repositoryId === record.repositoryId && item.status !== 'released');
   assert(resourceReservationMatches(reservation, record.reservationResources ?? record.resources), 'Project-service aggregate resource reservation is missing or does not match the workload');
@@ -1701,10 +2415,30 @@ async function startProjectServiceWorkload(workloadId) {
   const existingRuntimeId = record.runtimeId ?? await resolveRuntimeId(record);
   assert(existingRuntimeId, 'Project-service runtime container is missing; operator review is required');
   await verifyProjectServicePod(record, existingRuntimeId);
-  const result = await mutate({ operation: 'container.start', workloadId, expectedWorkloadType: 'project-service' },
-    (current) => runPodman(['pod', 'start', current.podName]));
+
+  const dependencies = record.dependencies ?? [];
+  const dependencyResults = [];
+  for (const dependencyName of ['mysql', 'redis']) {
+    const dependency = dependencies.find((item) => item.name === dependencyName);
+    if (!dependency) continue;
+    assert(record.environmentId && dependency.workloadId === projectDependencyWorkloadId(record.environmentId, dependencyName),
+      'Project-service dependency identity does not match its registered environment');
+    const dependencyRecord = await readRecord(dependency.workloadId);
+    assert(dependencyRecord.workloadType === 'project-dependency' && dependencyRecord.repositoryId === record.repositoryId
+      && dependencyRecord.environmentId === record.environmentId && dependencyRecord.dependency === dependencyName
+      && dependencyRecord.status !== 'removed', `Required project ${dependencyName} workload is missing or has a mismatched identity`);
+    dependencyResults.push({ dependency: dependencyName, result: await startProjectDependencyWorkload(dependencyRecord.id) });
+  }
+
+  const pod = await inspectProjectPod(record.repositoryId);
+  if (await inspectContainerState(pod.infraContainerId) !== 'running') await runPodman(['start', pod.infraContainerId], 60_000);
+  const currentState = await inspectContainerState(existingRuntimeId);
+  const result = currentState === 'running'
+    ? { workload: await (async () => { const running = { ...record, runtimeId: existingRuntimeId, status: 'running', desiredState: 'running', updatedAt: new Date().toISOString() }; await writeRecord(running); return running; })(), runtime: { id: existingRuntimeId, state: currentState }, reused: true }
+    : await mutate({ operation: 'container.start', workloadId, expectedWorkloadType: 'project-service' },
+      () => runPodman(['start', existingRuntimeId], 60_000));
   const startedRecord = result.workload ?? await readRecord(workloadId);
-  const runtimeId = startedRecord.runtimeId;
+  const runtimeId = startedRecord.runtimeId ?? existingRuntimeId;
   assert(runtimeId, 'Project-service runtime container identity is unavailable after start');
   try {
     const effectiveLimits = await verifyProjectServiceCgroupV2Limits(runtimeId, startedRecord.resources);
@@ -1714,21 +2448,34 @@ async function startProjectServiceWorkload(workloadId) {
       { attempts: 10, intervalMs: 1000 },
     );
     await appendAudit('project-service.health.verified', { workloadId, repositoryId: record.repositoryId, checks: health.checks, attempts: health.attempts });
-    return { ...result, health };
+    return { ...result, health, dependencies: dependencyResults };
   } catch (error) {
     let stopFailure = null;
-    try { await runPodman(['pod', 'stop', '--time', '1', startedRecord.podName], 30_000); }
+    try { await runPodman(['stop', '--time', '1', runtimeId], 30_000); }
     catch (stopError) { stopFailure = stopError instanceof Error ? stopError.message : 'stop failed'; }
     const latest = await readRecord(workloadId);
     await writeRecord({
       ...latest, status: 'error',
-      error: ('Effective cgroup v2 resource limits were not enforced: ' + (error instanceof Error ? error.message : 'verification failed')
+      error: ('Effective cgroup v2 resource limits or dependency health were not enforced: ' + (error instanceof Error ? error.message : 'verification failed')
         + (stopFailure ? '; container stop also failed: ' + stopFailure : '')).slice(0, 500),
       updatedAt: new Date().toISOString(),
     });
     await appendAudit('project-service.limits.rejected', { workloadId, repositoryId: record.repositoryId, stopFailure: Boolean(stopFailure) });
-    throw new Error('Project-service start rejected because effective cgroup v2 limits were not enforced' + (stopFailure ? ' and the container could not be stopped' : ''));
+    throw new Error('Project-service start rejected because effective cgroup v2 limits or dependency connectivity were not verified' + (stopFailure ? ' and the container could not be stopped' : ''));
   }
+}
+
+async function stopProjectServiceWorkload(workloadId) {
+  const record = await readRecord(workloadId);
+  assert(record.workloadType === 'project-service' && record.status !== 'removed', 'Project-service stop cannot target a removed or task workload');
+  const desired = { ...record, desiredState: 'stopped', updatedAt: new Date().toISOString() };
+  await writeRecord(desired);
+  const runtimeId = desired.runtimeId ?? await resolveRuntimeId(desired);
+  if (runtimeId && await inspectContainerState(runtimeId) === 'running') await runPodman(['stop', '--time', '10', runtimeId], 30_000);
+  const stopped = { ...desired, runtimeId: runtimeId ?? null, status: 'stopped', updatedAt: new Date().toISOString() };
+  await writeRecord(stopped);
+  await appendAudit('project-service.stopped', { workloadId, repositoryId: record.repositoryId });
+  return { workload: stopped, stopped: true };
 }
 
 async function removeProjectServiceWorkload(request) {
@@ -1745,6 +2492,7 @@ async function removeProjectServiceWorkload(request) {
   }
   assert(record.workloadType === 'project-service' && record.repositoryId === repositoryId && record.releaseId === releaseId,
     'Project-service removal identity does not match its persisted workload record');
+  await writeRecord({ ...record, desiredState: 'stopped', updatedAt: new Date().toISOString() });
   const result = await mutate({ operation: 'container.remove', workloadId, expectedWorkloadType: 'project-service' }, (current) => runPodman(['rm', '--force', current.runtimeId], 30_000));
   const podRemoval = await removeProjectPodIfEmpty(repositoryId);
   await releaseProjectServiceMounts(result.workload);
@@ -2479,7 +3227,7 @@ async function dashboardInventory() {
       };
     }));
   const unmatchedContainers = containers
-    .filter((container) => container.workloadType === 'task' && (!container.workloadId || !recordIds.has(container.workloadId)))
+    .filter((container) => !container.workloadId || !recordIds.has(container.workloadId))
     .map((container) => ({
       containerId: container.containerId,
       runtimeState: container.state,
@@ -2501,6 +3249,12 @@ export function projectServiceBootRecoveryAction(record, runtimeState) {
   if (record.workloadType !== 'project-service' || record.status === 'removed') return 'skip';
   if (record.status === 'removing') return 'remove';
   if (record.status === 'stopping') return runtimeState === 'missing' ? 'operator-review' : 'stop';
+  if (record.desiredState === 'running') return runtimeState === 'missing' ? 'operator-review' : 'start';
+  if (record.desiredState === 'stopped') {
+    if (runtimeState === 'running') return 'stop';
+    if (runtimeState === 'missing') return 'operator-review';
+    return 'skip';
+  }
   if (record.status === 'running' || record.status === 'starting') return runtimeState === 'missing' ? 'operator-review' : 'start';
   if (record.status === 'creating') return runtimeState === 'missing' ? 'operator-review' : 'reconcile-create';
   if (record.status === 'created' || record.status === 'stopped') return runtimeState === 'missing' ? 'operator-review' : runtimeState === 'running' ? 'stop' : record.status === 'created' && runtimeState === 'exited' ? 'reconcile-create' : 'skip';
@@ -2545,7 +3299,7 @@ async function recoverProjectServiceWorkloads() {
         return;
       }
       if (action === 'stop') {
-        const stopped = await mutate({ operation: 'container.stop', workloadId: record.id, expectedWorkloadType: 'project-service' }, (current) => runPodman(['pod', 'stop', '--time', '10', current.podName], 30_000));
+        const stopped = await stopProjectServiceWorkload(record.id);
         results.push({ workloadId: record.id, action, status: stopped.workload.status });
         return;
       }
@@ -2592,10 +3346,19 @@ async function execute(request) {
   if (request.operation === 'image.inspect' || request.operation === 'image.pull') return imageOperation(request);
   if (request.operation === 'container.create') return createWorkload(request);
   if (request.operation === 'project-service.recover') return recoverProjectServiceWorkloads();
+  if (request.operation === 'project-dependency.prepare-secrets') return prepareProjectDependencySecrets(request);
+  if (request.operation === 'project-dependency.create') return createProjectDependencyWorkload(request);
+  if (request.operation === 'project-dependency.inspect') return inspectProjectDependencyWorkload(request.workloadId);
+  if (request.operation === 'project-dependency.start') return startProjectDependencyWorkload(request.workloadId);
+  if (request.operation === 'project-dependency.stop') return stopProjectDependencyWorkload(request.workloadId);
+  if (request.operation === 'project-dependency.remove') return removeProjectDependencyWorkload(request);
+  if (request.operation === 'project-dependency.recover') return recoverProjectDependencyWorkloads();
+  if (request.operation === 'project-backup.create') return createProjectEnvironmentBackup(request);
+  if (request.operation === 'project-backup.restore') return restoreProjectEnvironmentBackup(request);
   if (request.operation === 'project-service.create') return createProjectServiceWorkload(request);
   if (request.operation === 'project-service.inspect') return inspectProjectServiceWorkload(request.workloadId);
   if (request.operation === 'project-service.start') return startProjectServiceWorkload(request.workloadId);
-  if (request.operation === 'project-service.stop') return mutate({ operation: 'container.stop', workloadId: request.workloadId, expectedWorkloadType: 'project-service' }, (record) => runPodman(['pod', 'stop', '--time', '10', record.podName], 30_000));
+  if (request.operation === 'project-service.stop') return stopProjectServiceWorkload(request.workloadId);
   if (request.operation === 'project-service.remove') return removeProjectServiceWorkload(request);
   if (request.operation === 'container.list') {
     const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });
@@ -2714,11 +3477,14 @@ function respond(socket, value) {
 }
 export function durableLockKeys(request) {
   if (request.operation === 'container.create') return ['resource:global', `repository:${request.repositoryId}`, ...(request.worktreeId ? [`worktree:${request.worktreeId}`] : [])];
-  if (request.operation === 'project-service.create') return ['resource:global', `repository:${request.repositoryId}`, `workload:${request.workloadId}`];
+  if (request.operation === 'project-service.create' || request.operation === 'project-dependency.create') return ['resource:global', `repository:${request.repositoryId}`, `workload:${request.workloadId}`];
+  if (request.operation === 'project-dependency.prepare-secrets') return [`repository:${request.repositoryId}`];
+  if (request.operation === 'project-dependency.recover') return ['resource:global'];
+  if (request.operation === 'project-backup.create' || request.operation === 'project-backup.restore') return ['resource:global', `repository:${request.repositoryId}`, `workload:${request.applicationWorkloadId}`];
   if (request.operation === 'project-service.recover') return ['resource:global'];
-  if (request.operation === 'project-service.start') return ['resource:global', `workload:${request.workloadId}`];
-  if (request.operation === 'project-service.stop') return [`workload:${request.workloadId}`];
-  if (request.operation === 'project-service.remove') return ['resource:global', `repository:${request.repositoryId}`, `workload:${request.workloadId}`];
+  if (request.operation === 'project-service.start' || request.operation === 'project-dependency.start') return ['resource:global', `workload:${request.workloadId}`];
+  if (request.operation === 'project-service.stop' || request.operation === 'project-dependency.stop') return [`workload:${request.workloadId}`];
+  if (request.operation === 'project-service.remove' || request.operation === 'project-dependency.remove') return ['resource:global', `repository:${request.repositoryId}`, `workload:${request.workloadId}`];
   if (request.operation === 'resource.reserve' || request.operation === 'resource.release') return ['resource:global', `repository:${request.repositoryId}`];
   if (request.operation === 'cleanup.run') return ['cleanup:global'];
   if (request.operation === 'container.exec') return [`workload:${request.workloadId}`];
@@ -2732,7 +3498,7 @@ export function durableLockKeys(request) {
 }
 
 export function isNewWorkOperation(request) {
-  return ['container.create', 'container.start', 'container.exec', 'sandbox.exec', 'sandbox.fs.write', 'sandbox.execution.start', 'workspace.write.begin', 'project-service.create', 'project-service.start'].includes(request.operation);
+  return ['container.create', 'container.start', 'container.exec', 'sandbox.exec', 'sandbox.fs.write', 'sandbox.execution.start', 'workspace.write.begin', 'project-service.create', 'project-service.start', 'project-dependency.prepare-secrets', 'project-dependency.create', 'project-dependency.start', 'project-backup.create', 'project-backup.restore'].includes(request.operation);
 }
 
 async function executeWithLocks(request) {
@@ -2790,7 +3556,7 @@ function handleConnection(socket) {
           if (sandboxMutation) mutatingWorkloads.delete(sandboxId);
         }
       } else {
-        const lifecycleMutation = ['container.start', 'container.stop', 'container.remove', 'project-service.start', 'project-service.stop', 'project-service.remove'].includes(request.operation);
+        const lifecycleMutation = ['container.start', 'container.stop', 'container.remove', 'project-service.start', 'project-service.stop', 'project-service.remove', 'project-dependency.start', 'project-dependency.stop', 'project-dependency.remove'].includes(request.operation);
         if (lifecycleMutation) {
           const id = request.workloadId;
           if (mutatingWorkloads.has(id) || isSandboxBusy(activeSandboxWorkloads.get(id) ?? 0)) {

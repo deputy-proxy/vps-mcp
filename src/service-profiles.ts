@@ -5,8 +5,9 @@ import { config } from "./config.js";
 
 export type ServiceProfileReadiness = "definition-only" | "deployable";
 export type ServiceProfileResourceVector = { cpuMilli: number; memoryMiB: number; pids: number; diskMiB: number };
-export function serviceProfileReservationResources(profile: Pick<ServiceProfile, "resources" | "dependencies">): ServiceProfileResourceVector {
-  return profile.dependencies.reduce((total, dependency) => ({
+export function serviceProfileReservationResources(profile: Pick<ServiceProfile, "resources" | "dependencies">, enabledDependencies?: readonly string[]): ServiceProfileResourceVector {
+  const enabled = enabledDependencies === undefined ? null : new Set(enabledDependencies);
+  return profile.dependencies.filter((dependency) => enabled === null || enabled.has(dependency.name)).reduce((total, dependency) => ({
     cpuMilli: total.cpuMilli + dependency.resources.cpuMilli,
     memoryMiB: total.memoryMiB + dependency.resources.memoryMiB,
     pids: total.pids + dependency.resources.pids,
@@ -30,9 +31,9 @@ export type ServiceProfile = {
   };
   healthChecks: Array<{ name: string; type: "tcp" | "http" | "process"; target: string; intervalSeconds: number; timeoutSeconds: number }>;
   mounts: Array<{ name: string; source: "project-storage" | "project-cache" | "project-logs"; target: string; readOnly: boolean }>;
-  dependencies: Array<{ name: "mysql" | "redis"; version: string; required: boolean; imageDigest: string | null; resources: ServiceProfileResourceVector; credentialMode: "mounted-secret-file"; isolation: "project-private-network-and-instance" }>;
+  dependencies: Array<{ name: "mysql" | "redis"; version: string; required: boolean; imageDigest: string | null; resources: ServiceProfileResourceVector; credentialMode: "mounted-secret-file"; isolation: "project-private-network-and-instance"; restartPolicy?: "no" | "unless-stopped" }>;
   resources: ServiceProfileResourceVector;
-  restartPolicy: "always" | "unless-stopped";
+  restartPolicy: "no" | "always" | "unless-stopped";
   deployment: {
     buildCommands: string[][];
     migrationCommand: string[];
@@ -133,6 +134,22 @@ laravelPhpV3.displayName = "Laravel / PHP 8.4 (candidate, image refresh)";
 laravelPhpV3.runtime.imageDigest = "ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72";
 PROFILES.push(laravelPhpV3);
 
+// Laravel v4 pins the approved DHI dependency images. It remains definition-only
+// until the dependency lifecycle, secret mounts, recovery and live isolation
+// acceptance gates have all passed. Earlier profile versions stay immutable.
+const laravelPhpV4 = structuredClone(laravelPhpV3);
+laravelPhpV4.version = 4;
+laravelPhpV4.displayName = "Laravel / PHP 8.4 (MySQL 8.4 + Redis 8)";
+laravelPhpV4.readiness = "definition-only";
+// The PHP runtime digest is pinned only after the Redis-enabled image has
+// been built, scanned and published by the pull-request image pipeline.
+laravelPhpV4.runtime.imageDigest = null;
+laravelPhpV4.restartPolicy = "no";
+laravelPhpV4.dependencies = laravelPhpV4.dependencies.map((dependency) => dependency.name === "mysql"
+  ? { ...dependency, version: "8.4.13", imageDigest: "dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1", restartPolicy: "no" }
+  : { ...dependency, version: "8.10.3", imageDigest: "dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae", restartPolicy: "no" });
+PROFILES.push(laravelPhpV4);
+
 // This profile exercises the persistent project-service runtime without
 // enabling Laravel's MySQL/Redis dependency contract. It is intentionally
 // restricted to the disposable VPS acceptance repository.
@@ -176,7 +193,7 @@ PROFILES.push({
 const lifecycleRoot = path.join(config.dataDir, "service-profiles");
 const lifecycleFile = path.join(lifecycleRoot, "lifecycle.json");
 
-type ProfileLifecycle = { schemaVersion: 1; promotions: Array<{ profileId: string; version: number; imageDigest: string; approvedAt: string; approvalReference: string }> };
+type ProfileLifecycle = { schemaVersion: 1; promotions: Array<{ profileId: string; version: number; imageDigest: string; dependencyImageDigests?: Record<string, string>; approvedAt: string; approvalReference: string }> };
 function readLifecycle(): ProfileLifecycle {
   try {
     const parsed = JSON.parse(fs.readFileSync(lifecycleFile, "utf8")) as ProfileLifecycle;
@@ -185,6 +202,10 @@ function readLifecycle(): ProfileLifecycle {
       if (!item || typeof item.profileId !== "string" || !Number.isSafeInteger(item.version) || item.version < 1
         || typeof item.imageDigest !== "string" || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(item.imageDigest)
         || typeof item.approvedAt !== "string" || typeof item.approvalReference !== "string") throw new Error("Corrupt service profile lifecycle entry");
+      if (item.dependencyImageDigests !== undefined && (!item.dependencyImageDigests || typeof item.dependencyImageDigests !== "object" || Array.isArray(item.dependencyImageDigests)
+        || Object.entries(item.dependencyImageDigests).some(([name, digest]) => !["mysql", "redis"].includes(name) || typeof digest !== "string" || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(digest)))) {
+        throw new Error("Corrupt service profile dependency image approval manifest");
+      }
     }
     return parsed;
   } catch (error) {
@@ -196,6 +217,10 @@ function applyLifecycle(profile: ServiceProfile): ServiceProfile {
   const promotion = readLifecycle().promotions.find((item) => item.profileId === profile.id && item.version === profile.version);
   if (!promotion) return profile;
   if (profile.runtime.imageDigest !== promotion.imageDigest) throw new Error("Approved service profile digest no longer matches its immutable definition");
+  if (promotion.dependencyImageDigests) {
+    const current = Object.fromEntries(profile.dependencies.filter((dependency) => dependency.imageDigest).map((dependency) => [dependency.name, dependency.imageDigest]));
+    if (JSON.stringify(current) !== JSON.stringify(promotion.dependencyImageDigests)) throw new Error("Approved dependency image manifest no longer matches its immutable profile definition");
+  }
   profile.readiness = "deployable";
   return profile;
 }
@@ -210,12 +235,13 @@ export function promoteServiceProfile(input: { profileId: string; version: numbe
   profile.readiness = "deployable";
   assertServiceProfileDeployable(profile);
   const registry = readLifecycle();
+  const dependencyImageDigests = Object.fromEntries(profile.dependencies.map((dependency) => [dependency.name, dependency.imageDigest!]));
   const existing = registry.promotions.find((item) => item.profileId === input.profileId && item.version === input.version);
   if (existing) {
-    if (existing.imageDigest !== input.imageDigest) throw new Error("A profile version cannot be promoted to a different image digest");
+    if (existing.imageDigest !== input.imageDigest || JSON.stringify(existing.dependencyImageDigests ?? {}) !== JSON.stringify(dependencyImageDigests)) throw new Error("A profile version cannot be promoted to a different runtime or dependency image manifest");
     return { promoted: false, alreadyPromoted: true, profile, approval: existing };
   }
-  const approval = { profileId: input.profileId, version: input.version, imageDigest: input.imageDigest, approvedAt: new Date().toISOString(), approvalReference: input.approvalReference.trim() };
+  const approval = { profileId: input.profileId, version: input.version, imageDigest: input.imageDigest, dependencyImageDigests, approvedAt: new Date().toISOString(), approvalReference: input.approvalReference.trim() };
   registry.promotions.push(approval);
   fs.mkdirSync(lifecycleRoot, { recursive: true, mode: 0o700 });
   const temporary = `${lifecycleFile}.${randomUUID()}.tmp`;
@@ -278,6 +304,7 @@ export function assertServiceProfileRepositoryAllowed(profile: ServiceProfile, r
 
 export function assertServiceProfileDeployable(profile: ServiceProfile): void {
   assertProfileMountLayout(profile);
+  if (profile.version >= 4 && profile.restartPolicy !== "no") throw new Error("Laravel v4 project services must use restart=no so ordered runtime recovery controls startup");
   if (profile.readiness !== "deployable" || !profile.runtime.imageDigest || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(profile.runtime.imageDigest)) {
     throw new Error(`Project environment profile '${profile.id}' version ${profile.version} is definition-only and cannot be provisioned`);
   }
@@ -285,6 +312,7 @@ export function assertServiceProfileDeployable(profile: ServiceProfile): void {
     if (!dependency.imageDigest || !/^[a-z0-9][a-z0-9._/:+-]{0,180}@sha256:[a-f0-9]{64}$/.test(dependency.imageDigest)) {
       throw new Error(`Project environment dependency '${dependency.name}' must pin an immutable image digest before provisioning`);
     }
+    if (profile.version >= 4 && dependency.restartPolicy !== "no") throw new Error(`Project environment dependency '${dependency.name}' must use restart=no so ordered recovery controls startup`);
     if (dependency.credentialMode !== "mounted-secret-file" || dependency.isolation !== "project-private-network-and-instance") {
       throw new Error(`Project environment dependency '${dependency.name}' does not satisfy the isolation contract`);
     }
