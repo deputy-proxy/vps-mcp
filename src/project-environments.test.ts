@@ -226,6 +226,32 @@ it("migrates schema-v1 environments without changing identity, resource reservat
   } finally { state.repository = previousRepository; }
 });
 
+it("migrates pre-dependency schema-v1 environments without inventing dependency workloads or increasing reservations", async () => {
+  const previousRepository = state.repository;
+  state.repository = { id: "acme-legacy-app-only-123456789", fullName: "acme/legacy-app-only", status: "cloned", persistentEnvironmentPaths: [] };
+  try {
+    const registered = await registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "laravel-php" });
+    const registryPath = path.join(state.dataDir, "project-environments", "registry.json");
+    const registry = JSON.parse(await fs.readFile(registryPath, "utf8"));
+    const item = registry.environments.find((environment: { repositoryId: string }) => environment.repositoryId === state.repository.id);
+    item.schemaVersion = 1;
+    item.resources = { cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 };
+    delete item.enabledDependencies;
+    registry.schemaVersion = 1;
+    await fs.writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+
+    const migrated = await inspectProjectEnvironment(state.repository.id);
+    expect(migrated.environment).toMatchObject({
+      schemaVersion: 2,
+      id: registered.environment.id,
+      enabledDependencies: [],
+      legacyDependencySelection: true,
+      resources: { cpuMilli: 400, memoryMiB: 768, pids: 96, diskMiB: 8192 },
+    });
+    expect((await listProjectEnvironments()).count).toBeGreaterThan(0);
+  } finally { state.repository = previousRepository; }
+});
+
 it("validates repository identity, profile and bounded resource requests", async () => {
   await expect(registerProjectEnvironment({ repositoryId: "../escape", profileId: "laravel-php" })).rejects.toThrow("Invalid repository ID");
   await expect(registerProjectEnvironment({ repositoryId: state.repository.id, profileId: "../unsafe" })).rejects.toThrow("Invalid project environment profile ID");
