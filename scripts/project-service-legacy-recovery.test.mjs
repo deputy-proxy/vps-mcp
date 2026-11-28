@@ -15,7 +15,7 @@ describe('legacy project-service boot recovery', () => {
   });
 
   it('requires operator review when a legacy workload has no runtime container', () => {
-    for (const status of ['creating', 'created', 'stopped', 'running']) {
+    for (const status of ['creating', 'created', 'stopped', 'running', 'removing']) {
       expect(projectServiceBootRecoveryAction(record(status), 'missing')).toBe('operator-review');
     }
   });
