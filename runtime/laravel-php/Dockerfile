@@ -12,6 +12,8 @@ RUN apt-get update \
       libonig-dev \
       libpng-dev \
       libzip-dev \
+    && pecl install redis-6.3.0 \
+    && docker-php-ext-enable redis \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j2 \
       bcmath \

@@ -137,7 +137,7 @@ describe("server-level OAuth boundary", () => {
     const listed = await request("tools/list", 3, {}, "integration-test-token");
     expect(listed.status).toBe(200);
     const tools = parseSse(await listed.text()).result.tools ?? [];
-    expect(tools).toHaveLength(62);
+    expect(tools).toHaveLength(65);
     for (const tool of tools) {
       expect(tool).not.toHaveProperty("_meta.securitySchemes");
     }

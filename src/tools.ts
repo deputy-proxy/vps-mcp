@@ -14,7 +14,7 @@ import { validateTaskBranchCreation } from "./branch-policy.js";
 import { createSandboxRuntimeAdapter, formatSandboxRuntimeError } from "./sandbox-runtime.js";
 import { createTaskWorkspace, listTaskWorkspaces, inspectTaskWorkspace, getTaskWorkspaceStatus, getTaskWorkspaceDiff, retainTaskWorkspace, resumeTaskWorkspace, removeTaskWorkspace, pruneTaskWorkspaces } from "./task-workspaces.js";
 import { inspectManagedStorage } from "./storage-metrics.js";
-import { deprovisionProjectEnvironment, inspectProjectEnvironmentRuntime, inspectProjectEnvironment, listProjectEnvironments, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } from "./project-environments.js";
+import { deprovisionProjectEnvironment, retireProjectEnvironment, backupProjectEnvironment, restoreProjectEnvironmentBackup, inspectProjectEnvironmentRuntime, inspectProjectEnvironment, listProjectEnvironments, provisionProjectEnvironment, registerProjectEnvironment, setProjectEnvironmentRelease, startProjectEnvironment, stopProjectEnvironment, updateProjectEnvironment } from "./project-environments.js";
 import { registerProjectEnvironmentWithReservation } from "./project-environment-admission.js";
 import { listServiceProfiles, promoteServiceProfile } from "./service-profiles.js";
 import { resolveAllowedPath, managedTaskWorkspaceIdentity } from "./paths.js";
@@ -466,12 +466,13 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("project-environment.register", {
     title: "Register persistent project environment",
-    description: "Create an idempotent durable metadata record for a registered repository and reserve the aggregate profile resource vector (application plus all declared dependencies) through the resource-governance API. Explicit overrides may increase the aggregate budget but cannot reduce it below the profile's declared workload requirements. An existing idle environment can change profile version only with an explicit version and complete resource vector, and only when no workloads are registered. This does not provision or start containers; provisioning remains gated pending an approved deployable profile with a pinned runtime image digest.",
+    description: "Create an idempotent durable metadata record for a registered repository and reserve the aggregate resource vector for the application plus selected dependencies. Required dependencies are enabled by default; optional dependencies such as Redis can be explicitly enabled during registration. The selection is immutable after registration. An existing idle environment can change profile version only with an explicit version and complete resource vector, and only when no workloads are registered. This does not provision or start containers; provisioning remains gated pending an approved deployable profile with a pinned runtime image digest.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       repositoryId: z.string().min(2).max(200),
       profileId: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/),
       profileVersion: z.number().int().min(1).max(1000).optional(),
+      enabledDependencies: z.array(z.enum(["mysql", "redis"])).optional(),
       resources: z.object({
         cpuMilli: z.number().int().min(100).max(2000).optional(),
         memoryMiB: z.number().int().min(128).max(4096).optional(),
@@ -479,9 +480,10 @@ export function createMcpServer(): McpServer {
         diskMiB: z.number().int().min(128).max(102400).optional(),
       }).strict().optional(),
     },
-  }, async ({ repositoryId, profileId, profileVersion, resources }) => guarded(() => safelySandbox(() => registerProjectEnvironmentWithReservation({
+  }, async ({ repositoryId, profileId, profileVersion, enabledDependencies, resources }) => guarded(() => safelySandbox(() => registerProjectEnvironmentWithReservation({
     repositoryId, profileId,
     ...(profileVersion !== undefined ? { profileVersion } : {}),
+    ...(enabledDependencies !== undefined ? { enabledDependencies } : {}),
     ...(resources !== undefined ? { resources: {
       ...(resources.cpuMilli !== undefined ? { cpuMilli: resources.cpuMilli } : {}),
       ...(resources.memoryMiB !== undefined ? { memoryMiB: resources.memoryMiB } : {}),
@@ -503,41 +505,62 @@ export function createMcpServer(): McpServer {
 
   server.registerTool("project-environment.provision", {
     title: "Provision persistent project service",
-    description: "Create the repository's persistent project-service workload from its active or candidate release. Requires a deployable profile pinned to an administrator-approved immutable image digest and canonical project data mounts. Does not start the service.",
+    description: "Create the repository's persistent application and selected dependency containers from its active or candidate release. Requires a deployable profile with approved immutable image digests, protected secret files, canonical data mounts and an aggregate resource reservation. Containers remain stopped until the environment start operation verifies and starts dependencies in order.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { repositoryId: z.string().min(2).max(200) },
   }, async ({ repositoryId }) => guarded(() => safelySandbox(() => provisionProjectEnvironment(repositoryId, sandboxRuntime))));
 
   server.registerTool("project-environment.runtime.inspect", {
     title: "Inspect persistent project-service runtime",
-    description: "Inspect the project-service workload associated with a registered environment. Does not expose secrets or mutate the workload.",
+    description: "Inspect the application and every enabled dependency, including verified pod membership and health. Does not expose secret values or mutate workloads.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { repositoryId: z.string().min(2).max(200) },
   }, async ({ repositoryId }) => guarded(() => safelySandbox(() => inspectProjectEnvironmentRuntime(repositoryId, sandboxRuntime))));
 
   server.registerTool("project-environment.start", {
     title: "Start persistent project service",
-    description: "Start the registered project-service workload after verifying its workload identity. Task sandbox lifecycle tools cannot target project services.",
+    description: "Start selected dependencies in dependency order, verify database and Redis authentication from PHP-FPM, then start the application. Task sandbox lifecycle tools cannot target project workloads.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { repositoryId: z.string().min(2).max(200) },
   }, async ({ repositoryId }) => guarded(() => safelySandbox(() => startProjectEnvironment(repositoryId, sandboxRuntime))));
 
   server.registerTool("project-environment.stop", {
     title: "Stop persistent project service",
-    description: "Stop the registered project-service workload without deleting its persistent project data or releasing its resource reservation.",
+    description: "Stop the application first, then Redis and MySQL, without deleting persistent project data or releasing its resource reservation.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: { repositoryId: z.string().min(2).max(200) },
   }, async ({ repositoryId }) => guarded(() => safelySandbox(() => stopProjectEnvironment(repositoryId, sandboxRuntime))));
 
+  server.registerTool("project-environment.backup", {
+    title: "Create encrypted project backup",
+    description: "Create an AES-256-GCM encrypted, identity-bound backup of the MySQL database and project storage. The application is briefly stopped for a consistent storage snapshot; Redis is treated as ephemeral cache and is not backed up.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200), confirm: z.boolean() },
+  }, async ({ repositoryId, confirm }) => guarded(() => safelySandbox(() => backupProjectEnvironment(repositoryId, sandboxRuntime, confirm))));
+
+  server.registerTool("project-environment.restore", {
+    title: "Restore encrypted project backup",
+    description: "Restore a backup created for this exact repository, environment and profile version. Validates manifest authentication and artifact checksums, creates an automatic safety backup, restores MySQL and project storage, verifies application connectivity, and rolls back on failure. Requires explicit confirmation.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200), backupId: z.string().uuid(), confirm: z.boolean() },
+  }, async ({ repositoryId, backupId, confirm }) => guarded(() => safelySandbox(() => restoreProjectEnvironmentBackup(repositoryId, backupId, sandboxRuntime, confirm))));
+
   server.registerTool("project-environment.deprovision", {
     title: "Deprovision persistent project service",
-    description: "Remove the project-service container, unstage its canonical mounts and release the repository resource reservation. Persistent project release and data directories are retained. Requires explicit confirmation.",
+    description: "Remove the application and selected dependency containers, unstage secret/data mounts, retain database and project storage data, and release the repository reservation only after every project workload is removed. Requires explicit confirmation.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: { repositoryId: z.string().min(2).max(200), confirm: z.boolean() },
   }, async ({ repositoryId, confirm }) => guarded(() => safelySandbox(async () => {
     if (!confirm) throw new Error("Deprovisioning requires confirm=true");
     return deprovisionProjectEnvironment(repositoryId, sandboxRuntime);
   })));
+
+  server.registerTool("project-environment.retire", {
+    title: "Permanently retire project environment",
+    description: "Permanently delete a successfully deprovisioned project's releases, database, storage, backups and generated credentials, remove its registry entry and release any remaining reservation. Requires explicit confirmation.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: { repositoryId: z.string().min(2).max(200), confirm: z.boolean() },
+  }, async ({ repositoryId, confirm }) => guarded(() => safelySandbox(() => retireProjectEnvironment(repositoryId, sandboxRuntime, confirm))));
 
   server.registerTool("repository.register", {
     title: "Register repository",

@@ -1,13 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { getManagedRepository, updateRepository, withRepositoryLock } from "./repositories.js";
 import { assertServiceProfileDeployable, assertServiceProfileRepositoryAllowed, getServiceProfile, serviceProfileReservationResources } from "./service-profiles.js";
 import type { SandboxRuntimeAdapter } from "./sandbox-runtime.js";
 import { formatSandboxRuntimeError } from "./sandbox-runtime.js";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{1,199}$/i;
 const PROFILE_ID = /^[a-z][a-z0-9-]{1,63}$/;
 const STATES = ["provisioned", "running", "stopped", "deprovisioned"] as const;
@@ -29,6 +29,7 @@ export type ProjectEnvironment = {
   sourceBranch: "development";
   profileId: string;
   profileVersion: number;
+  enabledDependencies: Array<"mysql" | "redis">;
   rootPath: string;
   releasesPath: string;
   dataPath: string;
@@ -80,10 +81,29 @@ function isWithin(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
+function normalizeEnabledDependencies(profile: ReturnType<typeof getServiceProfile>, selected?: readonly string[]): Array<"mysql" | "redis"> {
+  const declared = profile.dependencies.map((dependency) => dependency.name);
+  const required = profile.dependencies.filter((dependency) => dependency.required).map((dependency) => dependency.name);
+  const requested = selected === undefined ? required : [...selected];
+  if (new Set(requested).size !== requested.length || requested.some((name) => !new Set<string>(declared).has(name))) {
+    throw new Error("Enabled project dependencies must be unique members of the selected service profile");
+  }
+  if (required.some((name) => !requested.includes(name))) throw new Error("All required project dependencies must be enabled");
+  return declared.filter((name) => requested.includes(name)) as Array<"mysql" | "redis">;
+}
+
 function validateEnvironment(item: ProjectEnvironment): void {
   assertRepositoryId(item.repositoryId);
   assertProfile(item.profileId, item.profileVersion);
   assertResources(item.resources);
+  const profile = getServiceProfile(item.profileId, item.profileVersion);
+  if (!Array.isArray(item.enabledDependencies) || JSON.stringify(item.enabledDependencies) !== JSON.stringify(normalizeEnabledDependencies(profile, item.enabledDependencies))) {
+    throw new Error("Invalid enabled project dependency selection");
+  }
+  const minimumResources = serviceProfileReservationResources(profile, item.enabledDependencies);
+  for (const key of ["cpuMilli", "memoryMiB", "pids", "diskMiB"] as const) {
+    if (item.resources[key] < minimumResources[key]) throw new Error(`Project environment ${key} reservation is below its enabled dependency requirements`);
+  }
   if (item.sourceBranch !== "development") throw new Error("Project environments may only track the development branch");
   if (!STATES.includes(item.desiredState)) throw new Error("Invalid desired project environment state");
   if (!OBSERVED_STATES.includes(item.observedState)) throw new Error("Invalid observed project environment state");
@@ -131,18 +151,22 @@ async function readRegistry(): Promise<Registry> {
   try {
     const parsed = JSON.parse(await fs.readFile(registryFile, "utf8")) as Partial<Registry>;
     if (!Array.isArray(parsed.environments)) throw new Error("Corrupt project environment registry");
-    if (parsed.schemaVersion !== SCHEMA_VERSION) throw new Error("Unsupported project environment registry schema");
+    if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== SCHEMA_VERSION) throw new Error("Unsupported project environment registry schema");
     const ids = new Set<string>();
     const repositoryIds = new Set<string>();
     for (const item of parsed.environments) {
-      if (item.workloadReleaseId === undefined && Array.isArray(item.workloadIds) && item.workloadIds.length === 0) {
-        item.workloadReleaseId = null;
+      if (item.workloadReleaseId === undefined && Array.isArray(item.workloadIds) && item.workloadIds.length === 0) item.workloadReleaseId = null;
+      if (!Array.isArray(item.enabledDependencies)) {
+        const profile = getServiceProfile(item.profileId, item.profileVersion);
+        item.enabledDependencies = profile.dependencies.map((dependency) => dependency.name);
       }
+      item.schemaVersion = SCHEMA_VERSION;
       validateEnvironment(item);
       if (ids.has(item.id) || repositoryIds.has(item.repositoryId)) throw new Error("Corrupt project environment registry: duplicate environment identity");
       ids.add(item.id);
       repositoryIds.add(item.repositoryId);
     }
+    parsed.schemaVersion = SCHEMA_VERSION;
     return parsed as Registry;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: SCHEMA_VERSION, environments: [] };
@@ -180,6 +204,7 @@ export async function registerProjectEnvironment(input: {
   repositoryId: string;
   profileId: string;
   profileVersion?: number;
+  enabledDependencies?: Array<"mysql" | "redis">;
   resources?: Partial<ProjectEnvironment["resources"]>;
 }) {
   assertRepositoryId(input.repositoryId);
@@ -194,7 +219,8 @@ export async function registerProjectEnvironment(input: {
     await fs.mkdir(root, { recursive: true, mode: 0o700 });
     await updateRepository({ id: repository.id, persistentEnvironmentPaths: [...repository.persistentEnvironmentPaths, canonicalPath] });
   }
-  const profileReservation = serviceProfileReservationResources(profile);
+  const enabledDependencies = normalizeEnabledDependencies(profile, input.enabledDependencies);
+  const profileReservation = serviceProfileReservationResources(profile, enabledDependencies);
   const resources = {
     cpuMilli: input.resources?.cpuMilli ?? profileReservation.cpuMilli,
     memoryMiB: input.resources?.memoryMiB ?? profileReservation.memoryMiB,
@@ -211,6 +237,26 @@ export async function registerProjectEnvironment(input: {
     if (existing) {
       if (existing.desiredState === "deprovisioned") throw new Error("Deprovisioned environment records cannot be silently reused; explicitly retire the record first");
       const profileChanged = existing.profileId !== input.profileId || existing.profileVersion !== profileVersion;
+      const selectedForExisting = input.enabledDependencies === undefined
+        ? normalizeEnabledDependencies(profile, existing.enabledDependencies.filter((name) => profile.dependencies.some((dependency) => dependency.name === name)))
+        : enabledDependencies;
+      if (!profileChanged && JSON.stringify(selectedForExisting) !== JSON.stringify(existing.enabledDependencies)) {
+        throw new Error("Enabled project dependencies are immutable after environment registration; deprovision and register a new environment to change them");
+      }
+      const existingProfileReservation = serviceProfileReservationResources(profile, selectedForExisting);
+      const retryableAdmissionFailure = /^Resource reservation failed: SANDBOX_(CAPACITY_EXCEEDED|DISK_PRESSURE)/.test(existing.lastError ?? "");
+      const existingResources = input.resources === undefined
+        ? retryableAdmissionFailure ? existingProfileReservation : existing.resources
+        : {
+        cpuMilli: input.resources.cpuMilli ?? existing.resources.cpuMilli,
+        memoryMiB: input.resources.memoryMiB ?? existing.resources.memoryMiB,
+        pids: input.resources.pids ?? existing.resources.pids,
+        diskMiB: input.resources.diskMiB ?? existing.resources.diskMiB,
+      };
+      assertResources(existingResources);
+      for (const key of ["cpuMilli", "memoryMiB", "pids", "diskMiB"] as const) {
+        if (existingResources[key] < existingProfileReservation[key]) throw new Error(`Project environment ${key} reservation cannot be lower than the aggregate enabled dependency requirement`);
+      }
       if (profileChanged) {
         const completeExplicitResources = input.resources !== undefined
           && ["cpuMilli", "memoryMiB", "pids", "diskMiB"].every((key) => Number.isInteger(input.resources?.[key as keyof typeof input.resources]));
@@ -220,15 +266,15 @@ export async function registerProjectEnvironment(input: {
           && existing.observedState !== "deprovisioning" && existing.observedState !== "deprovisioned";
         if (!explicitIdleProfileUpgrade) throw new Error("Project environment already exists with a different profile or resource reservation");
         existing.profileVersion = profileVersion;
-        existing.resources = resources;
+        existing.enabledDependencies = selectedForExisting;
+        existing.resources = existingResources;
         existing.lastError = null;
         existing.updatedAt = new Date().toISOString();
         validateEnvironment(existing);
         await writeRegistry(registry);
         return { created: false, environment: existing, profileUpdated: true, resourcesUpdated: true };
       }
-      if (JSON.stringify(existing.resources) !== JSON.stringify(resources)) {
-        const retryableAdmissionFailure = /^Resource reservation failed: SANDBOX_(CAPACITY_EXCEEDED|DISK_PRESSURE)/.test(existing.lastError ?? "");
+      if (JSON.stringify(existing.resources) !== JSON.stringify(existingResources)) {
         const explicitIdleResize = input.resources !== undefined
           && ["cpuMilli", "memoryMiB", "pids", "diskMiB"].every((key) => Number.isInteger(input.resources?.[key as keyof typeof input.resources]))
           && existing.workloadIds.length === 0 && ["provisioned", "stopped"].includes(existing.desiredState)
@@ -236,7 +282,7 @@ export async function registerProjectEnvironment(input: {
         if (!retryableAdmissionFailure && !explicitIdleResize) throw new Error("Project environment already exists with a different profile or resource reservation");
         // A resize is accepted only for an idle environment and only when the
         // operator explicitly supplies the new aggregate vector.
-        existing.resources = resources;
+        existing.resources = existingResources;
         existing.lastError = null;
         existing.updatedAt = new Date().toISOString();
         validateEnvironment(existing);
@@ -249,7 +295,7 @@ export async function registerProjectEnvironment(input: {
     const now = new Date().toISOString();
     const environment: ProjectEnvironment = {
       schemaVersion: SCHEMA_VERSION, id: randomUUID(), repositoryId: repository.id, repositoryFullName: repository.fullName,
-      sourceBranch: "development", profileId: input.profileId, profileVersion, rootPath: base,
+      sourceBranch: "development", profileId: input.profileId, profileVersion, enabledDependencies, rootPath: base,
       releasesPath: path.join(base, "releases"), dataPath: path.join(base, "data"),
       databasePath: path.join(base, "database"), storagePath: path.join(base, "storage"),
       cachePath: path.join(base, "cache"), logsPath: path.join(base, "logs"), backupsPath: path.join(base, "backups"),
@@ -402,6 +448,11 @@ export async function updateProjectEnvironment(input: {
   return withRepositoryLock(input.repositoryId, async () => updateEnvironmentRecord(input));
 }
 
+function dependencyWorkloadId(environmentId: string, dependency: "mysql" | "redis"): string {
+  const hash = createHash("sha256").update(`${environmentId}:${dependency}`).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
 export async function provisionProjectEnvironment(repositoryId: string, runtime: SandboxRuntimeAdapter) {
   assertRepositoryId(repositoryId);
   return withRepositoryLock(repositoryId, async () => {
@@ -429,18 +480,39 @@ export async function provisionProjectEnvironment(repositoryId: string, runtime:
     await updateEnvironmentRecord({ repositoryId, observedState: "provisioning", lastError: null });
     try {
       await runtime.pullImage(profile.runtime.imageDigest);
+      const enabledDependencies = profile.dependencies.filter((dependency) => environment.enabledDependencies.includes(dependency.name) && Boolean(dependency.imageDigest));
+      await runtime.prepareProjectDependencySecrets({
+        repositoryId, environmentId: environment.id,
+        mysqlEnabled: enabledDependencies.some((dependency) => dependency.name === "mysql"),
+        redisEnabled: enabledDependencies.some((dependency) => dependency.name === "redis"),
+      });
       await updateEnvironmentRecord({ repositoryId, observedState: "provisioning", workloadReleaseId: releaseId, workloadIds: [workloadId], lastError: null });
       const result = await runtime.createProjectServiceWorkload({
-        workloadId, repositoryId, releaseId, image: profile.runtime.imageDigest,
+        workloadId, environmentId: environment.id, profileId: environment.profileId, profileVersion: environment.profileVersion,
+        dependencies: enabledDependencies.map((dependency) => ({ name: dependency.name, workloadId: dependencyWorkloadId(environment.id, dependency.name) })),
+        repositoryId, releaseId, image: profile.runtime.imageDigest,
         resources: profile.resources,
         reservationResources: environment.resources,
         restartPolicy: profile.restartPolicy,
         command: profile.processes.web.command[0] === "php-fpm" ? profile.processes.web.command.slice(1) : profile.processes.web.command,
       });
+      const dependencyWorkloads = [] as Array<{ dependency: "mysql" | "redis"; workload: unknown }>;
+      for (const dependency of enabledDependencies) {
+        if (!dependency.imageDigest) throw new Error(`Project dependency '${dependency.name}' has no approved immutable image digest`);
+        await runtime.pullImage(dependency.imageDigest);
+        const dependencyResult = await runtime.createProjectDependencyWorkload({
+          workloadId: dependencyWorkloadId(environment.id, dependency.name), environmentId: environment.id,
+          repositoryId, dependency: dependency.name, image: dependency.imageDigest,
+          resources: dependency.resources, reservationResources: environment.resources,
+          restartPolicy: dependency.restartPolicy ?? "no",
+          podName: `vps-project-${createHash("sha256").update(repositoryId).digest("hex").slice(0, 20)}`,
+        });
+        dependencyWorkloads.push({ dependency: dependency.name, workload: dependencyResult.workload });
+      }
       if (result.workload.status === "removed") throw new Error("The persistent project-service workload was already removed; deprovision and register a new environment before recreating it");
       const observedState: ProjectEnvironmentObservedState = result.workload.status === "running" ? "running" : result.workload.status === "stopped" ? "stopped" : "provisioned";
       await updateEnvironmentRecord({ repositoryId, observedState, workloadIds: [workloadId], lastError: null, reconciled: true });
-      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, workload: result.workload };
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, workload: result.workload, dependencies: dependencyWorkloads };
     } catch (error) {
       const message = formatSandboxRuntimeError(error).error.message.slice(0, 500);
       await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: message });
@@ -463,7 +535,7 @@ export async function startProjectEnvironment(repositoryId: string, runtime: San
         ? (result as { health?: ProjectEnvironment["health"] }).health
         : undefined;
       await updateEnvironmentRecord({ repositoryId, observedState: "running", ...(health ? { health } : {}), reconciled: true });
-      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, result };
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, result, dependencies: (result as { dependencies?: unknown[] }).dependencies ?? [] };
     } catch (error) {
       await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
       throw error;
@@ -481,8 +553,14 @@ export async function stopProjectEnvironment(repositoryId: string, runtime: Sand
     await updateEnvironmentRecord({ repositoryId, desiredState: "stopped", observedState: "stopping", lastError: null });
     try {
       const result = await runtime.stopProjectServiceWorkload(workloadId);
+      const profile = getServiceProfile(environment.profileId, environment.profileVersion);
+      const dependencies = [] as Array<{ dependency: "mysql" | "redis"; result: unknown }>;
+      for (const dependency of ["redis", "mysql"] as const) {
+        if (!environment.enabledDependencies.includes(dependency) || !profile.dependencies.some((item) => item.name === dependency && item.imageDigest)) continue;
+        dependencies.push({ dependency, result: await runtime.stopProjectDependencyWorkload(dependencyWorkloadId(environment.id, dependency)) });
+      }
       await updateEnvironmentRecord({ repositoryId, observedState: "stopped", reconciled: true });
-      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, result };
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, result, dependencies };
     } catch (error) {
       await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
       throw error;
@@ -501,9 +579,17 @@ export async function deprovisionProjectEnvironment(repositoryId: string, runtim
         if (!environment.workloadReleaseId) throw new Error("Cannot deprovision a workload without its persisted release identity");
         await runtime.removeProjectServiceWorkload({ workloadId, repositoryId, releaseId: environment.workloadReleaseId });
       }
+      const profile = getServiceProfile(environment.profileId, environment.profileVersion);
+      const removedDependencies = [] as Array<{ dependency: "mysql" | "redis"; result: unknown }>;
+      for (const dependency of ["redis", "mysql"] as const) {
+        if (!environment.enabledDependencies.includes(dependency) || !profile.dependencies.some((item) => item.name === dependency && item.imageDigest)) continue;
+        removedDependencies.push({ dependency, result: await runtime.removeProjectDependencyWorkload({
+          workloadId: dependencyWorkloadId(environment.id, dependency), repositoryId, dependency,
+        }) });
+      }
       await runtime.releaseProjectResources(repositoryId);
       await updateEnvironmentRecord({ repositoryId, observedState: "deprovisioned", workloadIds: [], workloadReleaseId: null, reconciled: true, lastError: null });
-      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, removedWorkloadId: environment.workloadIds[0] ?? null };
+      return { environment: (await inspectProjectEnvironment(repositoryId)).environment, removedWorkloadId: environment.workloadIds[0] ?? null, removedDependencies };
     } catch (error) {
       await updateEnvironmentRecord({ repositoryId, observedState: "error", lastError: formatSandboxRuntimeError(error).error.message.slice(0, 500) });
       throw error;
@@ -511,15 +597,94 @@ export async function deprovisionProjectEnvironment(repositoryId: string, runtim
   });
 }
 
+export async function retireProjectEnvironment(repositoryId: string, runtime: SandboxRuntimeAdapter, confirm: boolean) {
+  if (!confirm) throw new Error("Retiring a project environment requires confirm=true because it permanently deletes releases, database, storage, backups and generated credentials");
+  assertRepositoryId(repositoryId);
+  return withRepositoryLock(repositoryId, async () => {
+    const { environment } = await inspectProjectEnvironment(repositoryId);
+    if (environment.desiredState !== "deprovisioned" || environment.observedState !== "deprovisioned"
+      || environment.workloadIds.length > 0 || environment.workloadReleaseId !== null || environment.lastError !== null) {
+      throw new Error("Project environment must be successfully deprovisioned before it can be retired");
+    }
+    await runtime.releaseProjectResources(repositoryId);
+    const expectedRoot = environmentPath(repositoryId);
+    const rootStat = await fs.lstat(expectedRoot).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (rootStat?.isSymbolicLink() || (rootStat && !(await fs.realpath(expectedRoot) === expectedRoot))) {
+      throw new Error("Project environment root is not a canonical directory; refusing retirement");
+    }
+    if (rootStat) await fs.rm(expectedRoot, { recursive: true, force: true });
+
+    const repository = await getManagedRepository(repositoryId);
+    const persistentEnvironmentPaths = repository.persistentEnvironmentPaths.filter((item) => path.resolve(item) !== expectedRoot);
+    await updateRepository({ id: repository.id, persistentEnvironmentPaths });
+    await withLock("registry", async () => {
+      const registry = await readRegistry();
+      const current = registry.environments.find((item) => item.repositoryId === repositoryId);
+      if (!current || current.id !== environment.id || current.desiredState !== "deprovisioned" || current.workloadIds.length > 0) {
+        throw new Error("Project environment changed during retirement; operator review required");
+      }
+      registry.environments = registry.environments.filter((item) => item.repositoryId !== repositoryId);
+      await writeRegistry(registry);
+    });
+    return { retired: true, repositoryId, environmentId: environment.id, deletedPath: expectedRoot };
+  });
+}
+
 export async function inspectProjectEnvironmentRuntime(repositoryId: string, runtime: SandboxRuntimeAdapter) {
   assertRepositoryId(repositoryId);
   const { environment } = await inspectProjectEnvironment(repositoryId);
-  const workloadId = environment.workloadIds[0];
-  if (!workloadId) return { environment, workload: null, runtime: null };
-  const result = await runtime.inspectProjectServiceWorkload(workloadId);
-  if (result.health) {
-    const updated = await updateEnvironmentRecord({ repositoryId, health: result.health });
-    return { environment: updated.environment, ...result };
+  const profile = getServiceProfile(environment.profileId, environment.profileVersion);
+  const dependencies = [] as Array<{ dependency: "mysql" | "redis"; result: unknown }>;
+  for (const dependency of profile.dependencies.filter((item) => environment.enabledDependencies.includes(item.name) && Boolean(item.imageDigest))) {
+    try {
+      dependencies.push({ dependency: dependency.name, result: await runtime.inspectProjectDependencyWorkload(dependencyWorkloadId(environment.id, dependency.name)) });
+    } catch (error) {
+      dependencies.push({ dependency: dependency.name, result: { error: formatSandboxRuntimeError(error).error.message } });
+    }
   }
-  return { environment, ...result };
+  const workloadId = environment.workloadIds[0];
+  if (!workloadId) return { environment, workload: null, runtime: null, dependencies };
+  try {
+    const result = await runtime.inspectProjectServiceWorkload(workloadId);
+    if (result.health) {
+      const updated = await updateEnvironmentRecord({ repositoryId, health: result.health });
+      return { environment: updated.environment, ...result, dependencies };
+    }
+    return { environment, ...result, dependencies };
+  } catch (error) {
+    return { environment, workload: null, runtime: null, workloadError: formatSandboxRuntimeError(error).error.message, dependencies };
+  }
+}
+
+
+export async function backupProjectEnvironment(repositoryId: string, runtime: SandboxRuntimeAdapter, confirm: boolean) {
+  if (!confirm) throw new Error("Project backup requires confirm=true because the application is briefly stopped for a consistent storage snapshot");
+  const { environment } = await inspectProjectEnvironment(repositoryId);
+  if (environment.desiredState === "deprovisioned" || environment.workloadIds.length === 0) throw new Error("Cannot back up a deprovisioned project environment");
+  if (!environment.enabledDependencies.includes("mysql")) throw new Error("Encrypted database backups require the MySQL dependency to be enabled");
+  const applicationWorkloadId = environment.workloadIds[0];
+  if (!applicationWorkloadId) throw new Error("Project environment has no registered application workload");
+  return runtime.createProjectEnvironmentBackup({
+    repositoryId, environmentId: environment.id, profileId: environment.profileId,
+    profileVersion: environment.profileVersion, applicationWorkloadId,
+    enabledDependencies: environment.enabledDependencies, backupId: randomUUID(),
+  });
+}
+
+export async function restoreProjectEnvironmentBackup(repositoryId: string, backupId: string, runtime: SandboxRuntimeAdapter, confirm: boolean) {
+  if (!confirm) throw new Error("Project backup restore requires confirm=true because it replaces database and storage contents");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(backupId)) throw new Error("Invalid project backup ID");
+  const { environment } = await inspectProjectEnvironment(repositoryId);
+  if (environment.desiredState === "deprovisioned" || environment.workloadIds.length === 0) throw new Error("Cannot restore a deprovisioned project environment");
+  if (!environment.enabledDependencies.includes("mysql")) throw new Error("Project restore requires the MySQL dependency to be enabled");
+  const applicationWorkloadId = environment.workloadIds[0];
+  if (!applicationWorkloadId) throw new Error("Project environment has no registered application workload");
+  return runtime.restoreProjectEnvironmentBackup({
+    repositoryId, environmentId: environment.id, profileId: environment.profileId,
+    profileVersion: environment.profileVersion, applicationWorkloadId,
+    enabledDependencies: environment.enabledDependencies, backupId, confirm: true,
+  });
 }
