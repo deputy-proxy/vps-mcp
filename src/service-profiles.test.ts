@@ -85,8 +85,8 @@ it("pins the approved MySQL 8.4 and Redis 8 images in a new immutable definition
   expect(serviceProfileReservationResources(profile, ["mysql"])).toEqual({ cpuMilli: 1000, memoryMiB: 1792, pids: 256, diskMiB: 20480 });
   expect(serviceProfileReservationResources(profile, ["mysql", "redis"])).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
   expect(profile.dependencies).toEqual([
-    { name: "mysql", version: "8.4.13", required: true, imageDigest: "dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0", resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance", restartPolicy: "no" },
-    { name: "redis", version: "8.10.3", required: false, imageDigest: "dhi.io/redis@sha256:98143a1ca80a66cd13fe819322c92c23d900c275fe63f7c15d74287a8e7b2a61", resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance", restartPolicy: "no" },
+    { name: "mysql", version: "8.4.13", required: true, imageDigest: "dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1", resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance", restartPolicy: "no" },
+    { name: "redis", version: "8.10.3", required: false, imageDigest: "dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f", resources: { cpuMilli: 200, memoryMiB: 256, pids: 64, diskMiB: 1024 }, credentialMode: "mounted-secret-file", isolation: "project-private-network-and-instance", restartPolicy: "no" },
   ]);
   expect(serviceProfileReservationResources(profile)).toEqual({ cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 });
   expect(() => assertServiceProfileDeployable(profile)).toThrow("definition-only and cannot be provisioned");

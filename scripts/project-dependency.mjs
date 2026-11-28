@@ -9,8 +9,8 @@ export const APPROVED_PROJECT_SERVICE_IMAGES = Object.freeze([
   'ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72',
 ]);
 export const APPROVED_PROJECT_DEPENDENCY_IMAGES = Object.freeze([
-  'dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0',
-  'dhi.io/redis@sha256:98143a1ca80a66cd13fe819322c92c23d900c275fe63f7c15d74287a8e7b2a61',
+  'dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1',
+  'dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f',
 ]);
 export const DEPENDENCIES = Object.freeze({
   mysql: { target: '/var/lib/mysql', secretFiles: ['mysql-root-password', 'mysql-root.cnf'], hostSecretFiles: ['initialize.sql'], command: ['mysqld'], port: 3306 },

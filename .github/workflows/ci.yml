@@ -126,12 +126,12 @@ jobs:
       - name: Pull exact approved dependency digests
         run: |
           set -euo pipefail
-          docker pull dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0
-          docker pull dhi.io/redis@sha256:98143a1ca80a66cd13fe819322c92c23d900c275fe63f7c15d74287a8e7b2a61
+          docker pull dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1
+          docker pull dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f
       - name: Scan MySQL 8.4.13 for high and critical vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0
+          image-ref: dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1
           version: v0.76.2
           format: table
           severity: CRITICAL,HIGH
@@ -140,7 +140,7 @@ jobs:
       - name: Scan Redis 8.10.3 for high and critical vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: dhi.io/redis@sha256:98143a1ca80a66cd13fe819322c92c23d900c275fe63f7c15d74287a8e7b2a61
+          image-ref: dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f
           version: v0.76.2
           format: table
           severity: CRITICAL,HIGH
@@ -148,8 +148,8 @@ jobs:
           exit-code: '1'
       - name: Smoke-test DHI entrypoints, credentials and read-only runtime contracts
         run: scripts/project-dependency-smoke-test.sh \
-          dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0 \
-          dhi.io/redis@sha256:98143a1ca80a66cd13fe819322c92c23d900c275fe63f7c15d74287a8e7b2a61
+          dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1 \
+          dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f
 
   publish-laravel-runtime-image:
     name: Publish immutable Laravel runtime image

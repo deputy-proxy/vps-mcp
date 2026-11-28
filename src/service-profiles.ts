@@ -146,8 +146,8 @@ laravelPhpV4.readiness = "definition-only";
 laravelPhpV4.runtime.imageDigest = null;
 laravelPhpV4.restartPolicy = "no";
 laravelPhpV4.dependencies = laravelPhpV4.dependencies.map((dependency) => dependency.name === "mysql"
-  ? { ...dependency, version: "8.4.13", imageDigest: "dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0", restartPolicy: "no" }
-  : { ...dependency, version: "8.10.3", imageDigest: "dhi.io/redis@sha256:98143a1ca80a66cd13fe819322c92c23d900c275fe63f7c15d74287a8e7b2a61", restartPolicy: "no" });
+  ? { ...dependency, version: "8.4.13", imageDigest: "dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1", restartPolicy: "no" }
+  : { ...dependency, version: "8.10.3", imageDigest: "dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f", restartPolicy: "no" });
 PROFILES.push(laravelPhpV4);
 
 // This profile exercises the persistent project-service runtime without

@@ -212,7 +212,7 @@ describe('rootless workload runtime request validation', () => {
       operation: 'project-dependency.create',
       workloadId: projectDependencyWorkloadId('134e5321-b4d7-4d4f-be92-ce56a984adaa', 'mysql'),
       environmentId: '134e5321-b4d7-4d4f-be92-ce56a984adaa', repositoryId: 'deputy-proxy-vps-mcp', dependency: 'mysql',
-      image: 'dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0',
+      image: 'dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1',
       resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 },
       reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
       restartPolicy: 'no', podName: projectPodName('deputy-proxy-vps-mcp'),
@@ -446,7 +446,7 @@ describe('rootless workload runtime request validation', () => {
     const workloadId = projectDependencyWorkloadId(environmentId, 'mysql');
     const base = {
       operation: 'project-dependency.create', workloadId, environmentId, repositoryId: 'deputy-proxy-vps-mcp', dependency: 'mysql',
-      image: 'dhi.io/mysql@sha256:37115bb21c603311e755d91efaea55beb2eaa3971452687c7098620d9e199fe0',
+      image: 'dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1',
       resources: { cpuMilli: 500, memoryMiB: 768, pids: 128, diskMiB: 10240 },
       reservationResources: { cpuMilli: 1200, memoryMiB: 2048, pids: 320, diskMiB: 21504 },
       restartPolicy: 'no', podName: projectPodName('deputy-proxy-vps-mcp'),
