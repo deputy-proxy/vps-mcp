@@ -10,7 +10,7 @@ export const APPROVED_PROJECT_SERVICE_IMAGES = Object.freeze([
 ]);
 export const APPROVED_PROJECT_DEPENDENCY_IMAGES = Object.freeze([
   'dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1',
-  'dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f',
+  'dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae',
 ]);
 export const DEPENDENCIES = Object.freeze({
   mysql: { target: '/var/lib/mysql', secretFiles: ['mysql-root-password', 'mysql-root.cnf'], hostSecretFiles: ['initialize.sql'], command: ['mysqld'], port: 3306 },

@@ -65,7 +65,7 @@ describe('project dependency runtime contract', () => {
     expect(APPROVED_PROJECT_SERVICE_IMAGES).toEqual(['ghcr.io/deputy-proxy/vps-mcp-laravel-php@sha256:10a7f5152d0bea6be3bde3ea3c6697154f20245128372833629a6d547e298b72']);
     expect(APPROVED_PROJECT_DEPENDENCY_IMAGES).toEqual([
       'dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1',
-      'dhi.io/redis@sha256:4c6ae882b416499f1cd151e6052c763d40c16a9d7dfd4c872c5c8ea84638503f',
+      'dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae',
     ]);
     const redisId = projectDependencyWorkloadId(environmentId, 'redis');
     const mounts = dependencyStagingPaths(repositoryId, redisId);
