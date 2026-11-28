@@ -147,9 +147,10 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
       - name: Smoke-test DHI entrypoints, credentials and read-only runtime contracts
-        run: scripts/project-dependency-smoke-test.sh \
-          dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1 \
-          dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae
+        run: |
+          scripts/project-dependency-smoke-test.sh \
+            dhi.io/mysql@sha256:50f6fc4ce3fe8c156e912236124ad0efbcfcb02e910158acf6fea3ec18d131f1 \
+            dhi.io/redis@sha256:0c2f0621ffd277410b03ac735a0f6d33887c925eae8665133d47836ff98f1eae
 
   publish-laravel-runtime-image:
     name: Publish immutable Laravel runtime image
