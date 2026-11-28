@@ -77,6 +77,15 @@ describe('project-service container mount contract', () => {
 
 describe('project-service boot recovery policy', () => {
   const project = (status) => ({ workloadType: 'project-service', status });
+  const legacyProject = (status) => ({
+    ...project(status),
+    projectMounts: { releaseId: '18800000-0000-4000-8000-000000000001', release: '/var/lib/vps-sandbox-mounts/projects/repo/workload/release', storage: '/var/lib/vps-sandbox-mounts/projects/repo/workload/storage', cache: '/var/lib/vps-sandbox-mounts/projects/repo/workload/cache', logs: '/var/lib/vps-sandbox-mounts/projects/repo/workload/logs' },
+  });
+  it('never restarts a legacy project service missing its runtime configuration mount', () => {
+    expect(projectServiceBootRecoveryAction(legacyProject('running'), 'exited')).toBe('operator-review');
+    expect(projectServiceBootRecoveryAction(legacyProject('running'), 'running')).toBe('stop');
+    expect(projectServiceBootRecoveryAction(legacyProject('stopped'), 'exited')).toBe('operator-review');
+  });
   it.each([
     [project('running'), 'running', 'start'],
     [project('starting'), 'exited', 'start'],
