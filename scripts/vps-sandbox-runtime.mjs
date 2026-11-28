@@ -502,11 +502,17 @@ async function readWorkloadRecords(options = {}) {
         assert(record.projectMounts && UUID.test(record.projectMounts.releaseId), 'Project-service workload is missing its release identity');
         assert(record.releaseId === record.projectMounts.releaseId, 'Project-service release identity does not match its mounts');
         const mountRoot = '/var/lib/vps-sandbox-mounts/projects/' + record.repositoryId + '/' + record.id;
-        for (const [key, suffix] of Object.entries({ release: 'release', storage: 'storage', cache: 'cache', logs: 'logs', runtimeConfig: 'runtime-config' })) {
+        const legacyMountLayout = record.projectMounts.runtimeConfig === undefined && record.projectMounts.runtimeEnv === undefined;
+        const expectedMounts = legacyMountLayout
+          ? { release: 'release', storage: 'storage', cache: 'cache', logs: 'logs' }
+          : { release: 'release', storage: 'storage', cache: 'cache', logs: 'logs', runtimeConfig: 'runtime-config' };
+        for (const [key, suffix] of Object.entries(expectedMounts)) {
           const target = mountRoot + '/' + suffix;
           assert(record.projectMounts[key] === target, 'Project-service mount path is not canonical');
         }
-        assert(record.projectMounts.runtimeEnv === mountRoot + '/runtime-config/runtime.env', 'Project-service runtime environment path is not canonical');
+        if (!legacyMountLayout) {
+          assert(record.projectMounts.runtimeEnv === mountRoot + '/runtime-config/runtime.env', 'Project-service runtime environment path is not canonical');
+        }
       }
       if (record.workloadType === 'project-dependency') {
         assert(UUID.test(record.environmentId) && ['mysql', 'redis'].includes(record.dependency), 'Project dependency record identity is invalid');
@@ -3247,6 +3253,8 @@ async function dashboardInventory() {
 
 export function projectServiceBootRecoveryAction(record, runtimeState) {
   if (record.workloadType !== 'project-service' || record.status === 'removed') return 'skip';
+  const legacyMountLayout = Boolean(record.projectMounts) && record.projectMounts.runtimeConfig === undefined && record.projectMounts.runtimeEnv === undefined;
+  if (legacyMountLayout) return runtimeState === 'running' ? 'stop' : 'operator-review';
   if (record.status === 'removing') return 'remove';
   if (record.status === 'stopping') return runtimeState === 'missing' ? 'operator-review' : 'stop';
   if (record.desiredState === 'running') return runtimeState === 'missing' ? 'operator-review' : 'start';
