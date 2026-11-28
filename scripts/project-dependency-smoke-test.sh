@@ -117,8 +117,13 @@ for _ in $(seq 1 45); do
   sleep 1
 done
 [[ "$ready" == true ]]
-if docker run --rm --network "container:$REDIS_NAME" --entrypoint redis-cli "$REDIS_IMAGE" ping >/dev/null 2>&1; then
+unauthenticated_response="$(docker run --rm --network "container:$REDIS_NAME" --entrypoint redis-cli "$REDIS_IMAGE" ping 2>&1 || true)"
+if [[ "$unauthenticated_response" == "PONG" ]]; then
   echo 'Redis accepted an unauthenticated command' >&2
+  exit 1
+fi
+if [[ "$unauthenticated_response" != *NOAUTH* ]]; then
+  echo "Redis returned an unexpected unauthenticated response: $unauthenticated_response" >&2
   exit 1
 fi
 
